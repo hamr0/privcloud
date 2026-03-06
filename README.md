@@ -13,14 +13,9 @@ Apple wants $3/month for iCloud. Google strips your metadata and caps your stora
 
 ## Prerequisites
 
-1. **Docker** — install it first, the script handles the rest
-   - Linux: `sudo dnf install docker docker-compose` (or `apt install docker.io docker-compose`)
-   - Mac: `brew install --cask docker`
-   - WSL: [Docker Desktop for Windows](https://docker.com/products/docker-desktop) with WSL backend
+**Immich app** on your phone — [iPhone](https://apps.apple.com/app/immich/id1613945652) / [Android](https://play.google.com/store/apps/details?id=app.alextran.immich)
 
-2. **Immich app** on your phone — [iPhone](https://apps.apple.com/app/immich/id1613945652) / [Android](https://play.google.com/store/apps/details?id=app.alextran.immich)
-
-That's it. The `install` command handles Docker startup, permissions, SELinux, storage setup, and pulling images.
+That's it. The `install` command handles everything else — Docker, Docker Compose, permissions, SELinux, storage setup, and pulling images. On WSL, you need [Docker Desktop for Windows](https://docker.com/products/docker-desktop) installed first.
 
 ## Quick Start
 

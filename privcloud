@@ -166,27 +166,76 @@ cmd_install() {
   bold "privcloud install"
   echo ""
 
+  # Install Docker if missing
   if ! command -v docker &>/dev/null; then
-    red "Docker not found."
-    echo ""
+    yellow "Docker not found. Installing..."
     case "$(get_os)" in
-      mac)   echo "Install: brew install --cask docker" ;;
-      wsl)   echo "Install Docker Desktop for Windows with WSL backend" ;;
-      linux) echo "Install: sudo dnf install docker   (or apt install docker.io)" ;;
+      mac)
+        if command -v brew &>/dev/null; then
+          brew install --cask docker
+        else
+          red "Install Homebrew first: https://brew.sh"
+          red "Then run: brew install --cask docker"
+          exit 1
+        fi
+        ;;
+      wsl)
+        red "Install Docker Desktop for Windows with WSL backend:"
+        red "https://docker.com/products/docker-desktop"
+        exit 1
+        ;;
+      linux)
+        if command -v dnf &>/dev/null; then
+          elevate dnf install -y docker docker-compose
+          elevate systemctl enable docker
+        elif command -v apt-get &>/dev/null; then
+          elevate apt-get update
+          elevate apt-get install -y docker.io docker-compose
+        elif command -v pacman &>/dev/null; then
+          elevate pacman -S --noconfirm docker docker-compose
+          elevate systemctl enable docker
+        else
+          red "Could not detect package manager. Install Docker manually."
+          exit 1
+        fi
+        ;;
     esac
-    exit 1
+    if ! command -v docker &>/dev/null; then
+      red "Docker installation failed."
+      exit 1
+    fi
+    green "Docker installed."
   fi
   green "Docker: $(docker --version)"
 
   ensure_docker
 
+  # Install Docker Compose if missing
   if [ -z "$(compose_cmd)" ]; then
-    red "Docker Compose not found."
+    yellow "Docker Compose not found. Installing..."
     case "$(get_os)" in
-      mac|wsl) echo "Docker Desktop includes Compose. Make sure it's up to date." ;;
-      linux)   echo "Install: sudo dnf install docker-compose   (or apt install docker-compose)" ;;
+      mac|wsl)
+        red "Docker Desktop includes Compose. Make sure it's up to date."
+        exit 1
+        ;;
+      linux)
+        if command -v dnf &>/dev/null; then
+          elevate dnf install -y docker-compose
+        elif command -v apt-get &>/dev/null; then
+          elevate apt-get install -y docker-compose
+        elif command -v pacman &>/dev/null; then
+          elevate pacman -S --noconfirm docker-compose
+        else
+          red "Could not detect package manager. Install docker-compose manually."
+          exit 1
+        fi
+        ;;
     esac
-    exit 1
+    if [ -z "$(compose_cmd)" ]; then
+      red "Docker Compose installation failed."
+      exit 1
+    fi
+    green "Docker Compose installed."
   fi
   green "Docker Compose: found"
 

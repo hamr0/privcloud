@@ -4,6 +4,17 @@ Self-hosted photo backup. Own your photos, no cloud subscriptions.
 
 Uses [Immich](https://immich.app/) — an open-source Google Photos alternative with face recognition, smart search, and a proper iPhone app.
 
+## Prerequisites
+
+1. **Docker** — install it first, the script handles the rest
+   - Linux: `sudo dnf install docker docker-compose` (or `apt install docker.io docker-compose`)
+   - Mac: `brew install --cask docker`
+   - WSL: [Docker Desktop for Windows](https://docker.com/products/docker-desktop) with WSL backend
+
+2. **Immich app** on your iPhone — [App Store link](https://apps.apple.com/app/immich/id1613945652)
+
+That's it. The `install` command handles Docker startup, permissions, SELinux, storage setup, and pulling images.
+
 ## Quick Start
 
 ```bash
@@ -12,52 +23,36 @@ cd privcloud
 ./privcloud
 ```
 
-That's it. You get a menu:
+Pick `install`, then `start`. Open http://localhost:2283, create your account, connect the iPhone app.
 
 ```
-privcloud v0.1.0 — self-hosted photo backup
-
   1) install   Check prerequisites, pull images, set up config
   2) start     Start privcloud
   3) stop      Stop privcloud
-  4) status    Show what's running
+  4) status    Show status and diagnostics
   5) config    Change photo storage location
-  6) doctor    Diagnose issues
   0) exit
-
-Choose [1-6]:
 ```
-
-Run `install` first, then `start`. Open http://localhost:2283, create your account, connect the Immich iPhone app.
 
 Commands also work directly: `./privcloud start`, `./privcloud stop`, etc.
 
 ## How It Works
 
-1. `privcloud start` — spins up Immich (photo server, face recognition ML, database)
+1. `privcloud start` — starts Immich (photo server, face recognition, database)
 2. Open Immich app on iPhone — photos sync over WiFi to your storage
 3. Browse, search, organize in the web UI
-4. `privcloud stop` when done — photos stay on disk
+4. `privcloud stop` — stops everything (photos stay on disk)
 
 No always-on server needed. Run it when you want to backup, shut it down when done.
 
-## Requirements
-
-- Docker + Docker Compose
-- ~4 GB RAM when running
-- Storage for your photos (local drive, external HDD, whatever)
-
-## Platforms
-
-Works on Linux, macOS, and WSL. The `privcloud` script handles platform differences (SELinux on Fedora, Docker Desktop on Mac, etc).
+Works on Linux, macOS, and WSL.
 
 ## iPhone Setup
 
-1. Install **Immich** from the App Store
-2. Server URL: `http://<your-computer-ip>:2283` (shown by `privcloud start`)
-3. Login with the account you created in the web UI
-4. Enable auto backup in app settings
-5. Both devices must be on the same WiFi
+1. Server URL: `http://<your-computer-ip>:2283` (shown by `privcloud start`)
+2. Login with the account you created in the web UI
+3. Enable auto backup in app settings
+4. Both devices must be on the same WiFi
 
 ## Migrating from Google Photos
 

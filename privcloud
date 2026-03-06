@@ -475,6 +475,115 @@ EOF
   echo "  Database: $db_loc"
 }
 
+cmd_upload() {
+  bold "Upload Photos to privcloud"
+  echo ""
+
+  # Check if privcloud is running
+  if ! curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; then
+    red "privcloud is not running. Start it first: privcloud start"
+    return 1
+  fi
+
+  # Check for immich CLI
+  local immich_bin=""
+  if command -v immich &>/dev/null; then
+    immich_bin="immich"
+  elif [ -x "$HOME/.local/bin/immich" ]; then
+    immich_bin="$HOME/.local/bin/immich"
+  else
+    yellow "Immich CLI not found. Installing..."
+    npm i -g @immich/cli --prefix "$HOME/.local" 2>&1 | tail -3
+    if [ -x "$HOME/.local/bin/immich" ]; then
+      immich_bin="$HOME/.local/bin/immich"
+    else
+      red "Failed to install Immich CLI. Install manually: npm i -g @immich/cli"
+      return 1
+    fi
+  fi
+  green "Immich CLI: $($immich_bin --version)"
+  echo ""
+
+  # Get API key
+  local api_key
+  printf "API key (from http://localhost:2283 → Account Settings → API Keys): "
+  read -r api_key
+
+  if [ -z "$api_key" ]; then
+    red "No API key provided."
+    return 1
+  fi
+
+  # Validate key
+  if ! curl -sf -H "x-api-key: $api_key" http://localhost:2283/api/users/me &>/dev/null; then
+    red "Invalid API key. Check and try again."
+    return 1
+  fi
+  green "API key valid."
+  echo ""
+
+  # Get photo path
+  local photo_path
+  printf "Path to photos folder: "
+  read -r photo_path
+  photo_path="${photo_path/#\~/$HOME}"
+  # Strip quotes the user may have pasted
+  photo_path="${photo_path//\'/}"
+  photo_path="${photo_path//\"/}"
+
+  if [ -z "$photo_path" ] || [ ! -d "$photo_path" ]; then
+    red "Not a valid directory: $photo_path"
+    return 1
+  fi
+
+  local file_count
+  file_count="$(find "$photo_path" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.heic' -o -iname '*.heif' -o -iname '*.gif' -o -iname '*.mp4' -o -iname '*.mov' -o -iname '*.avi' \) | wc -l)"
+  echo ""
+  bold "Ready to upload $file_count media files from:"
+  echo "  $photo_path"
+  echo ""
+  printf "Continue? [Y/n]: "
+  read -r confirm
+  if [[ "$confirm" =~ ^[Nn] ]]; then
+    yellow "Cancelled."
+    return 0
+  fi
+
+  echo ""
+  $immich_bin upload \
+    --url http://localhost:2283 \
+    --key "$api_key" \
+    --recursive \
+    "$photo_path"
+
+  echo ""
+  green "Upload complete. Browse your photos at http://localhost:2283"
+}
+
+cmd_fix_gp() {
+  bold "Google Photos Metadata Fix"
+  echo ""
+  echo "Restores dates and GPS coordinates that Google strips from Takeout exports."
+  echo ""
+
+  local input_path
+  printf "Path to folder with takeout zips (or a single .zip): "
+  read -r input_path
+  input_path="${input_path/#\~/$HOME}"
+
+  if [ -z "$input_path" ]; then
+    red "No path provided."
+    return 1
+  fi
+
+  if [ ! -e "$input_path" ]; then
+    red "Not found: $input_path"
+    return 1
+  fi
+
+  bash "$SCRIPT_DIR/google-takeout-fix.sh" "$input_path"
+}
+
 cmd_menu() {
   echo ""
   bold "            _            _                 _"
@@ -492,9 +601,11 @@ cmd_menu() {
   echo "  3) stop      Stop privcloud"
   echo "  4) status    Show status and diagnostics"
   echo "  5) config    Change photo storage location"
+  echo "  6) upload    Upload photos to privcloud"
+  echo "  7) fix-gp    Fix Google Photos metadata (Takeout export)"
   echo "  0) exit"
   echo ""
-  printf "Choose [0-5]: "
+  printf "Choose [0-7]: "
   read -r choice
   case "$choice" in
     1|install)  cmd_install ;;
@@ -502,6 +613,8 @@ cmd_menu() {
     3|stop)     cmd_stop ;;
     4|status)   cmd_status ;;
     5|config)   cmd_config ;;
+    6|upload)   cmd_upload ;;
+    7|fix-gp)   cmd_fix_gp ;;
     0|exit|q)   exit 0 ;;
     *)          red "Invalid choice."; cmd_menu ;;
   esac
@@ -519,6 +632,8 @@ case "${1:-}" in
   stop)    cmd_stop ;;
   status)  cmd_status ;;
   config)  cmd_config ;;
+  upload)  cmd_upload ;;
+  fix-gp)  cmd_fix_gp ;;
   --help|-h) cmd_menu ;;
   "")      cmd_menu ;;
   *)

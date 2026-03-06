@@ -44,10 +44,12 @@ Pick `install`, then `start`. Open http://localhost:2283, create your account, c
   3) stop      Stop privcloud
   4) status    Show status and diagnostics
   5) config    Change photo storage location
+  6) upload    Upload photos to privcloud
+  7) fix-gp    Fix Google Photos metadata (Takeout export)
   0) exit
 ```
 
-Commands also work directly: `./privcloud start`, `./privcloud stop`, etc.
+Commands also work directly: `./privcloud start`, `./privcloud upload`, `./privcloud fix-gp`, etc.
 
 ## How It Works
 
@@ -69,12 +71,13 @@ Works on Linux, macOS, and WSL.
 
 ## Migrating from Google Photos
 
+Google Takeout strips metadata from your photos — dates get separated into JSON sidecar files with inconsistent, truncated names. The `fix-gp` command handles all of it.
+
 1. Export via [Google Takeout](https://takeout.google.com) (select Google Photos)
-2. Upload to Immich via web UI (drag and drop) or CLI:
-   ```bash
-   npm i -g @immich/cli
-   immich upload --server http://localhost:2283 --key YOUR_API_KEY /path/to/takeout
-   ```
+2. Fix metadata: `./privcloud fix-gp` — point it at the folder with your takeout zips
+3. Upload: `./privcloud upload` — prompts for your API key and photo folder
+
+The fix restores `DateTimeOriginal`, `DateTimeDigitized`, and GPS coordinates into JPEG EXIF data, and sets correct file modification times on all media files (HEIC, MOV, MP4, etc.).
 
 ## Features (via Immich)
 

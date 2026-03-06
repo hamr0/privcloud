@@ -581,7 +581,7 @@ cmd_fix_gp() {
     return 1
   fi
 
-  bash "$SCRIPT_DIR/google-takeout-fix.sh" "$input_path"
+  bash "$SCRIPT_DIR/scripts/google-takeout-fix.sh" "$input_path"
 }
 
 cmd_menu() {

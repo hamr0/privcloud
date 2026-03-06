@@ -25,7 +25,7 @@ The `install` command handles everything else — Docker, Docker Compose, permis
 **One-liner:**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hamr0/privcloud/main/install.sh | bash && privcloud
+curl -fsSL https://raw.githubusercontent.com/hamr0/privcloud/main/scripts/install.sh | bash && privcloud
 ```
 
 **Or clone:**

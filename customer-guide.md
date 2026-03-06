@@ -81,7 +81,7 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 
 ```bash
 # One-liner install
-curl -fsSL https://raw.githubusercontent.com/hamr0/privcloud/main/install.sh | bash && privcloud
+curl -fsSL https://raw.githubusercontent.com/hamr0/privcloud/main/scripts/install.sh | bash && privcloud
 
 # Or clone
 git clone https://github.com/hamr0/privcloud.git

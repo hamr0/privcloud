@@ -18,7 +18,7 @@ Apple wants $3/month for iCloud. Google strips your metadata and caps your stora
    - Mac: `brew install --cask docker`
    - WSL: [Docker Desktop for Windows](https://docker.com/products/docker-desktop) with WSL backend
 
-2. **Immich app** on your iPhone — [App Store link](https://apps.apple.com/app/immich/id1613945652)
+2. **Immich app** on your phone — [iPhone](https://apps.apple.com/app/immich/id1613945652) / [Android](https://play.google.com/store/apps/details?id=app.alextran.immich)
 
 That's it. The `install` command handles Docker startup, permissions, SELinux, storage setup, and pulling images.
 
@@ -38,7 +38,7 @@ cd privcloud
 ./privcloud
 ```
 
-Pick `install`, then `start`. Open http://localhost:2283, create your account, connect the iPhone app.
+Pick `install`, then `start`. Open http://localhost:2283, create your account, connect the Immich app on your phone.
 
 ```
   1) install   Check prerequisites, pull images, set up config
@@ -54,7 +54,7 @@ Commands also work directly: `./privcloud start`, `./privcloud stop`, etc.
 ## How It Works
 
 1. `privcloud start` — starts Immich (photo server, face recognition, database)
-2. Open Immich app on iPhone — photos sync over WiFi to your storage
+2. Open Immich app on your phone — photos sync over WiFi to your storage
 3. Browse, search, organize in the web UI
 4. `privcloud stop` — stops everything (photos stay on disk)
 
@@ -62,7 +62,7 @@ No always-on server needed. Run it when you want to backup, shut it down when do
 
 Works on Linux, macOS, and WSL.
 
-## iPhone Setup
+## Phone Setup
 
 1. Server URL: `http://<your-computer-ip>:2283` (shown by `privcloud start`)
 2. Login with the account you created in the web UI

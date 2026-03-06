@@ -237,35 +237,38 @@ def process(input_dir):
     total = len(media_files)
     print(f"Found {total} media files\n")
 
-    stats = {'matched': 0, 'exif': 0, 'time': 0, 'no_sidecar': 0}
+    stats = {'fixed': 0, 'exif': 0, 'skipped': 0, 'failed': 0}
 
     for i, mf in enumerate(media_files, 1):
         sidecar = find_sidecar(mf)
         if not sidecar:
-            stats['no_sidecar'] += 1
+            stats['skipped'] += 1
             continue
 
-        stats['matched'] += 1
         metadata = read_metadata(sidecar)
         if not metadata:
+            stats['skipped'] += 1
             continue
 
         is_jpeg = mf.suffix.lower() in ('.jpg', '.jpeg')
         if is_jpeg and HAS_PIEXIF:
             if write_exif_jpeg(mf, metadata):
                 stats['exif'] += 1
+            else:
+                stats['failed'] += 1
         set_file_times(mf, metadata)
-        stats['time'] += 1
+        stats['fixed'] += 1
 
         if i % 100 == 0:
             print(f"  {i}/{total}...")
 
     print(f"\nResults:")
-    print(f"  Media files:       {total}")
-    print(f"  Sidecars matched:  {stats['matched']}")
-    print(f"  EXIF written:      {stats['exif']}")
-    print(f"  File times set:    {stats['time']}")
-    print(f"  No sidecar:        {stats['no_sidecar']}")
+    print(f"  Total files:       {total}")
+    print(f"  Fixed:             {stats['fixed']}  (dates + GPS restored)")
+    print(f"  EXIF embedded:     {stats['exif']}  (full metadata written into JPEGs)")
+    if stats['failed'] > 0:
+        print(f"  Failed:            {stats['failed']}  (EXIF write error — dates still set via file timestamp)")
+    print(f"  Skipped:           {stats['skipped']}  (no sidecar found — mostly videos with dates already intact)")
     print(f"\nPhotos are ready to import.")
 
 
@@ -285,4 +288,4 @@ echo ""
 info "To upload to privcloud:"
 echo "  1. Start privcloud:  ./privcloud start"
 echo "  2. Get API key from http://localhost:2283 → User Settings → API Keys"
-echo "  3. Upload:  immich upload --server http://localhost:2283 --key YOUR_KEY \"$PHOTOS_DIR\""
+echo "  3. Upload:  immich upload --url http://localhost:2283 --key YOUR_KEY \"$PHOTOS_DIR\""

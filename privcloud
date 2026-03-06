@@ -1,0 +1,548 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# privcloud — self-hosted photo backup
+# https://github.com/hamr0/privcloud
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/.env"
+COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
+VERSION="0.1.0"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+red()    { printf "\033[31m%s\033[0m\n" "$1"; }
+green()  { printf "\033[32m%s\033[0m\n" "$1"; }
+yellow() { printf "\033[33m%s\033[0m\n" "$1"; }
+bold()   { printf "\033[1m%s\033[0m\n" "$1"; }
+
+get_os() {
+  case "$(uname -s)" in
+    Linux*)
+      if grep -qi microsoft /proc/version 2>/dev/null; then
+        echo "wsl"
+      else
+        echo "linux"
+      fi
+      ;;
+    Darwin*) echo "mac" ;;
+    *)       echo "unknown" ;;
+  esac
+}
+
+get_ip() {
+  case "$(get_os)" in
+    mac) ipconfig getifaddr en0 2>/dev/null || echo "localhost" ;;
+    *)   hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost" ;;
+  esac
+}
+
+needs_selinux() {
+  [ "$(get_os)" = "linux" ] && command -v getenforce &>/dev/null && [ "$(getenforce 2>/dev/null)" = "Enforcing" ]
+}
+
+compose_cmd() {
+  if docker compose version &>/dev/null; then
+    echo "docker compose"
+  elif docker-compose version &>/dev/null; then
+    echo "docker-compose"
+  else
+    echo ""
+  fi
+}
+
+run_compose() {
+  local cc
+  cc="$(compose_cmd)"
+  if [ -z "$cc" ]; then
+    red "Docker Compose not found."
+    exit 1
+  fi
+  $cc -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
+}
+
+env_get() {
+  grep "^${1}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2-
+}
+
+# Patch :Z into compose volume mounts for SELinux, or remove it for other OS.
+# Runs every time before compose commands so the file always matches the OS.
+patch_selinux() {
+  if needs_selinux; then
+    # Add :Z to host volume mounts that don't already have it
+    sed -i.bak \
+      -e 's|\(\${UPLOAD_LOCATION}:/usr/src/app/upload\)$|\1:Z|' \
+      -e 's|\(\${DB_DATA_LOCATION}:/var/lib/postgresql/data\)$|\1:Z|' \
+      "$COMPOSE_FILE" && rm -f "${COMPOSE_FILE}.bak"
+  else
+    # Remove :Z if present (mac/wsl don't support it)
+    sed -i.bak \
+      -e 's|\(\${UPLOAD_LOCATION}:/usr/src/app/upload\):Z|\1|' \
+      -e 's|\(\${DB_DATA_LOCATION}:/var/lib/postgresql/data\):Z|\1|' \
+      "$COMPOSE_FILE" && rm -f "${COMPOSE_FILE}.bak"
+  fi
+}
+
+# Fix storage directory permissions for Docker containers
+fix_permissions() {
+  local upload_loc db_loc
+  upload_loc="$(env_get UPLOAD_LOCATION)"
+  db_loc="$(env_get DB_DATA_LOCATION)"
+
+  mkdir -p "$upload_loc" "$db_loc"
+
+  # Postgres container runs as uid 999. Ensure it can write.
+  if [ "$(stat -c '%a' "$db_loc" 2>/dev/null || stat -f '%Lp' "$db_loc" 2>/dev/null)" != "777" ]; then
+    chmod 777 "$db_loc" 2>/dev/null || true
+  fi
+
+  # Upload dir needs to be writable by container uid 1000
+  chmod 777 "$upload_loc" 2>/dev/null || true
+}
+
+elevate() {
+  if sudo -n true 2>/dev/null; then
+    sudo "$@"
+  elif command -v pkexec &>/dev/null; then
+    pkexec "$@"
+  else
+    sudo "$@"
+  fi
+}
+
+# Re-exec the entire script under sg docker so all docker calls work,
+# even if the user hasn't logged out since being added to the group.
+ensure_docker_group() {
+  # Already in docker group — nothing to do
+  if docker info &>/dev/null; then
+    return 0
+  fi
+
+  # Check if user is in docker group but shell doesn't have it yet
+  if id -nG "$USER" 2>/dev/null | grep -qw docker; then
+    exec sg docker "$0 --reexec $*"
+  fi
+
+  # User not in docker group at all — add them and re-exec
+  if getent group docker &>/dev/null; then
+    yellow "Adding you to the docker group..."
+    elevate usermod -aG docker "$USER"
+    exec sg docker "$0 --reexec $*"
+  fi
+}
+
+ensure_docker() {
+  local args="$*"
+
+  # On mac/wsl, no group shenanigans needed
+  if [ "$(get_os)" = "mac" ] || [ "$(get_os)" = "wsl" ]; then
+    if docker info &>/dev/null; then
+      return 0
+    fi
+    case "$(get_os)" in
+      mac)
+        yellow "Starting Docker Desktop..."
+        open -a Docker
+        local wait=0
+        while ! docker info &>/dev/null && [ $wait -lt 30 ]; do
+          sleep 1; wait=$((wait + 1))
+        done
+        ;;
+      wsl)
+        red "Start Docker Desktop for Windows, then try again."
+        exit 1
+        ;;
+    esac
+    if docker info &>/dev/null; then
+      green "Docker started."
+      return 0
+    fi
+    red "Could not start Docker."
+    exit 1
+  fi
+
+  # Linux: fix group first, then check daemon
+  ensure_docker_group "$args"
+
+  if docker info &>/dev/null; then
+    return 0
+  fi
+
+  # Daemon not running — start it
+  yellow "Docker not running. Starting..."
+  elevate systemctl start docker
+  sleep 2
+
+  if docker info &>/dev/null; then
+    green "Docker started."
+    return 0
+  fi
+
+  # Maybe started but group still not active
+  ensure_docker_group "$args"
+
+  if docker info &>/dev/null; then
+    green "Docker started."
+    return 0
+  fi
+
+  red "Could not start Docker. Start it manually and try again."
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+cmd_install() {
+  bold "privcloud install"
+  echo ""
+
+  # Check Docker
+  if ! command -v docker &>/dev/null; then
+    red "Docker not found."
+    echo ""
+    case "$(get_os)" in
+      mac)   echo "Install: brew install --cask docker" ;;
+      wsl)   echo "Install Docker Desktop for Windows with WSL backend" ;;
+      linux) echo "Install: sudo dnf install docker   (or apt install docker.io)" ;;
+    esac
+    exit 1
+  fi
+  green "Docker: $(docker --version)"
+
+  ensure_docker "install"
+
+  # Check Docker Compose
+  if [ -z "$(compose_cmd)" ]; then
+    red "Docker Compose not found."
+    case "$(get_os)" in
+      mac|wsl) echo "Docker Desktop includes Compose. Make sure it's up to date." ;;
+      linux)   echo "Install: sudo dnf install docker-compose   (or apt install docker-compose)" ;;
+    esac
+    exit 1
+  fi
+  green "Docker Compose: found"
+
+  # Check user can run docker without sudo
+  if [ "$(get_os)" != "mac" ] && ! docker ps &>/dev/null; then
+    yellow "Your user can't run Docker. Adding to docker group..."
+    elevate usermod -aG docker "$USER"
+    green "Added to docker group. You may need to log out and back in."
+  fi
+
+  # Set up .env if first time
+  if [ ! -f "$ENV_FILE" ]; then
+    echo ""
+    bold "First-time setup"
+    echo ""
+    cmd_config
+  else
+    green "Config: $(env_get UPLOAD_LOCATION)"
+  fi
+
+  # Platform fixes
+  patch_selinux
+  fix_permissions
+
+  if needs_selinux; then
+    green "SELinux: patched"
+  fi
+
+  # Pull images
+  echo ""
+  bold "Pulling images (first time takes a few minutes)..."
+  run_compose pull
+  echo ""
+  green "Install complete. Run: privcloud start"
+}
+
+cmd_start() {
+  if [ ! -f "$ENV_FILE" ]; then
+    red "Not set up yet. Run: privcloud install"
+    exit 1
+  fi
+
+  ensure_docker "start"
+  bold "privcloud start"
+  echo ""
+
+  # Already running? Just show the URLs
+  if curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; then
+    green "privcloud is already running."
+    echo ""
+    local ip
+    ip="$(get_ip)"
+    bold "Web UI:      http://localhost:2283"
+    bold "iPhone app:  http://${ip}:2283"
+    return 0
+  fi
+
+  patch_selinux
+  fix_permissions
+
+  run_compose up -d
+
+  echo ""
+  printf "Waiting for Immich"
+  local attempts=0
+  while [ $attempts -lt 30 ]; do
+    if curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; then
+      echo ""
+      echo ""
+      green "privcloud is running."
+      echo ""
+      local ip
+      ip="$(get_ip)"
+      bold "Web UI:      http://localhost:2283"
+      bold "iPhone app:  http://${ip}:2283"
+      echo ""
+      echo "Both devices must be on the same WiFi."
+      echo "Stop with: privcloud stop"
+      return 0
+    fi
+    sleep 2
+    attempts=$((attempts + 1))
+    printf "."
+  done
+  echo ""
+  yellow "Taking longer than expected. Run: privcloud doctor"
+}
+
+cmd_stop() {
+  ensure_docker "stop"
+  bold "privcloud stop"
+  echo ""
+  run_compose down
+  green "Stopped. Your photos are safe on disk."
+}
+
+cmd_status() {
+  ensure_docker "status"
+  bold "privcloud status"
+  echo ""
+
+  run_compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null
+
+  echo ""
+  local ip
+  ip="$(get_ip)"
+  if curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; then
+    green "privcloud is running"
+  else
+    yellow "privcloud is not responding"
+  fi
+  echo ""
+  bold "Web UI:      http://localhost:2283"
+  bold "iPhone app:  http://${ip}:2283"
+  echo ""
+  echo "Photos:  $(env_get UPLOAD_LOCATION)"
+}
+
+cmd_doctor() {
+  ensure_docker "doctor"
+  bold "privcloud doctor"
+  echo ""
+
+  # --- System ---
+  bold "System"
+  echo "  OS:       $(get_os) ($(uname -s) $(uname -r))"
+  if command -v getenforce &>/dev/null; then
+    local se
+    se="$(getenforce 2>/dev/null)"
+    if [ "$se" = "Enforcing" ]; then
+      if grep -q ':Z' "$COMPOSE_FILE" 2>/dev/null; then
+        green "  SELinux:  Enforcing (patched)"
+      else
+        red "  SELinux:  Enforcing (NOT patched — run: privcloud install)"
+      fi
+    else
+      echo "  SELinux:  $se"
+    fi
+  fi
+  echo ""
+
+  # --- Docker ---
+  bold "Docker"
+  if command -v docker &>/dev/null; then
+    green "  Engine:   $(docker --version | sed 's/Docker version //')"
+  else
+    red "  Engine:   not installed"
+  fi
+  local cc
+  cc="$(compose_cmd)"
+  if [ -n "$cc" ]; then
+    green "  Compose:  found"
+  else
+    red "  Compose:  not found"
+  fi
+  if docker info &>/dev/null; then
+    green "  Daemon:   running"
+  else
+    red "  Daemon:   not running"
+  fi
+  echo ""
+
+  # --- Storage ---
+  bold "Storage"
+  local upload_loc db_loc
+  upload_loc="$(env_get UPLOAD_LOCATION 2>/dev/null || echo "")"
+  db_loc="$(env_get DB_DATA_LOCATION 2>/dev/null || echo "")"
+
+  if [ -n "$upload_loc" ] && [ -d "$upload_loc" ]; then
+    local usage avail
+    usage="$(du -sh "$upload_loc" 2>/dev/null | awk '{print $1}')"
+    avail="$(df -h "$upload_loc" 2>/dev/null | awk 'NR==2{print $4}')"
+    green "  Photos:   $upload_loc ($usage used, $avail free)"
+  elif [ -n "$upload_loc" ]; then
+    red "  Photos:   $upload_loc (missing)"
+  else
+    red "  Photos:   not configured"
+  fi
+
+  if [ -n "$db_loc" ] && [ -d "$db_loc" ]; then
+    green "  Database: $db_loc"
+  elif [ -n "$db_loc" ]; then
+    red "  Database: $db_loc (missing)"
+  fi
+
+  echo "  Version:  $(env_get IMMICH_VERSION 2>/dev/null || echo "not set")"
+  echo "  Change:   privcloud config"
+  echo ""
+
+  # --- Containers ---
+  bold "Containers"
+  if docker info &>/dev/null && [ -n "$cc" ]; then
+    local container_output
+    container_output="$(run_compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null)"
+    if [ -n "$container_output" ]; then
+      echo "$container_output" | while IFS= read -r line; do
+        if echo "$line" | grep -q "(healthy)"; then
+          green "  $line"
+        elif echo "$line" | grep -q "NAME"; then
+          echo "  $line"
+        else
+          yellow "  $line"
+        fi
+      done
+    else
+      yellow "  Not running"
+    fi
+  else
+    yellow "  Cannot check (Docker not available)"
+  fi
+  echo ""
+
+  # --- Network ---
+  bold "Network"
+  local ip
+  ip="$(get_ip)"
+  echo "  Local:    http://localhost:2283"
+  echo "  LAN:      http://${ip}:2283"
+  if curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; then
+    green "  API:      responding"
+  else
+    yellow "  API:      not responding"
+  fi
+}
+
+cmd_config() {
+  bold "privcloud config"
+  echo ""
+
+  local current_loc
+  current_loc="$(env_get UPLOAD_LOCATION 2>/dev/null || echo "")"
+  if [ -n "$current_loc" ]; then
+    echo "Current photo storage: $current_loc"
+  fi
+
+  local default_loc="${current_loc:-$HOME/privcloud/photos}"
+  printf "Photo storage path [%s]: " "$default_loc"
+  read -r upload_loc
+  upload_loc="${upload_loc:-$default_loc}"
+  upload_loc="${upload_loc/#\~/$HOME}"
+
+  if ! mkdir -p "$upload_loc" 2>/dev/null; then
+    red "Cannot create directory: $upload_loc"
+    exit 1
+  fi
+
+  local db_loc
+  db_loc="$(dirname "$upload_loc")/postgres"
+  mkdir -p "$db_loc"
+
+  # Keep existing password or generate new one
+  local db_pass
+  db_pass="$(env_get DB_PASSWORD 2>/dev/null || echo "")"
+  if [ -z "$db_pass" ] || [ "$db_pass" = "changeme_use_a_real_password" ]; then
+    db_pass="privcloud_$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)"
+  fi
+
+  cat > "$ENV_FILE" << EOF
+UPLOAD_LOCATION=${upload_loc}
+DB_DATA_LOCATION=${db_loc}
+IMMICH_VERSION=release
+DB_PASSWORD=${db_pass}
+DB_USERNAME=postgres
+DB_DATABASE_NAME=immich
+EOF
+
+  green "Config saved."
+  echo "  Photos:   $upload_loc"
+  echo "  Database: $db_loc"
+}
+
+cmd_menu() {
+  bold "privcloud v${VERSION} — self-hosted photo backup"
+  echo ""
+  echo "  1) install   Check prerequisites, pull images, set up config"
+  echo "  2) start     Start privcloud"
+  echo "  3) stop      Stop privcloud"
+  echo "  4) status    Show what's running"
+  echo "  5) config    Change photo storage location"
+  echo "  6) doctor    Diagnose issues"
+  echo "  0) exit"
+  echo ""
+  printf "Choose [1-6]: "
+  read -r choice
+  case "$choice" in
+    1|install)  cmd_install ;;
+    2|start)    cmd_start ;;
+    3|stop)     cmd_stop ;;
+    4|status)   cmd_status ;;
+    5|config)   cmd_config ;;
+    6|doctor)   cmd_doctor ;;
+    0|exit|q)   exit 0 ;;
+    *)          red "Invalid choice."; cmd_menu ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+cd "$SCRIPT_DIR"
+
+# --reexec is used internally after sg docker re-exec, skip to the command
+ARG="${1:-}"
+if [ "$ARG" = "--reexec" ]; then
+  ARG="${2:-}"
+fi
+
+case "$ARG" in
+  install) cmd_install ;;
+  start)   cmd_start ;;
+  stop)    cmd_stop ;;
+  status)  cmd_status ;;
+  config)  cmd_config ;;
+  doctor)  cmd_doctor ;;
+  --help|-h) cmd_menu ;;
+  "")      cmd_menu ;;
+  *)
+    red "Unknown command: $ARG"
+    cmd_menu
+    exit 1
+    ;;
+esac

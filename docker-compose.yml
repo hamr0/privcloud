@@ -1,6 +1,6 @@
 # Immich Docker Compose — privcloud
-# Based on https://immich.app/docs/install/docker-compose
-# Run: docker compose up -d
+# Managed by the privcloud CLI
+# Run: privcloud start
 # Web UI: http://localhost:2283
 
 name: privcloud
@@ -10,7 +10,7 @@ services:
     container_name: immich_server
     image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
     volumes:
-      - ${UPLOAD_LOCATION}:/usr/src/app/upload
+      - ${UPLOAD_LOCATION}:/usr/src/app/upload:Z
       - /etc/localtime:/etc/localtime:ro
     env_file:
       - .env
@@ -21,7 +21,7 @@ services:
       - database
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:2283/api/server/ping"]
+      test: ["CMD-SHELL", "curl -f http://localhost:2283/api/server/ping || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -59,7 +59,7 @@ services:
       POSTGRES_DB: ${DB_DATABASE_NAME}
       POSTGRES_INITDB_ARGS: "--data-checksums"
     volumes:
-      - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
+      - ${DB_DATA_LOCATION}:/var/lib/postgresql/data:Z
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready --dbname='${DB_DATABASE_NAME}' --username='${DB_USERNAME}'"]

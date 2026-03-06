@@ -504,21 +504,30 @@ cmd_upload() {
   green "Immich CLI: $($immich_bin --version)"
   echo ""
 
-  # Get API key
-  local api_key
-  printf "API key (from http://localhost:2283 → Account Settings → API Keys): "
-  read -r api_key
+  # Get API key (3 attempts)
+  local api_key attempts=0
+  while [ $attempts -lt 3 ]; do
+    printf "API key (from http://localhost:2283 → Account Settings → API Keys): "
+    read -r api_key
 
-  if [ -z "$api_key" ]; then
-    red "No API key provided."
-    return 1
-  fi
+    if [ -z "$api_key" ]; then
+      red "No API key provided."
+      attempts=$((attempts + 1))
+      continue
+    fi
 
-  # Validate key
-  if ! curl -sf -H "x-api-key: $api_key" http://localhost:2283/api/users/me &>/dev/null; then
-    red "Invalid API key. Check and try again."
-    return 1
-  fi
+    if curl -sf -H "x-api-key: $api_key" http://localhost:2283/api/users/me &>/dev/null; then
+      break
+    fi
+
+    attempts=$((attempts + 1))
+    if [ $attempts -lt 3 ]; then
+      red "Invalid API key. Try again ($((3 - attempts)) attempts left)."
+    else
+      red "Invalid API key. Giving up."
+      return 1
+    fi
+  done
   green "API key valid."
   echo ""
 

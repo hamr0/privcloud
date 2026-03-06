@@ -427,7 +427,16 @@ EOF
 }
 
 cmd_menu() {
-  bold "privcloud v${VERSION} — self-hosted photo backup"
+  echo ""
+  bold "            _            _                 _"
+  bold "  _ __ _ __(_)_   _____ | | ___  _   _  __| |"
+  bold " | '_ \\| '__| \\ \\ / / __|| |/ _ \\| | | |/ _\` |"
+  bold " | |_) | |  | |\\ V / (__ | | (_) | |_| | (_| |"
+  bold " | .__/|_|  |_| \\_/ \\___||_|\\___/ \\__,_|\\__,_|"
+  bold " |_|"
+  echo ""
+  echo "  Your photos. Your storage. No cloud required."
+  echo "  v${VERSION}"
   echo ""
   echo "  1) install   Check prerequisites, pull images, set up config"
   echo "  2) start     Start privcloud"

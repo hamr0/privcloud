@@ -24,6 +24,14 @@ That's it. The `install` command handles Docker startup, permissions, SELinux, s
 
 ## Quick Start
 
+**One-liner:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hamr0/privcloud/main/install.sh | bash && privcloud
+```
+
+**Or clone:**
+
 ```bash
 git clone https://github.com/hamr0/privcloud.git
 cd privcloud

@@ -13,9 +13,12 @@ Apple wants $3/month for iCloud. Google strips your metadata and caps your stora
 
 ## Prerequisites
 
-**Immich app** on your phone — [iPhone](https://apps.apple.com/app/immich/id1613945652) / [Android](https://play.google.com/store/apps/details?id=app.alextran.immich)
+- **Linux, macOS, or WSL** — any modern version
+- **~4 GB RAM** when running
+- **Storage** for your photos — local drive, external HDD, whatever you have
+- **Immich app** on your phone — [iPhone](https://apps.apple.com/app/immich/id1613945652) / [Android](https://play.google.com/store/apps/details?id=app.alextran.immich)
 
-That's it. The `install` command handles everything else — Docker, Docker Compose, permissions, SELinux, storage setup, and pulling images. On WSL, you need [Docker Desktop for Windows](https://docker.com/products/docker-desktop) installed first.
+The `install` command handles everything else — Docker, Docker Compose, permissions, SELinux, storage setup, and pulling images. On WSL, install [Docker Desktop for Windows](https://docker.com/products/docker-desktop) first.
 
 ## Quick Start
 

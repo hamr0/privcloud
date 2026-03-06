@@ -1,8 +1,15 @@
-# privcloud
+```
+           _            _                 _
+ _ __ _ __(_)_   _____ | | ___  _   _  __| |
+| '_ \| '__| \ \ / / __|| |/ _ \| | | |/ _` |
+| |_) | |  | |\ V / (__ | | (_) | |_| | (_| |
+| .__/|_|  |_| \_/ \___||_|\___/ \__,_|\__,_|
+|_|
+```
 
-Self-hosted photo backup. Own your photos, no cloud subscriptions.
+**Your photos. Your storage. No cloud required.**
 
-Uses [Immich](https://immich.app/) — an open-source Google Photos alternative with face recognition, smart search, and a proper iPhone app.
+Apple wants $3/month for iCloud. Google strips your metadata and caps your storage. privcloud runs a full photo server on your machine with one command. Face recognition, smart search, duplicate detection — all local, all yours. Start it when you need it, stop it when you don't. Your photos never leave your drive.
 
 ## Prerequisites
 

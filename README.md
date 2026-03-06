@@ -79,6 +79,8 @@ Google Takeout strips metadata from your photos — dates get separated into JSO
 
 The fix restores `DateTimeOriginal`, `DateTimeDigitized`, and GPS coordinates into JPEG EXIF data, and sets correct file modification times on all media files (HEIC, MOV, MP4, etc.).
 
+For the full walkthrough — migration, organizing, face recognition, backup, troubleshooting — see the **[Customer Guide](customer-guide.md)**.
+
 ## Features (via Immich)
 
 - Face recognition — auto-groups faces, you name them

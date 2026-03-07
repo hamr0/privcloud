@@ -569,6 +569,107 @@ cmd_upload() {
   green "Upload complete. Browse your photos at http://localhost:2283"
 }
 
+cmd_backup() {
+  bold "Backup privcloud"
+  echo ""
+
+  local upload_loc db_loc
+  upload_loc="$(env_get UPLOAD_LOCATION)"
+  db_loc="$(env_get DB_DATA_LOCATION)"
+
+  if [ -z "$upload_loc" ] || [ -z "$db_loc" ]; then
+    red "Not configured yet. Run: privcloud install"
+    return 1
+  fi
+
+  # Show what we're backing up
+  local photos_size db_size
+  photos_size="$(sudo du -sh "$upload_loc" 2>/dev/null | awk '{print $1}' || echo "unknown")"
+  db_size="$(sudo du -sh "$db_loc" 2>/dev/null | awk '{print $1}' || echo "unknown")"
+
+  echo "  Photos:   $upload_loc ($photos_size)"
+  echo "  Database: $db_loc ($db_size)"
+  echo ""
+
+  # Get destination
+  local dest
+  printf "Backup destination (e.g. /run/media/hamr/External): "
+  read -r dest
+  dest="${dest/#\~/$HOME}"
+  dest="${dest//\'/}"
+  dest="${dest//\"/}"
+
+  if [ -z "$dest" ] || [ ! -d "$dest" ]; then
+    red "Not a valid directory: $dest"
+    return 1
+  fi
+
+  local backup_dir="$dest/privcloud-backup"
+  local avail
+  avail="$(df -h "$dest" 2>/dev/null | awk 'NR==2{print $4}')"
+  echo ""
+  echo "  Destination:  $backup_dir"
+  echo "  Available:    $avail"
+  echo ""
+
+  # Check if server is running and stop it
+  local was_running=false
+  if curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; then
+    was_running=true
+    yellow "Stopping privcloud (database must be shut down for a clean backup)..."
+    echo ""
+    run_compose down
+    echo ""
+    green "Stopped."
+  fi
+
+  printf "Start backup? [Y/n]: "
+  read -r confirm
+  if [[ "$confirm" =~ ^[Nn] ]]; then
+    yellow "Cancelled."
+    if $was_running; then
+      echo "Restarting privcloud..."
+      run_compose up -d
+    fi
+    return 0
+  fi
+
+  echo ""
+  mkdir -p "$backup_dir"
+
+  bold "Copying photos ($photos_size)..."
+  sudo cp -a "$upload_loc" "$backup_dir/photos"
+  green "Photos copied."
+
+  bold "Copying database ($db_size)..."
+  sudo cp -a "$db_loc" "$backup_dir/postgres"
+  green "Database copied."
+
+  # Copy .env so restore knows the password and config
+  cp "$ENV_FILE" "$backup_dir/.env" 2>/dev/null
+
+  echo ""
+  green "Backup complete!"
+  echo "  Location: $backup_dir"
+  echo "  Photos:   $backup_dir/photos"
+  echo "  Database: $backup_dir/postgres"
+  echo "  Config:   $backup_dir/.env"
+  echo ""
+  echo "To restore on any machine:"
+  echo "  1. Clone privcloud and run ./privcloud install"
+  echo "  2. Point config to the backed-up photos directory"
+  echo "  3. Copy postgres and .env back, then ./privcloud start"
+
+  if $was_running; then
+    echo ""
+    yellow "Restarting privcloud..."
+    ensure_docker
+    run_compose up -d
+    echo ""
+    green "privcloud is running again."
+  fi
+}
+
 cmd_fix_gp() {
   bold "Google Photos Metadata Fix"
   echo ""
@@ -612,9 +713,10 @@ cmd_menu() {
   echo "  5) config    Change photo storage location"
   echo "  6) upload    Upload photos to privcloud"
   echo "  7) fix-gp    Fix Google Photos metadata (Takeout export)"
+  echo "  8) backup    Backup photos + database to external drive"
   echo "  0) exit"
   echo ""
-  printf "Choose [0-7]: "
+  printf "Choose [0-8]: "
   read -r choice
   case "$choice" in
     1|install)  cmd_install ;;
@@ -624,6 +726,7 @@ cmd_menu() {
     5|config)   cmd_config ;;
     6|upload)   cmd_upload ;;
     7|fix-gp)   cmd_fix_gp ;;
+    8|backup)   cmd_backup ;;
     0|exit|q)   exit 0 ;;
     *)          red "Invalid choice."; cmd_menu ;;
   esac
@@ -643,6 +746,7 @@ case "${1:-}" in
   config)  cmd_config ;;
   upload)  cmd_upload ;;
   fix-gp)  cmd_fix_gp ;;
+  backup)  cmd_backup ;;
   --help|-h) cmd_menu ;;
   "")      cmd_menu ;;
   *)

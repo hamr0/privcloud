@@ -638,11 +638,19 @@ cmd_backup() {
   mkdir -p "$backup_dir"
 
   bold "Copying photos ($photos_size)..."
-  sudo cp -a "$upload_loc" "$backup_dir/photos"
+  if command -v rsync &>/dev/null; then
+    sudo rsync -a --info=progress2 "$upload_loc/" "$backup_dir/photos/"
+  else
+    sudo cp -a "$upload_loc" "$backup_dir/photos"
+  fi
   green "Photos copied."
 
   bold "Copying database ($db_size)..."
-  sudo cp -a "$db_loc" "$backup_dir/postgres"
+  if command -v rsync &>/dev/null; then
+    sudo rsync -a --info=progress2 "$db_loc/" "$backup_dir/postgres/"
+  else
+    sudo cp -a "$db_loc" "$backup_dir/postgres"
+  fi
   green "Database copied."
 
   # Copy .env so restore knows the password and config

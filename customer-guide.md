@@ -55,6 +55,7 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 | `config` | Change where photos are stored |
 | `upload` | Bulk upload photos via Immich CLI with API key validation |
 | `fix-gp` | Fix Google Photos Takeout metadata (dates + GPS) |
+| `backup` | Backup photos + database to external drive with progress |
 
 ### From Immich (the photo server privcloud runs)
 
@@ -542,21 +543,30 @@ Total: ~2-4 GB RAM when running. After initial ML processing, usage drops. The M
 ### How to backup
 
 ```bash
-# Always stop first — ensures the database is in a consistent state
-./privcloud stop
-
-# Option 1: Copy both directories
-cp -a /stuff/privcloud/photos /backup/privcloud-photos
-cp -a /stuff/privcloud/postgres /backup/privcloud-postgres
-
-# Option 2: Tar everything
-tar czf /backup/privcloud-$(date +%Y%m%d).tar.gz \
-  /stuff/privcloud/photos \
-  /stuff/privcloud/postgres
-
-# Start again
-./privcloud start
+./privcloud backup
 ```
+
+The backup command handles everything:
+
+1. Shows your photos and database sizes
+2. Asks for a destination (e.g. `/run/media/hamr/External`)
+3. Stops the server automatically (required for a clean database copy)
+4. Copies photos, database, and config to `privcloud-backup/` at the destination
+5. Shows live progress with percentage (uses rsync)
+6. Restarts the server when done
+
+The backup directory structure:
+
+```
+/your/backup/drive/privcloud-backup/
+  photos/      ← originals, thumbnails, encoded videos
+  postgres/    ← database (faces, albums, search index)
+  .env         ← config + DB password
+```
+
+**Incremental backups:** After the first full backup, subsequent runs only copy files that changed or are new. A weekly backup of 70+ GB takes seconds if you only added a few photos.
+
+**Handles permissions:** The PostgreSQL directory is owned by Docker's internal user. The backup command uses `sudo` automatically so you don't have to deal with permission errors.
 
 ### How often to backup
 
@@ -566,7 +576,7 @@ tar czf /backup/privcloud-$(date +%Y%m%d).tar.gz \
 
 ### Backup to an external drive
 
-The simplest strategy: plug in an external HDD, copy both directories, unplug. You now have a complete, portable copy of your entire photo library that works on any machine with Docker.
+Plug in an external HDD, run `./privcloud backup`, point it at the drive. You now have a complete, portable copy of your entire photo library that works on any machine with Docker.
 
 ---
 

@@ -598,6 +598,7 @@ cmd_backup() {
   dest="${dest/#\~/$HOME}"
   dest="${dest//\'/}"
   dest="${dest//\"/}"
+  dest="${dest%/}"
 
   if [ -z "$dest" ] || [ ! -d "$dest" ]; then
     red "Not a valid directory: $dest"

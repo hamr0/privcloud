@@ -612,9 +612,9 @@ cmd_backup() {
   echo "  Available:    $avail"
   echo ""
 
-  # Check if server is running and stop it
+  # Check if any containers are running and stop them
   local was_running=false
-  if curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; then
+  if run_compose ps --quiet 2>/dev/null | grep -q .; then
     was_running=true
     yellow "Stopping privcloud (database must be shut down for a clean backup)..."
     echo ""
@@ -639,19 +639,45 @@ cmd_backup() {
 
   bold "Copying photos ($photos_size)..."
   if command -v rsync &>/dev/null; then
-    sudo rsync -a --info=progress2 "$upload_loc/" "$backup_dir/photos/"
+    if ! sudo rsync -a --info=progress2 "$upload_loc/" "$backup_dir/photos/"; then
+      red "Failed to copy photos (rsync error)."
+      return 1
+    fi
   else
     sudo cp -a "$upload_loc" "$backup_dir/photos"
   fi
-  green "Photos copied."
+  # Verify something was actually copied
+  local photos_copied
+  photos_copied="$(sudo du -sh "$backup_dir/photos" 2>/dev/null | awk '{print $1}')"
+  green "Photos copied ($photos_copied)."
 
   bold "Copying database ($db_size)..."
+  # Double-check no containers are running (postgres locks its files)
+  if run_compose ps --quiet 2>/dev/null | grep -q .; then
+    red "Containers are still running! Cannot safely copy database."
+    red "Run './privcloud stop' first, then retry backup."
+    return 1
+  fi
   if command -v rsync &>/dev/null; then
-    sudo rsync -a --info=progress2 "$db_loc/" "$backup_dir/postgres/"
+    if ! sudo rsync -a --info=progress2 "$db_loc/" "$backup_dir/postgres/"; then
+      red "Failed to copy database (rsync error)."
+      return 1
+    fi
   else
     sudo cp -a "$db_loc" "$backup_dir/postgres"
   fi
-  green "Database copied."
+  # Verify database was actually copied
+  local db_copied
+  db_copied="$(sudo du -sh "$backup_dir/postgres" 2>/dev/null | awk '{print $1}')"
+  if [ "$db_copied" = "0" ] || [ "$db_copied" = "4.0K" ]; then
+    red "Database backup appears empty ($db_copied). Postgres may still be locked."
+    red "Make sure privcloud is stopped and try again."
+    return 1
+  fi
+  # Make backup readable without root (postgres files are owned by container user)
+  sudo chown -R "$(id -u):$(id -g)" "$backup_dir/postgres"
+  sudo chmod -R u+rw "$backup_dir/postgres"
+  green "Database copied ($db_copied)."
 
   # Copy .env so restore knows the password and config
   cp "$ENV_FILE" "$backup_dir/.env" 2>/dev/null

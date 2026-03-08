@@ -635,11 +635,24 @@ cmd_backup() {
   fi
 
   echo ""
+  echo "Backup mode:"
+  echo "  1) Append — copy new/changed files, keep everything on backup (safe default)"
+  echo "  2) Mirror — exact copy of source, removes files deleted from source"
+  echo ""
+  printf "Choose [1/2] (default: 1): "
+  read -r sync_mode
+  local rsync_delete=""
+  if [ "$sync_mode" = "2" ]; then
+    rsync_delete="--delete"
+    yellow "Mirror mode: files deleted from source will be removed from backup."
+  fi
+
+  echo ""
   mkdir -p "$backup_dir"
 
   bold "Copying photos ($photos_size)..."
   if command -v rsync &>/dev/null; then
-    if ! sudo rsync -a --info=progress2 "$upload_loc/" "$backup_dir/photos/"; then
+    if ! sudo rsync -a $rsync_delete --info=progress2 "$upload_loc/" "$backup_dir/photos/"; then
       red "Failed to copy photos (rsync error)."
       return 1
     fi
@@ -659,7 +672,7 @@ cmd_backup() {
     return 1
   fi
   if command -v rsync &>/dev/null; then
-    if ! sudo rsync -a --info=progress2 "$db_loc/" "$backup_dir/postgres/"; then
+    if ! sudo rsync -a $rsync_delete --info=progress2 "$db_loc/" "$backup_dir/postgres/"; then
       red "Failed to copy database (rsync error)."
       return 1
     fi

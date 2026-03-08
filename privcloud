@@ -584,8 +584,8 @@ cmd_backup() {
 
   # Show what we're backing up
   local photos_size db_size
-  photos_size="$(sudo du -sh "$upload_loc" 2>/dev/null | awk '{print $1}' || echo "unknown")"
-  db_size="$(sudo du -sh "$db_loc" 2>/dev/null | awk '{print $1}' || echo "unknown")"
+  photos_size="$(sudo du -sh --block-size=1G "$upload_loc" 2>/dev/null | awk '{print $1" GB"}' || echo "unknown")"
+  db_size="$(sudo du -sh --block-size=1M "$db_loc" 2>/dev/null | awk '{print $1" MB"}' || echo "unknown")"
 
   echo "  Photos:   $upload_loc ($photos_size)"
   echo "  Database: $db_loc ($db_size)"

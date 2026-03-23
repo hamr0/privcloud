@@ -44,13 +44,14 @@ Pick `install`, then `start`. Open http://localhost:2283, create your account, c
   3) stop      Stop privcloud
   4) status    Show status and diagnostics
   5) config    Change photo storage location
-  6) upload    Upload photos to privcloud
-  7) fix-gp    Fix Google Photos metadata (Takeout export)
-  8) backup    Backup photos + database to external drive
+  6) update    Check for updates and apply
+  7) upload    Upload photos to privcloud
+  8) fix-gp    Fix Google Photos metadata (Takeout export)
+  9) backup    Backup photos + database to external drive
   0) exit
 ```
 
-Commands also work directly: `./privcloud start`, `./privcloud upload`, `./privcloud backup`, etc.
+Commands also work directly: `./privcloud start`, `./privcloud update`, `./privcloud backup`, etc.
 
 ## How It Works
 

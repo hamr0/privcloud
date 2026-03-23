@@ -53,6 +53,7 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 | `stop` | Stops everything (photos stay on disk) |
 | `status` | Shows diagnostics — containers, storage usage, URLs |
 | `config` | Change where photos are stored |
+| `update` | Check for updates and apply |
 | `upload` | Bulk upload photos via Immich CLI with API key validation |
 | `fix-gp` | Fix Google Photos Takeout metadata (dates + GPS) |
 | `backup` | Backup photos + database to external drive with progress |
@@ -619,16 +620,11 @@ The ML container processes new uploads in the background. If you upload 500 phot
 
 ### Keeping Immich updated
 
-privcloud pins to the `release` tag by default. To update:
-
 ```bash
-./privcloud stop
-# Pull latest images
-docker compose -f docker-compose.yml pull
-./privcloud start
+./privcloud update
 ```
 
-Immich handles database migrations automatically on startup.
+This checks for new Immich releases, tells you if you're already up to date, and applies updates with a single confirmation. It pulls the latest images, recreates only the containers that changed, and prunes old images to free disk space. Immich handles database migrations automatically on startup.
 
 ---
 

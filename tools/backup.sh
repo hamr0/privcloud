@@ -73,6 +73,19 @@ if [[ "$confirm" =~ ^[Nn] ]]; then
   exit 0
 fi
 
+echo ""
+echo "Backup mode:"
+echo "  1) Append — copy new/changed files, keep everything on backup (safe default)"
+echo "  2) Mirror — exact copy of source, removes files deleted from source"
+echo ""
+printf "Choose [1/2] (default: 1): "
+read -r sync_mode
+RSYNC_DELETE=""
+if [ "$sync_mode" = "2" ]; then
+  RSYNC_DELETE="--delete"
+  warn "Mirror mode: files deleted from source will be removed from backup."
+fi
+
 # --- Run rsync ----------------------------------------------------------------
 
 echo ""
@@ -80,14 +93,22 @@ info "Starting backup..."
 echo ""
 
 # Try without sudo first, fall back to sudo if permission denied
-if rsync -a --info=progress2 "$SRC" "$DEST" 2>/dev/null; then
+if rsync -a $RSYNC_DELETE --info=progress2 "$SRC" "$DEST" 2>/dev/null; then
   true
 else
   warn "Permission issue detected, retrying with sudo..."
-  sudo rsync -a --info=progress2 "$SRC" "$DEST"
+  if ! sudo rsync -a $RSYNC_DELETE --info=progress2 "$SRC" "$DEST"; then
+    error "Backup failed (rsync error)."
+  fi
+  # Fix ownership so backup is readable without root
+  sudo chown -R "$(id -u):$(id -g)" "$DEST"
+  sudo chmod -R u+rw "$DEST"
 fi
 
+# Verify something was copied
+DEST_SIZE="$(du -sh "$DEST" 2>/dev/null | awk '{print $1}' || sudo du -sh "$DEST" 2>/dev/null | awk '{print $1}' || echo "unknown")"
+
 echo ""
-info "Backup complete!"
+info "Backup complete! ($DEST_SIZE)"
 echo "  From: $SRC"
 echo "  To:   $DEST"

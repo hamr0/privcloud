@@ -718,6 +718,51 @@ cmd_backup() {
   fi
 }
 
+cmd_update() {
+  bold "privcloud update"
+  echo ""
+
+  ensure_docker
+
+  # Snapshot current image IDs
+  local before_server before_ml
+  before_server="$(docker images -q ghcr.io/immich-app/immich-server:release 2>/dev/null || echo "")"
+  before_ml="$(docker images -q ghcr.io/immich-app/immich-machine-learning:release 2>/dev/null || echo "")"
+
+  echo "Checking for updates..."
+  run_compose pull --quiet 2>/dev/null
+
+  local after_server after_ml
+  after_server="$(docker images -q ghcr.io/immich-app/immich-server:release 2>/dev/null || echo "")"
+  after_ml="$(docker images -q ghcr.io/immich-app/immich-machine-learning:release 2>/dev/null || echo "")"
+
+  if [ "$before_server" = "$after_server" ] && [ "$before_ml" = "$after_ml" ]; then
+    green "Already up to date."
+    return 0
+  fi
+
+  echo ""
+  [ "$before_server" != "$after_server" ] && yellow "  Server:           $before_server → $after_server"
+  [ "$before_ml" != "$after_ml" ]         && yellow "  Machine Learning: $before_ml → $after_ml"
+  echo ""
+
+  printf "Apply update? [Y/n]: "
+  read -r confirm
+  if [[ "$confirm" =~ ^[Nn] ]]; then
+    yellow "Cancelled. New images are pulled but containers unchanged."
+    return 0
+  fi
+
+  echo ""
+  run_compose up -d
+
+  echo ""
+  green "Update applied. Pruning old images..."
+  docker image prune -f 2>/dev/null | tail -1
+  echo ""
+  green "Done."
+}
+
 cmd_fix_gp() {
   bold "Google Photos Metadata Fix"
   echo ""
@@ -759,12 +804,13 @@ cmd_menu() {
   echo "  3) stop      Stop privcloud"
   echo "  4) status    Show status and diagnostics"
   echo "  5) config    Change photo storage location"
-  echo "  6) upload    Upload photos to privcloud"
-  echo "  7) fix-gp    Fix Google Photos metadata (Takeout export)"
-  echo "  8) backup    Backup photos + database to external drive"
+  echo "  6) update    Check for updates and apply"
+  echo "  7) upload    Upload photos to privcloud"
+  echo "  8) fix-gp    Fix Google Photos metadata (Takeout export)"
+  echo "  9) backup    Backup photos + database to external drive"
   echo "  0) exit"
   echo ""
-  printf "Choose [0-8]: "
+  printf "Choose [0-9]: "
   read -r choice
   case "$choice" in
     1|install)  cmd_install ;;
@@ -772,9 +818,10 @@ cmd_menu() {
     3|stop)     cmd_stop ;;
     4|status)   cmd_status ;;
     5|config)   cmd_config ;;
-    6|upload)   cmd_upload ;;
-    7|fix-gp)   cmd_fix_gp ;;
-    8|backup)   cmd_backup ;;
+    6|update)   cmd_update ;;
+    7|upload)   cmd_upload ;;
+    8|fix-gp)   cmd_fix_gp ;;
+    9|backup)   cmd_backup ;;
     0|exit|q)   exit 0 ;;
     *)          red "Invalid choice."; cmd_menu ;;
   esac
@@ -792,6 +839,7 @@ case "${1:-}" in
   stop)    cmd_stop ;;
   status)  cmd_status ;;
   config)  cmd_config ;;
+  update)  cmd_update ;;
   upload)  cmd_upload ;;
   fix-gp)  cmd_fix_gp ;;
   backup)  cmd_backup ;;

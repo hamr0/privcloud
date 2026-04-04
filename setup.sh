@@ -402,9 +402,23 @@ step_remotedesktop() {
     info "Connect from any device using an RDP client."
     echo ""
 
-    # Install xrdp
+    # Install xrdp and XFCE session deps
     info "Installing xrdp..."
-    sudo dnf install -y xrdp > /dev/null 2>&1
+    sudo dnf install -y xrdp xfce4-session xfwm4 xfce4-panel xfdesktop > /dev/null 2>&1
+
+    # Configure XFCE as the window manager for xrdp
+    sudo tee /etc/xrdp/startwm.sh > /dev/null << 'XRDPEOF'
+#!/bin/sh
+unset DBUS_SESSION_BUS_ADDRESS
+unset XDG_RUNTIME_DIR
+exec startxfce4
+XRDPEOF
+    sudo chmod +x /etc/xrdp/startwm.sh
+
+    # Disable local display (conflicts with xrdp)
+    sudo systemctl disable --now lightdm 2>/dev/null || true
+    ok "Local display (lightdm) disabled — desktop is now remote-only."
+
     sudo systemctl enable --now xrdp
     ok "xrdp installed and running."
 

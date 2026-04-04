@@ -17,8 +17,8 @@ Self-hosted home server with photo backup, media streaming, file management, and
 
 ```bash
 git clone https://github.com/hamr0/privcloud.git && cd privcloud
-./privcloud install
-./privcloud start
+privcloud install
+privcloud start
 # Open http://localhost:2283
 ```
 
@@ -28,7 +28,7 @@ Back up phone photos locally on any machine. Start when you need it, stop when d
 
 ```bash
 git clone https://github.com/hamr0/privcloud.git && cd privcloud
-./setup.sh    # pick 1, then SSH in and run the rest
+federver      # pick 1, then SSH in and run the rest
 ```
 
 One script sets up everything from a fresh Fedora XFCE install. See [customer guide](customer-guide.md) for full walkthrough.
@@ -99,7 +99,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
   0) exit
 ```
 
-Both commands work from anywhere on the server. Also available as `./setup.sh` and `./privcloud` from the repo directory.
+Both commands work from anywhere on the server. First run `federver` → step 1 to register the commands.
 
 ## Quick reference
 

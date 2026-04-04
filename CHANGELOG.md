@@ -1,8 +1,28 @@
 # Changelog
 
-## v0.1.0 — 2026-03-06
+## v0.2.0 — 2026-04-04
 
-Initial release.
+### Added
+- `setup.sh` — full server setup menu (`federver` command)
+  - SSH, auto-login, hostname setup
+  - SSH key auth (copies key, disables password login)
+  - System update and auto-updates (dnf5)
+  - Docker installation
+  - Firewall (local ports + Tailscale trusted)
+  - Tailscale remote access with guided setup
+  - USB drive mount (permanent via fstab)
+  - Service deployment (Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma)
+  - Daily Immich DB backup (cron at 3am)
+  - Docker log rotation
+  - File sync between laptop and server (upload/download)
+  - Status dashboard (URLs, IPs, containers, disk)
+  - Power management (shutdown/restart)
+- Jellyfin, FileBrowser, Watchtower, Uptime Kuma in docker-compose.yml
+- `privcloud status` now shows container health and recent errors
+- Colored output with success/fail banners
+- `federver` and `privcloud` commands available globally
+
+## v0.1.0 — 2026-03-06
 
 ### Added
 - Interactive CLI menu (`./privcloud`)

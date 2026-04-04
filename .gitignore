@@ -5,3 +5,5 @@ uploads/
 data/
 .DS_Store
 thumbs.db
+.barebrowse/
+.claude/stash/

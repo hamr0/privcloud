@@ -7,89 +7,226 @@
 |_|
 ```
 
-**Your photos. Your storage. No cloud required.**
+**Your server. Your data. No cloud required.**
 
-Apple wants $3/month for iCloud. Google strips your metadata and caps your storage. privcloud runs a full photo server on your machine with one command. Face recognition, smart search, duplicate detection — all local, all yours. Start it when you need it, stop it when you don't. Your photos never leave your drive.
+Self-hosted home server with photo backup, media streaming, file management, and remote access. One script sets up everything from a fresh Fedora install.
 
-## Prerequisites
+## What it runs
 
-- **Linux, macOS, or WSL** — any modern version
-- **~4 GB RAM** when running
-- **Storage** for your photos — local drive, external HDD, whatever you have
-- **Immich app** on your phone — [iPhone](https://apps.apple.com/app/immich/id1613945652) / [Android](https://play.google.com/store/apps/details?id=app.alextran.immich)
+| Service | Port | What it does |
+|---------|------|-------------|
+| Immich | 2283 | Photo backup from phone, face detection, search |
+| Jellyfin | 8096 | Stream movies, music, media |
+| FileBrowser | 8080 | Browse/download/upload files via web UI |
+| Watchtower | — | Auto-updates all containers daily at 4am |
+| Uptime Kuma | 3001 | Monitoring dashboard, alerts if services go down |
+| Tailscale | — | Secure remote access from anywhere |
 
-The `install` command handles everything else — Docker, Docker Compose, permissions, SELinux, storage setup, and pulling images. On WSL, install [Docker Desktop for Windows](https://docker.com/products/docker-desktop) first.
+## Hardware
 
-## Quick Start
+- HP ProDesk 400 G4 DM (Desktop Mini)
+- Intel Core i5-8500T (6 cores, 6 threads)
+- 16GB DDR4 (2x8GB SO-DIMM, 2400MHz)
+- 256GB NVMe M.2 (OS + Docker)
+- 1TB external HDD via USB 3.0 (data/media)
 
-**One-liner:**
+## Quick start
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/hamr0/privcloud/main/scripts/install.sh | bash && privcloud
-```
-
-**Or clone:**
+### Step 1 — On the server (with monitor + keyboard)
 
 ```bash
 git clone https://github.com/hamr0/privcloud.git
 cd privcloud
-./privcloud
+./setup.sh
 ```
 
-Pick `install`, then `start`. Open http://localhost:2283, create your account, connect the Immich app on your phone.
+Pick **option 1**. This enables SSH, sets the hostname, configures auto-login, and disables sleep. It prints an SSH command at the end. **Unplug the monitor.**
 
-```
-  1) install   Check prerequisites, pull images, set up config
-  2) start     Start privcloud
-  3) stop      Stop privcloud
-  4) status    Show status and diagnostics
-  5) config    Change photo storage location
-  6) update    Check for updates and apply
-  7) upload    Upload photos to privcloud
-  8) fix-gp    Fix Google Photos metadata (Takeout export)
-  9) backup    Backup photos + database to external drive
-  0) exit
+### Step 2 — From your laptop (not SSH)
+
+```bash
+cd ~/PycharmProjects/privcloud
+./setup.sh
 ```
 
-Commands also work directly: `./privcloud start`, `./privcloud update`, `./privcloud backup`, etc.
+Pick **option 2** to copy your SSH key and disable password login.
 
-## How It Works
+### Steps 3-11 — From your laptop (over SSH)
 
-1. `privcloud start` — starts Immich (photo server, face recognition, database)
-2. Open Immich app on your phone — photos sync over WiFi to your storage
-3. Browse, search, organize in the web UI
-4. `privcloud stop` — stops everything (photos stay on disk)
+```bash
+ssh ahassan@<ip-from-step-1>
+cd privcloud
+./setup.sh
+```
 
-No always-on server needed. Run it when you want to backup, shut it down when done.
+| Step | What | Where | Notes |
+|------|------|-------|-------|
+| 1 | SSH + auto-login + hostname | Server (monitor) | Run first, then unplug monitor |
+| 2 | SSH key auth | Laptop (local) | Copies key, disables password login |
+| 3 | System update | SSH | |
+| 4 | Auto-updates | SSH | Automatic security patches via dnf5 |
+| 5 | Docker | SSH | **Log out and SSH back in after this** |
+| 6 | Firewall | SSH | Opens ports locally, trusts Tailscale |
+| 7 | Tailscale | SSH | Prints a URL — approve on phone/laptop |
+| 8 | USB drive mount | SSH | Plug in drive first |
+| 9 | Deploy services | SSH | All services: Immich, Jellyfin, FileBrowser, etc. |
+| 10 | Setup backups | SSH | Daily Immich DB backup at 3am |
+| 11 | Log rotation | SSH | Limits Docker log sizes |
+| 12 | Sync files | Laptop (local) | Upload/download between laptop and server |
 
-Works on Linux, macOS, and WSL.
+Press **a** to run all (3-11) at once. Press **s** for status (URLs, IPs, containers, disk).
 
-## Phone Setup
+### Step 12 — Sync files (run from laptop, not SSH)
 
-1. Server URL: `http://<your-computer-ip>:2283` (shown by `privcloud start`)
-2. Login with the account you created in the web UI
-3. Enable auto backup in app settings
-4. Both devices must be on the same WiFi
+```bash
+./setup.sh
+# Pick 12
+```
+
+Upload/download between laptop and server. Auto-detects local drives and USB drives.
+
+## Immich management
+
+The `privcloud` CLI manages Immich directly:
+
+```
+./privcloud              # interactive menu
+./privcloud start        # start Immich
+./privcloud stop         # stop Immich
+./privcloud status       # health check + recent errors
+./privcloud update       # pull latest images
+./privcloud backup       # backup photos + database to external drive
+./privcloud upload       # upload photos via Immich CLI
+./privcloud fix-gp       # fix Google Photos Takeout metadata
+./privcloud config       # change photo storage location
+```
+
+## First-time service setup
+
+After deploying (step 9), each service needs initial configuration. Run `./setup.sh` → **s** for URLs.
+
+### Immich
+
+1. Open Immich in your browser (port 2283)
+2. Create your admin account
+3. Install the Immich app on your phone ([iPhone](https://apps.apple.com/app/immich/id1613945652) / [Android](https://play.google.com/store/apps/details?id=app.alextran.immich))
+4. In the app: enter the server URL, log in, enable auto-upload
+
+### Jellyfin
+
+1. Open Jellyfin in your browser (port 8096)
+2. Follow the setup wizard — create admin account
+3. Add media libraries: point to `/media`
+4. Install the Jellyfin app on your phone/TV
+
+### FileBrowser
+
+1. Open FileBrowser in your browser (port 8080)
+2. Get the generated password: `docker logs filebrowser | grep password`
+3. Login: **admin** / the generated password
+4. Change the password (Settings → Profile)
+
+### Uptime Kuma
+
+1. Open Uptime Kuma in your browser (port 3001)
+2. Create admin account
+3. Add monitors:
+   - New Monitor → HTTP → `http://localhost:2283` (Immich)
+   - New Monitor → HTTP → `http://localhost:8096` (Jellyfin)
+   - New Monitor → HTTP → `http://localhost:8080` (FileBrowser)
+4. Optional: set up alerts in Settings → Notifications (Telegram, email, etc.)
+
+### Tailscale
+
+1. Create a free account at [login.tailscale.com](https://login.tailscale.com)
+2. On the server: `sudo tailscale up` → open the URL, approve
+3. Install the Tailscale app on your phone/laptop, log in with the same account
+4. Access all services remotely via the Tailscale IP
 
 ## Migrating from Google Photos
-
-Google Takeout strips metadata from your photos — dates get separated into JSON sidecar files with inconsistent, truncated names. The `fix-gp` command handles all of it.
 
 1. Export via [Google Takeout](https://takeout.google.com) (select Google Photos)
 2. Fix metadata: `./privcloud fix-gp` — point it at the folder with your takeout zips
 3. Upload: `./privcloud upload` — prompts for your API key and photo folder
 
-The fix restores `DateTimeOriginal`, `DateTimeDigitized`, and GPS coordinates into JPEG EXIF data, and sets correct file modification times on all media files (HEIC, MOV, MP4, etc.).
+## Network access
 
-For the full walkthrough — migration, organizing, face recognition, backup, troubleshooting — see the **[Customer Guide](customer-guide.md)**.
+| Location | How to access |
+|----------|--------------|
+| Home (WiFi) | `http://<local-ip>:<port>` — anyone on the network |
+| Away | `http://<tailscale-ip>:<port>` — via Tailscale VPN |
+| SSH | `ssh ahassan@<hostname>` (local) or via Tailscale IP (remote) |
 
-## Features (via Immich)
+## Security
 
-- Face recognition — auto-groups faces, you name them
-- Smart search — "beach", "birthday", "dog"
-- Duplicate detection
-- Map view, timeline, albums
-- EXIF metadata preserved
+- **SSH:** key-only auth (password login disabled after step 2)
+- **Firewall:** only SSH + service ports open on local network
+- **Tailscale:** trusted interface for full remote access
+- **Everything else:** blocked
+
+Back up your SSH key:
+```bash
+cat ~/.ssh/id_ed25519 | pass insert -m ssh/privcloud-key
+```
+
+## Backups
+
+**Automated (step 10):**
+- Immich database dump daily at 3am
+- Location: `<data-path>/immich/backups/`
+- Keeps last 7 days
+- Manual run: `sudo /usr/local/bin/immich-backup.sh`
+
+**Manual:** `./privcloud backup` — full backup of photos + database to external drive
+
+## Config
+
+Step 9 asks for a base data path and creates `.env` with all service paths:
+
+- `/mnt/data` — USB drive (default)
+- `/home/ahassan/data` — internal drive (temporary)
+
+The `.env` file is gitignored. See `.env.example` for the template.
+
+## After power outage
+
+1. **BIOS:** F10 → After Power Loss → Power On
+2. Server boots → Fedora auto-logs in → Docker restarts all containers
+
+No monitor or keyboard needed.
+
+## Day-to-day management
+
+```bash
+ssh ahassan@<hostname>
+cd privcloud
+```
+
+| Task | Command |
+|------|---------|
+| Status dashboard | `./setup.sh` → **s** |
+| Check all containers | `docker ps` |
+| Immich management | `./privcloud` |
+| View logs | `docker logs <container_name>` |
+| Update Immich | `./privcloud update` |
+| Update all containers | `docker compose pull && docker compose up -d` |
+| Update system | `sudo dnf upgrade` |
+| Re-run any setup step | `./setup.sh` |
+| Manual backup | `./privcloud backup` or `sudo /usr/local/bin/immich-backup.sh` |
+| Monitoring | Uptime Kuma on port 3001 |
+
+## Files
+
+| File | What |
+|------|------|
+| `setup.sh` | Server setup & management menu (steps 1-12) |
+| `privcloud` | Immich CLI (start/stop/status/update/backup/upload) |
+| `docker-compose.yml` | All services (Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma) |
+| `.env.example` | Template for all config paths and credentials |
+| `.env` | Your config (gitignored, created by step 9) |
+| `scripts/` | Google Takeout fix, installer |
+| `tools/` | Backup utility |
+| `customer-guide.md` | Detailed walkthrough for photo migration and setup |
 
 ## License
 

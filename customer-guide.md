@@ -57,14 +57,14 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 
 ### Immich only (no server needed)
 
-Just want photo backup? Run `./privcloud` on any machine — laptop, desktop, whatever. No dedicated server, no setup script. Start it when you want to sync, stop it when done.
+Just want photo backup? Run `privcloud` on any machine — laptop, desktop, whatever. No dedicated server, no setup script. Start it when you want to sync, stop it when done.
 
 **Good for:** backing up phone photos, replacing iCloud/Google Photos, occasional use.
 **Needs:** Docker, ~4GB RAM, storage. Linux, macOS, or WSL.
 
 ### Full home server
 
-Dedicated always-on machine running Immich + media streaming + file management + monitoring + remote access. `./setup.sh` handles everything from a fresh Fedora install.
+Dedicated always-on machine running Immich + media streaming + file management + monitoring + remote access. `federver` handles everything from a fresh Fedora install.
 
 **Good for:** 24/7 photo backup, streaming media to TV/phone, accessing files from anywhere, replacing Google Drive/iCloud/Plex.
 **Needs:** a mini PC or similar, Fedora XFCE, a monitor + keyboard for initial setup (then headless).
@@ -87,7 +87,7 @@ Dedicated always-on machine running Immich + media streaming + file management +
 | `fix-gp` | Fix Google Photos Takeout metadata (dates + GPS) |
 | `backup` | Backup photos + database to external drive with progress |
 
-### From setup.sh (server setup)
+### From federver (server setup)
 
 | Step | What it does |
 |------|-------------|
@@ -139,7 +139,7 @@ curl -fsSL https://raw.githubusercontent.com/hamr0/privcloud/main/scripts/instal
 # Or clone
 git clone https://github.com/hamr0/privcloud.git
 cd privcloud
-./privcloud
+privcloud
 ```
 
 Pick `install` (handles Docker, images, storage config), then `start`.
@@ -216,7 +216,7 @@ Each Immich account gets its own separate library, timeline, face recognition, a
 
 ### Uploading to the right account
 
-Each API key is tied to the account that created it. When using `./privcloud upload`, use the API key for whichever account should own the photos.
+Each API key is tied to the account that created it. When using `privcloud upload`, use the API key for whichever account should own the photos.
 
 ---
 
@@ -234,7 +234,7 @@ Google Takeout exports your photos with metadata stripped into separate JSON fil
 ### Step 2: Fix metadata
 
 ```bash
-./privcloud fix-gp
+privcloud fix-gp
 ```
 
 The script extracts zips, matches each photo to its JSON sidecar, writes dates and GPS back into EXIF, and sets correct file timestamps.
@@ -242,7 +242,7 @@ The script extracts zips, matches each photo to its JSON sidecar, writes dates a
 ### Step 3: Upload
 
 ```bash
-./privcloud upload
+privcloud upload
 ```
 
 Enter your API key (from http://localhost:2283 → Account Settings → API Keys) and the path to the extracted photos.
@@ -273,7 +273,7 @@ If your photos are still on your iPhone (not "Optimize Storage"):
 
 1. Go to [icloud.com/photos](https://icloud.com/photos)
 2. Select all, download
-3. Use `./privcloud upload` to bulk upload
+3. Use `privcloud upload` to bulk upload
 
 ### Option C: Mac/Windows export
 
@@ -285,7 +285,7 @@ If your photos are still on your iPhone (not "Optimize Storage"):
 ## Uploading existing photo collections
 
 ```bash
-./privcloud upload
+privcloud upload
 ```
 
 Point it at any folder. It uploads recursively and skips duplicates automatically (by file hash). Run it from multiple sources — Immich won't create duplicate entries.
@@ -410,7 +410,7 @@ Expect ~20-30% overhead on top of your original library for thumbnails and previ
 ### How to backup
 
 ```bash
-./privcloud backup
+privcloud backup
 ```
 
 Stops server, copies photos + database + config to destination, restarts. Incremental after first run.
@@ -425,11 +425,11 @@ Stops server, copies photos + database + config to destination, restarts. Increm
 
 ## Moving to a new machine
 
-1. `./privcloud stop` on old machine
+1. `privcloud stop` on old machine
 2. Copy `photos` and `postgres` directories to new machine
-3. Clone privcloud, run `./privcloud install`
+3. Clone privcloud, run `privcloud install`
 4. Point config at the copied directories, make sure `DB_PASSWORD` matches
-5. `./privcloud start`
+5. `privcloud start`
 
 Everything comes back — faces, albums, search, sharing.
 
@@ -440,7 +440,7 @@ Everything comes back — faces, albums, search, sharing.
 1. Take photos normally
 2. Open Immich app occasionally — photos sync over WiFi
 3. Browse/organize at http://localhost:2283
-4. `./privcloud stop` when done (or leave running)
+4. `privcloud stop` when done (or leave running)
 
 ML processing resumes where it left off on next start.
 
@@ -450,7 +450,7 @@ ML processing resumes where it left off on next start.
 
 ### "privcloud start" hangs or times out
 
-Run `./privcloud status` — it now shows container health and recent errors from logs. Common causes:
+Run `privcloud status` — it now shows container health and recent errors from logs. Common causes:
 - Port 2283 in use
 - Not enough RAM
 - Docker not running
@@ -473,7 +473,7 @@ Enable transcoding: Administration → Video Transcoding → H.264.
 
 ### Wrong dates
 
-Run `./privcloud fix-gp` on Google Takeout exports before uploading. For other sources, check if files have EXIF data.
+Run `privcloud fix-gp` on Google Takeout exports before uploading. For other sources, check if files have EXIF data.
 
 ### Container keeps restarting
 
@@ -503,7 +503,7 @@ Run `docker logs <container_name> --tail 20` to see the error. Common causes:
 
 # Home server setup
 
-Everything below is for the **full server** mode using `./setup.sh`.
+Everything below is for the **full server** mode using `federver`.
 
 ---
 
@@ -559,14 +559,14 @@ Boot from USB (F9 on HP for boot menu), install Fedora. Use automatic partitioni
 ```bash
 git clone https://github.com/hamr0/privcloud.git
 cd privcloud
-./setup.sh
+federver
 ```
 
 **Step 1 (with monitor):** Pick option 1. Enables SSH, sets hostname, auto-login. Note the IP. Unplug the monitor.
 
-**Step 2 (from laptop, not SSH):** Run `./setup.sh` → 2. Copies SSH key, disables password login. Back up the key in `pass`.
+**Step 2 (from laptop, not SSH):** Run `federver` → 2. Copies SSH key, disables password login. Back up the key in `pass`.
 
-**Steps 3-11 (over SSH):** SSH into the server, run `./setup.sh`, go through each step:
+**Steps 3-11 (over SSH):** SSH into the server, run `federver`, go through each step:
 
 - **3-4:** System update + auto-updates
 - **5:** Docker — **log out and SSH back in after this** (docker group)
@@ -585,13 +585,13 @@ After setup, enter BIOS (F10 on HP) and set **After Power Loss → Power On**. N
 
 ## Service setup
 
-After step 9, configure each service in your browser. Run `./setup.sh` → **s** for URLs.
+After step 9, configure each service in your browser. Run `federver` → **s** for URLs.
 
 ### Immich (port 2283)
 
 1. Create admin account
 2. Install Immich app on phone, enter server URL, enable auto-upload
-3. If migrating: use `./privcloud upload` or `./privcloud fix-gp` for Google Takeout
+3. If migrating: use `privcloud upload` or `privcloud fix-gp` for Google Takeout
 
 ### Jellyfin (port 8096)
 
@@ -665,13 +665,13 @@ Free for up to 100 devices.
 
 | Task | Command | When |
 |------|---------|------|
-| Check status | `./setup.sh` → **s** | Anytime |
-| Update Immich | `./privcloud update` | Monthly |
+| Check status | `federver` → **s** | Anytime |
+| Update Immich | `privcloud update` | Monthly |
 | Update other containers | `docker compose pull && docker compose up -d` | Monthly |
 | Update Fedora | `sudo dnf upgrade` | Monthly |
 | Check disk space | `df -h` | Monthly |
 | Check backup logs | `cat /var/log/immich-backup.log` | After issues |
-| Sync files | `./setup.sh` → **12** (from laptop) | As needed |
+| Sync files | `federver` → **12** (from laptop) | As needed |
 
 ### SSH access
 
@@ -735,7 +735,7 @@ If it returns `{"res":"pong"}`, it's fine — the timeout was just too short.
 
 If BIOS is set to auto-power-on (F10 → After Power Loss → Power On), the server boots automatically. Fedora auto-logs in, Docker restarts all containers. Nothing to do.
 
-If services aren't running: `cd ~/privcloud && docker compose up -d && ./privcloud start`
+If services aren't running: `cd ~/privcloud && docker compose up -d && privcloud start`
 
 ---
 
@@ -743,11 +743,11 @@ If services aren't running: `cd ~/privcloud && docker compose up -d && ./privclo
 
 When migrating from internal drive to external USB (or vice versa):
 
-1. Stop all services: `docker compose down && ./privcloud stop`
-2. Mount the new drive: `./setup.sh` → **8**
+1. Stop all services: `docker compose down && privcloud stop`
+2. Mount the new drive: `federver` → **8**
 3. Copy data: `rsync -avh --progress /old/path/ /new/path/`
 4. Update `.env` with new paths
-5. Redeploy: `./setup.sh` → **9** (enter new base path)
-6. Verify: `./setup.sh` → **s**
+5. Redeploy: `federver` → **9** (enter new base path)
+6. Verify: `federver` → **s**
 
 **Important:** the Postgres database password is baked in when first created. If you copy the database directory, keep the same `DB_PASSWORD` in `.env`. Changing it will cause `password authentication failed`.

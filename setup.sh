@@ -492,7 +492,47 @@ BACKUPEOF
     info "Alerts when disk usage exceeds 85%."
     echo ""
 
-    sudo tee /usr/local/bin/disk-check.sh > /dev/null <<'DISKEOF'
+    # ── Uptime Kuma push URL ──
+    echo ""
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}ACTION NEEDED — Uptime Kuma disk alert${NC}"
+    echo ""
+    echo -e "  1. Open Uptime Kuma in your browser (port 3001)"
+    echo -e "  2. Add New Monitor → Type: ${BOLD}Push${NC}"
+    echo -e "  3. Name: ${BOLD}Disk Space${NC}"
+    echo -e "  4. Heartbeat Interval: ${BOLD}3600${NC}"
+    echo -e "  5. Copy the ${BOLD}Push URL${NC} it shows you"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    read -p "  Paste the Push URL here (or Enter to skip): " push_url
+
+    if [[ -n "$push_url" ]]; then
+        sudo tee /usr/local/bin/disk-check.sh > /dev/null <<DISKEOF
+#!/bin/bash
+THRESHOLD=85
+LOG="/var/log/disk-check.log"
+PUSH_URL="$push_url"
+ALERT=false
+
+for mount in / /home /mnt/data; do
+    if mountpoint -q "\$mount" 2>/dev/null || [ "\$mount" = "/" ]; then
+        USAGE=\$(df "\$mount" 2>/dev/null | awk 'NR==2 {gsub("%",""); print \$5}')
+        if [ -n "\$USAGE" ] && [ "\$USAGE" -gt "\$THRESHOLD" ]; then
+            echo "\$(date): WARNING — \$mount is \${USAGE}% full" >> "\$LOG"
+            ALERT=true
+        fi
+    fi
+done
+
+if \$ALERT; then
+    curl -s "\$PUSH_URL?status=down&msg=Disk+above+85%25" > /dev/null 2>&1
+else
+    curl -s "\$PUSH_URL?status=up&msg=OK" > /dev/null 2>&1
+fi
+DISKEOF
+        ok "Disk monitor with Uptime Kuma alerts configured."
+    else
+        sudo tee /usr/local/bin/disk-check.sh > /dev/null <<'DISKEOF'
 #!/bin/bash
 THRESHOLD=85
 LOG="/var/log/disk-check.log"
@@ -506,6 +546,10 @@ for mount in / /home /mnt/data; do
     fi
 done
 DISKEOF
+        ok "Disk monitor configured (log only, no Kuma alerts)."
+        info "Run step 11 again to add Kuma alerts later."
+    fi
+
     sudo chmod +x /usr/local/bin/disk-check.sh
 
     # Run hourly
@@ -513,23 +557,8 @@ DISKEOF
         (sudo crontab -l 2>/dev/null; echo "0 * * * * /usr/local/bin/disk-check.sh") | sudo crontab -
     fi
 
-    ok "Disk space monitor configured (hourly, alerts above 85%)."
+    ok "Disk space check runs hourly (alerts above 85%)."
     info "Check log: cat /var/log/disk-check.log"
-
-    # ── Uptime Kuma push (optional) ──
-    echo ""
-    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${YELLOW}OPTIONAL: Uptime Kuma disk alert${NC}"
-    echo ""
-    echo -e "  To get alerts in Uptime Kuma when disk is full:"
-    echo -e "  1. Open Uptime Kuma → Add New Monitor → Type: ${BOLD}Push${NC}"
-    echo -e "  2. Set heartbeat interval to ${BOLD}3600${NC} (1 hour)"
-    echo -e "  3. Copy the Push URL"
-    echo -e "  4. Edit the disk check script:"
-    echo -e "     ${BOLD}sudo nano /usr/local/bin/disk-check.sh${NC}"
-    echo -e "     Add this line after each WARNING log line:"
-    echo -e "     ${BOLD}curl -s \"<your-push-url>\" > /dev/null 2>&1${NC}"
-    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
 step_logrotation() {

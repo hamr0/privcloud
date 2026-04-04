@@ -105,7 +105,7 @@ services:
   # ── Uptime Kuma (monitoring dashboard) ─────────────
   uptime-kuma:
     container_name: uptime_kuma
-    image: louislam/uptime-kuma:latest
+    image: louislam/uptime-kuma:2
     volumes:
       - uptime-kuma-data:/app/data
     ports:

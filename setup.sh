@@ -119,6 +119,20 @@ EOF
     sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target > /dev/null 2>&1
     ok "Screen lock and sleep disabled"
 
+    # Create global commands: 'setup' and 'privcloud'
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    sudo tee /usr/local/bin/setup > /dev/null << WRAPPER
+#!/bin/bash
+exec $SCRIPT_DIR/setup.sh "\$@"
+WRAPPER
+    sudo chmod +x /usr/local/bin/setup
+    sudo tee /usr/local/bin/privcloud > /dev/null << WRAPPER
+#!/bin/bash
+exec $SCRIPT_DIR/privcloud "\$@"
+WRAPPER
+    sudo chmod +x /usr/local/bin/privcloud
+    ok "Commands available: 'setup' and 'privcloud' (from anywhere)"
+
     IP=$(hostname -I | awk '{print $1}')
     echo ""
     echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -127,7 +141,7 @@ EOF
     echo -e "  From your laptop, run:"
     echo -e "    ${BOLD}ssh $USER@$IP${NC}"
     echo ""
-    echo -e "  Then: ${BOLD}cd federver && ./setup.sh${NC}"
+    echo -e "  Then run: ${BOLD}setup${NC} (from anywhere)"
     echo -e "  Run step 2 from laptop (not SSH) to set up key auth."
     echo -e "  Then SSH in and continue with steps 3-11."
     echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

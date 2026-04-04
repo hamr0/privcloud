@@ -630,12 +630,22 @@ After step 9, configure each service in your browser. Run `federver` → **s** f
 
 ### Uptime Kuma (port 3001)
 
-1. Create admin account
-2. Add monitors for each service:
-   - HTTP → `http://localhost:2283` (Immich)
-   - HTTP → `http://localhost:8096` (Jellyfin)
-   - HTTP → `http://localhost:8080` (FileBrowser)
-3. Optional: configure Telegram/email alerts in Settings → Notifications
+1. Open Uptime Kuma in your browser (port 3001)
+2. Create admin account
+3. Click **"Add New Monitor"** for each service:
+
+| Name | Type | URL |
+|------|------|-----|
+| Immich | HTTP(s) | `http://<server-local-ip>:2283/api/server/ping` |
+| Jellyfin | HTTP(s) | `http://<server-local-ip>:8096` |
+| FileBrowser | HTTP(s) | `http://<server-local-ip>:8080` |
+
+**Important:** Use the server's local IP (e.g. `192.168.178.180`), not `localhost`. Uptime Kuma runs inside Docker where `localhost` refers to the container itself, not the server.
+
+4. Optional: go to **Settings → Notifications** to add alerts:
+   - **Telegram:** create a bot via @BotFather, get the token and chat ID
+   - **Email:** enter SMTP settings for your email provider
+   - You'll get notified instantly if any service goes down
 
 ---
 

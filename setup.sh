@@ -92,6 +92,7 @@ show_menu() {
     echo -e "  ${BOLD}12)${NC} Sync files                 ${YELLOW}← exit SSH first${NC}"
     echo ""
     echo -e "  ${BOLD}s)${NC} Status                     ${DIM}← show all service URLs and config${NC}"
+    echo -e "  ${BOLD}p)${NC} Power                      ${DIM}← shutdown or restart server${NC}"
     echo -e "  ${BOLD}a)${NC} Run all (3-11)"
     echo -e "  ${BOLD}0)${NC} Exit"
     echo ""
@@ -678,6 +679,42 @@ step_status() {
     echo -e "    Setup:    ${BOLD}./setup.sh${NC}"
 }
 
+step_power() {
+    echo -e "  ${BOLD}1)${NC} Shutdown"
+    echo -e "  ${BOLD}2)${NC} Restart"
+    echo ""
+    read -p "  Choose [1/2]: " power_choice
+    case $power_choice in
+        1)
+            echo ""
+            warn "Server will shut down. SSH connection will be lost."
+            read -p "  Are you sure? [y/N] " -n 1 -r
+            echo ""
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                ok "Shutting down..."
+                sudo shutdown now
+            else
+                info "Cancelled."
+            fi
+            ;;
+        2)
+            echo ""
+            warn "Server will restart. SSH connection will drop and reconnect in ~1-2 minutes."
+            read -p "  Are you sure? [y/N] " -n 1 -r
+            echo ""
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                ok "Restarting..."
+                sudo reboot
+            else
+                info "Cancelled."
+            fi
+            ;;
+        *)
+            fail "Invalid choice."
+            ;;
+    esac
+}
+
 run_all() {
     step_update
     step_autoupdates
@@ -708,6 +745,7 @@ while true; do
         11) run_step "[11] Log rotation" step_logrotation ;;
         12) run_step "[12] Sync files" step_sync ;;
         s)  run_step "[s] Status" step_status ;;
+        p)  run_step "[p] Power management" step_power ;;
         a)  run_step "Run all (3-11)" run_all ;;
         0)  echo "Bye."; exit 0 ;;
         *)  echo -e "  ${RED}Invalid choice.${NC}" ;;

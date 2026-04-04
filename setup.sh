@@ -82,14 +82,15 @@ show_menu() {
     echo -e "  ${BOLD}7)${NC} Install Tailscale           ${DIM}← opens a URL to approve on phone/laptop${NC}"
     echo -e "  ${BOLD}8)${NC} Mount USB drive             ${DIM}← plug in USB drive first${NC}"
     echo -e "  ${BOLD}9)${NC} Deploy services             ${DIM}← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma${NC}"
-    echo -e "  ${BOLD}10)${NC} Setup backups              ${DIM}← daily Immich DB backup${NC}"
-    echo -e "  ${BOLD}11)${NC} Configure log rotation     ${DIM}← prevent Docker logs eating disk${NC}"
+    echo -e "  ${BOLD}10)${NC} Remote desktop             ${DIM}← access XFCE desktop from laptop${NC}"
+    echo -e "  ${BOLD}11)${NC} Setup backups              ${DIM}← daily Immich DB backup${NC}"
+    echo -e "  ${BOLD}12)${NC} Configure log rotation     ${DIM}← prevent Docker logs eating disk${NC}"
     echo ""
     echo -e "  ${DIM}-- Immich photo management --${NC}"
     echo -e "      ${DIM}Run: ${BOLD}privcloud${NC} ${DIM}[start|stop|status|update|backup]${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Exit SSH, run from laptop --${NC}"
-    echo -e "  ${BOLD}12)${NC} Sync files                 ${YELLOW}← exit SSH first${NC}"
+    echo -e "  ${BOLD}13)${NC} Sync files                 ${YELLOW}← exit SSH first${NC}"
     echo ""
     echo -e "  ${BOLD}s)${NC} Status                     ${DIM}← show all service URLs and config${NC}"
     echo -e "  ${BOLD}p)${NC} Power                      ${DIM}← shutdown or restart server${NC}"
@@ -393,6 +394,47 @@ step_deploy() {
     echo -e "    Optional: set up Telegram/email alerts in Settings → Notifications"
     echo ""
     echo -e "  See README or run ${BOLD}s)${NC} for full setup details."
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+step_remotedesktop() {
+    info "Installs xrdp for remote desktop access to the XFCE desktop."
+    info "Connect from any device using an RDP client."
+    echo ""
+
+    # Install xrdp
+    info "Installing xrdp..."
+    sudo dnf install -y xrdp > /dev/null 2>&1
+    sudo systemctl enable --now xrdp
+    ok "xrdp installed and running."
+
+    # Open firewall port
+    sudo firewall-cmd --permanent --add-port=3389/tcp 2>/dev/null || true
+    sudo firewall-cmd --reload 2>/dev/null || true
+    ok "Firewall port 3389 opened."
+
+    IP=$(hostname -I | awk '{print $1}')
+    local ts_ip
+    ts_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
+
+    echo ""
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}HOW TO CONNECT${NC}"
+    echo ""
+    echo -e "  ${BOLD}From your laptop (Fedora/Linux):${NC}"
+    echo -e "    Install Remmina: ${BOLD}sudo dnf install remmina${NC}"
+    echo -e "    Open Remmina → New → Protocol: RDP"
+    echo -e "    Server: ${BOLD}$IP${NC} (local) or ${BOLD}$ts_ip${NC} (Tailscale)"
+    echo -e "    Username: ${BOLD}$USER${NC}"
+    echo -e "    Password: your server password"
+    echo ""
+    echo -e "  ${BOLD}From Mac:${NC}"
+    echo -e "    Install 'Microsoft Remote Desktop' from App Store"
+    echo -e "    Add PC → same server/username/password"
+    echo ""
+    echo -e "  ${BOLD}From iPhone/iPad:${NC}"
+    echo -e "    Install 'RD Client' from App Store"
+    echo -e "    Add PC → server: ${BOLD}$ts_ip${NC} (via Tailscale)"
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
@@ -737,6 +779,7 @@ run_all() {
     step_tailscale
     step_usbmount
     step_deploy
+    step_remotedesktop
     step_backup
     step_logrotation
 }
@@ -755,12 +798,13 @@ while true; do
         7)  run_step "[7] Install Tailscale" step_tailscale ;;
         8)  run_step "[8] Mount USB drive" step_usbmount ;;
         9)  run_step "[9] Deploy services" step_deploy ;;
-        10) run_step "[10] Setup backups" step_backup ;;
-        11) run_step "[11] Log rotation" step_logrotation ;;
-        12) run_step "[12] Sync files" step_sync ;;
+        10) run_step "[10] Remote desktop" step_remotedesktop ;;
+        11) run_step "[11] Setup backups" step_backup ;;
+        12) run_step "[12] Log rotation" step_logrotation ;;
+        13) run_step "[13] Sync files" step_sync ;;
         s)  run_step "[s] Status" step_status ;;
         p)  run_step "[p] Power management" step_power ;;
-        a)  run_step "Run all (3-11)" run_all ;;
+        a)  run_step "Run all (3-12)" run_all ;;
         0)  echo "Bye."; exit 0 ;;
         *)  echo -e "  ${RED}Invalid choice.${NC}" ;;
     esac

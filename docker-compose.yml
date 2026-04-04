@@ -1,11 +1,11 @@
-# Immich Docker Compose — privcloud
-# Managed by the privcloud CLI
-# Run: privcloud start
-# Web UI: http://localhost:2283
+# Privcloud — Home server stack
+# Immich (photo backup) + Jellyfin + FileBrowser + Watchtower + Uptime Kuma
+# Managed by: ./setup.sh and ./privcloud
 
 name: privcloud
 
 services:
+  # ── Immich (photo backup) ──────────────────────────
   immich-server:
     container_name: immich_server
     image: ghcr.io/immich-app/immich-server:${IMMICH_VERSION:-release}
@@ -67,5 +67,54 @@ services:
       timeout: 5s
       retries: 3
 
+  # ── Jellyfin (media streaming) ─────────────────────
+  jellyfin:
+    container_name: jellyfin
+    image: jellyfin/jellyfin:latest
+    volumes:
+      - jellyfin-config:/config
+      - jellyfin-cache:/cache
+      - ${MEDIA_LOCATION}:/media:ro
+    ports:
+      - 8096:8096
+    restart: always
+
+  # ── FileBrowser (web file manager) ─────────────────
+  filebrowser:
+    container_name: filebrowser
+    image: filebrowser/filebrowser:latest
+    volumes:
+      - ${DATA_ROOT}:/srv
+      - filebrowser-db:/database
+    ports:
+      - 8080:80
+    restart: always
+
+  # ── Watchtower (auto-update containers) ────────────
+  watchtower:
+    container_name: watchtower
+    image: containrrr/watchtower:latest
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_SCHEDULE=0 0 4 * * *
+      - DOCKER_API_VERSION=1.40
+    restart: always
+
+  # ── Uptime Kuma (monitoring dashboard) ─────────────
+  uptime-kuma:
+    container_name: uptime_kuma
+    image: louislam/uptime-kuma:latest
+    volumes:
+      - uptime-kuma-data:/app/data
+    ports:
+      - 3001:3001
+    restart: always
+
 volumes:
   model-cache:
+  jellyfin-config:
+  jellyfin-cache:
+  filebrowser-db:
+  uptime-kuma-data:

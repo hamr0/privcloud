@@ -114,6 +114,7 @@ Both commands work from anywhere on the server. First run `federver` → step 1 
 | Update system | `sudo dnf upgrade` |
 | Remote desktop | RDP client → server IP port 3389 |
 | Backup | `privcloud backup` or `sudo /usr/local/bin/immich-backup.sh` |
+| Disk alerts | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
 | Shutdown | `federver` → **p** |
 
 ## Docs

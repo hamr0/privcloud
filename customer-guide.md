@@ -739,7 +739,7 @@ Install "RD Client" from App Store. Add PC with Tailscale IP.
 |------|-----|-------|
 | Service health | Uptime Kuma monitors | `http://<server-ip>:3001` |
 | Server online | Ping monitor in Uptime Kuma | Type: Ping → server IP |
-| Disk space | Hourly cron check | `cat /var/log/disk-check.log` |
+| Disk space | Hourly cron + Kuma Push | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
 | Backup status | Check log | `cat /var/log/immich-backup.log` |
 | Container errors | `privcloud status` | Shows recent errors per container |
 
@@ -754,7 +754,7 @@ Install "RD Client" from App Store. Add PC with Tailscale IP.
 
 Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 
-Optional: add a **Push** monitor for disk alerts — see step 11 in `federver` for instructions.
+**Disk space alert:** Step 11 in `federver` sets this up automatically. It asks you to create a Push monitor in Uptime Kuma, you paste the URL, and it configures a script that sends `status=up` every hour when disk is OK, or `status=down` when any mount exceeds 85%. Uptime Kuma then alerts you via Telegram/email if configured.
 
 ### Periodic (manual)
 

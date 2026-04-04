@@ -1,14 +1,15 @@
 # privcloud — Customer Guide
 
-Your photos. Your storage. No cloud required.
+Your server. Your data. No cloud required.
 
 ---
 
 ## Table of Contents
 
 - [Why privcloud](#why-privcloud)
+- [Two modes](#two-modes)
 - [What you get](#what-you-get)
-- [Getting started](#getting-started)
+- [Getting started (Immich only)](#getting-started-immich-only)
 - [Connecting your phone](#connecting-your-phone)
 - [Understanding the phone app](#understanding-the-phone-app)
 - [Multiple accounts and family setup](#multiple-accounts-and-family-setup)
@@ -26,9 +27,17 @@ Your photos. Your storage. No cloud required.
 - [Storage and architecture](#storage-and-architecture)
 - [Backup and restore](#backup-and-restore)
 - [Moving to a new machine](#moving-to-a-new-machine)
-- [Day-to-day usage](#day-to-day-usage)
-- [Troubleshooting](#troubleshooting)
+- [Day-to-day usage (Immich only)](#day-to-day-usage-immich-only)
+- [Troubleshooting (Immich)](#troubleshooting-immich)
 - [Privacy and security](#privacy-and-security)
+- **[Home server setup](#home-server-setup)**
+- [Hardware selection](#hardware-selection)
+- [Server setup walkthrough](#server-setup-walkthrough)
+- [Service setup](#service-setup)
+- [Tailscale remote access](#tailscale-remote-access)
+- [Server maintenance](#server-maintenance)
+- [Server troubleshooting](#server-troubleshooting)
+- [Moving data between drives](#moving-data-between-drives)
 
 ---
 
@@ -42,6 +51,26 @@ Both companies make it effortless to upload and painful to download. That's not 
 
 privcloud eliminates all of it. One command runs a full photo server on your own machine. Your photos stay on your drive. No subscription. No cloud. No friction at the exit door.
 
+---
+
+## Two modes
+
+### Immich only (no server needed)
+
+Just want photo backup? Run `./privcloud` on any machine — laptop, desktop, whatever. No dedicated server, no setup script. Start it when you want to sync, stop it when done.
+
+**Good for:** backing up phone photos, replacing iCloud/Google Photos, occasional use.
+**Needs:** Docker, ~4GB RAM, storage. Linux, macOS, or WSL.
+
+### Full home server
+
+Dedicated always-on machine running Immich + media streaming + file management + monitoring + remote access. `./setup.sh` handles everything from a fresh Fedora install.
+
+**Good for:** 24/7 photo backup, streaming media to TV/phone, accessing files from anywhere, replacing Google Drive/iCloud/Plex.
+**Needs:** a mini PC or similar, Fedora XFCE, a monitor + keyboard for initial setup (then headless).
+
+---
+
 ## What you get
 
 ### From privcloud (the CLI)
@@ -51,14 +80,31 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 | `install` | Installs Docker, Docker Compose, pulls images, configures storage |
 | `start` | Starts the photo server |
 | `stop` | Stops everything (photos stay on disk) |
-| `status` | Shows diagnostics — containers, storage usage, URLs |
+| `status` | Shows diagnostics — containers, health, recent errors |
 | `config` | Change where photos are stored |
 | `update` | Check for updates and apply |
 | `upload` | Bulk upload photos via Immich CLI with API key validation |
 | `fix-gp` | Fix Google Photos Takeout metadata (dates + GPS) |
 | `backup` | Backup photos + database to external drive with progress |
 
-### From Immich (the photo server privcloud runs)
+### From setup.sh (server setup)
+
+| Step | What it does |
+|------|-------------|
+| SSH + auto-login | Remote access, no password on boot |
+| SSH key auth | Key-only login, disables passwords |
+| System update | Updates all packages |
+| Auto-updates | Automatic security patches |
+| Docker | Container runtime for all services |
+| Firewall | Opens service ports locally, trusts Tailscale |
+| Tailscale | Remote access from anywhere |
+| USB mount | Permanent mount for data drive |
+| Deploy | Starts all services (Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma) |
+| Backups | Daily Immich DB backup cron |
+| Log rotation | Prevents Docker logs eating disk |
+| Sync | Upload/download files between laptop and server |
+
+### From Immich (the photo server)
 
 - **Face recognition** — automatically detects and groups faces across your entire library
 - **Smart search** — search by content: "beach", "birthday cake", "dog in snow"
@@ -76,7 +122,7 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 
 ---
 
-## Getting started
+## Getting started (Immich only)
 
 ### Requirements
 
@@ -129,7 +175,7 @@ The Immich app is a **viewer and uploader**, not a two-way sync. This is the mos
 | **Phone → Server** | Auto-backup uploads your phone photos to the server |
 | **Server → Phone** | The app **shows** server photos when you browse, but does NOT download them to your Camera Roll |
 
-Photos you uploaded from Google Takeout or an old hard drive will appear in the app when you scroll the timeline — they stream over WiFi, like browsing Google Photos. But they don't take up phone storage. This is the whole point — you're moving photos OFF the phone, not back onto it.
+Photos you uploaded from Google Takeout or an old hard drive will appear in the app when you scroll the timeline — they stream over WiFi, like browsing Google Photos. But they don't take up phone storage.
 
 If you want to save a specific photo back to your phone, tap the photo → share → **Save to Device**. This is a one-off action, not bulk.
 
@@ -138,14 +184,10 @@ If you want to save a specific photo back to your phone, tap the photo → share
 | Icon | Meaning |
 |------|---------|
 | Cloud with checkmark | Photo is on the server AND on your phone (backed up from Camera Roll) |
-| Cloud without checkmark | Photo is on the server only (uploaded via CLI or from another device — not on your phone) |
-| Cloud with no thumbnail | Photo is on the server but the thumbnail hasn't been generated yet — still processing |
+| Cloud without checkmark | Photo is on the server only (uploaded via CLI or from another device) |
+| Cloud with no thumbnail | Photo is on the server but the thumbnail hasn't been generated yet |
 
-After a big import (Google Takeout, old hard drives), you'll see many photos with no thumbnail. This is normal — Immich generates thumbnails in the background. Once the thumbnail job finishes, they all become browseable. Check progress at Administration → Jobs → Generate Thumbnails.
-
-### One catch
-
-The app only works when you're on the same WiFi as your computer and privcloud is running. Outside your home, you can't browse your library. If you want remote access, you'd need to expose the server to the internet with a reverse proxy — but that's an advanced setup with security considerations.
+After a big import, you'll see many photos with no thumbnail. This is normal — Immich generates thumbnails in the background. Check progress at Administration → Jobs → Generate Thumbnails.
 
 ---
 
@@ -169,20 +211,12 @@ Each Immich account gets its own separate library, timeline, face recognition, a
 
 ### Sharing between accounts
 
-- **Shared albums** — create an album, share it with other accounts. They can view and optionally add photos.
-- **Partner sharing** — Account Settings → Partner Sharing. Gives another user read-only access to your entire timeline. This is the closest thing to "merged" without merging.
+- **Shared albums** — create an album, share it with other accounts
+- **Partner sharing** — Account Settings → Partner Sharing. Gives another user read-only access to your entire timeline.
 
 ### Uploading to the right account
 
-Each API key is tied to the account that created it. When using `./privcloud upload`:
-
-- Use **your** API key → photos go to your library
-- Use **your partner's** API key → photos go to their library
-- Use the **family** account API key → photos go to the family library
-
-### What about photos that belong to both personal and family?
-
-Don't try to sort files on disk before uploading. Upload everything to each person's account, then create shared albums from the web UI for family photos. The originals stay in the personal library — shared albums are just views, not copies.
+Each API key is tied to the account that created it. When using `./privcloud upload`, use the API key for whichever account should own the photos.
 
 ---
 
@@ -194,7 +228,7 @@ Google Takeout exports your photos with metadata stripped into separate JSON fil
 
 1. Go to [Google Takeout](https://takeout.google.com)
 2. Deselect everything, then select only **Google Photos**
-3. Choose your export format (zip) and size (largest available — fewer files to deal with)
+3. Choose your export format (zip) and size (largest available)
 4. Google will email you download links. Download all the zip files into one folder.
 
 ### Step 2: Fix metadata
@@ -203,13 +237,7 @@ Google Takeout exports your photos with metadata stripped into separate JSON fil
 ./privcloud fix-gp
 ```
 
-Enter the path to the folder containing your takeout zips. The script:
-
-1. Extracts all zips
-2. Checks for Python, piexif, and Pillow (installs if missing)
-3. Matches each photo to its JSON sidecar — handling every truncated naming pattern Google uses (`.supplemental-metadata.json`, `.suppl.json`, `.su.json`, and everything in between)
-4. Writes `DateTimeOriginal`, `DateTimeDigitized`, and GPS coordinates back into JPEG EXIF
-5. Sets correct file modification times on all media (HEIC, MOV, MP4, PNG, etc.)
+The script extracts zips, matches each photo to its JSON sidecar, writes dates and GPS back into EXIF, and sets correct file timestamps.
 
 ### Step 3: Upload
 
@@ -217,9 +245,9 @@ Enter the path to the folder containing your takeout zips. The script:
 ./privcloud upload
 ```
 
-Enter your API key (get it from http://localhost:2283 → Account Settings → API Keys) and the path to the extracted photos folder.
+Enter your API key (from http://localhost:2283 → Account Settings → API Keys) and the path to the extracted photos.
 
-### What gets fixed vs. what doesn't
+### What gets fixed
 
 | File type | EXIF dates | GPS | File timestamp |
 |-----------|-----------|-----|----------------|
@@ -228,7 +256,7 @@ Enter your API key (get it from http://localhost:2283 → Account Settings → A
 | MOV/MP4 | — | — | Set |
 | PNG/GIF | — | — | Set |
 
-HEIC and video files don't support EXIF writing via piexif, but their file modification times are corrected. Immich uses file timestamps for sorting when EXIF is missing, so your timeline will be correct.
+HEIC and video files don't support EXIF writing via piexif, but their file modification times are corrected. Immich uses file timestamps when EXIF is missing, so your timeline will be correct.
 
 ---
 
@@ -237,243 +265,115 @@ HEIC and video files don't support EXIF writing via piexif, but their file modif
 ### Option A: iPhone app (easiest)
 
 If your photos are still on your iPhone (not "Optimize Storage"):
-
-1. Connect your phone to the same WiFi as your computer
-2. Open the Immich app, enable auto-backup for your Camera Roll
-3. Let it sync — this uploads directly from your phone to privcloud
+1. Connect to the same WiFi as your server
+2. Open the Immich app, enable auto-backup
+3. Let it sync
 
 ### Option B: iCloud download + upload
 
 1. Go to [icloud.com/photos](https://icloud.com/photos)
-2. Select photos (Cmd+A for all), click the download icon
-3. iCloud downloads in batches — this is slow and Apple throttles it intentionally
-4. Once downloaded, use `./privcloud upload` to bulk upload the folder
+2. Select all, download
+3. Use `./privcloud upload` to bulk upload
 
-### Option C: Use iCloud for Windows/Mac export
+### Option C: Mac/Windows export
 
 1. On Mac: Photos app → Select All → File → Export Unmodified Originals
-2. On Windows: iCloud for Windows syncs to a local folder — point `upload` at that folder
-
-### After migration
-
-Once everything is in privcloud and verified, you can:
-- Turn off iCloud Photos on your iPhone (Settings → Photos → iCloud Photos → Off)
-- Downgrade your iCloud plan
-- Keep the Immich app as your primary photo viewer
+2. On Windows: iCloud for Windows syncs to a local folder
 
 ---
 
 ## Uploading existing photo collections
 
-Have photos scattered across hard drives, USB sticks, old laptops? Upload them all.
-
 ```bash
 ./privcloud upload
 ```
 
-Point it at any folder. It uploads recursively and skips duplicates automatically (by file hash). You can run it multiple times from different sources — Immich won't create duplicate entries.
-
-### Supported formats
-
-Photos: JPEG, PNG, HEIC, HEIF, GIF, BMP, TIFF, WebP, RAW (CR2, NEF, ARW, DNG, etc.)
-Videos: MP4, MOV, AVI, MKV, 3GP, M4V, WebM
+Point it at any folder. It uploads recursively and skips duplicates automatically (by file hash). Run it from multiple sources — Immich won't create duplicate entries.
 
 ---
 
 ## When is it safe to delete from your phone?
 
-**After you verify the photo is on the server.** The Immich app shows a green checkmark on each photo once it's backed up.
-
-### Safe to delete?
+**After you verify the photo is on the server.**
 
 | Scenario | Safe? |
 |----------|-------|
 | Photo shows green checkmark in Immich app | Yes |
 | Immich app says "All backed up" | Yes |
-| You uploaded but privcloud is stopped | Yes — photos are already on disk |
-| You haven't opened the Immich app recently | **No** — the photo might not have synced yet |
-| You're not on WiFi | **No** — nothing is uploading |
-
-### The mental model
-
-```
-iPhone Camera Roll  →  (open Immich app on WiFi)  →  Your hard drive
-```
-
-Once a photo is on your hard drive, it's yours forever. The server can be off, your phone can die — the file is sitting on disk.
+| You haven't opened the Immich app recently | **No** |
+| You're not on WiFi | **No** |
 
 ### Recommended approach
 
-Don't delete photos from your phone one by one. Instead:
-
-1. Let Immich auto-backup run for a week or two
-2. Check the web UI — confirm your timeline looks complete
-3. On iPhone: Settings → General → iPhone Storage → Photos → review
-4. Delete in bulk once you trust the system
-
-The first time takes trust. After that it becomes routine — open app, sync, done.
+Let auto-backup run for a week or two, verify your timeline in the web UI, then delete in bulk.
 
 ---
 
 ## Organizing your photos
 
-### Timeline
-
-The main view. All your photos sorted by date, newest first. Scroll to travel back in time. This is your default view and requires no setup — it builds automatically from EXIF dates and file timestamps.
-
-### Albums
-
-- **Create manually** — select photos, click "Add to album"
-- **Auto-created** — Immich can suggest albums based on date and location
-- **From folders** — when uploading via CLI, folder names can become album names
-
-### Favorites
-
-Star any photo to add it to your Favorites. Quick access from the sidebar.
-
-### Archive
-
-Photos you want to keep but hide from the main timeline. Think of it as a "shoebox in the closet." Archived photos still appear in search, albums, and the map — just not the timeline.
-
-### Trash
-
-Deleted photos go to trash first. Recoverable for 30 days, then permanently removed. This gives you a safety net.
-
-### Tags
-
-Add tags to photos for custom categorization beyond what albums offer.
+- **Timeline** — all photos sorted by date, newest first. Builds automatically.
+- **Albums** — create manually or let Immich auto-create by date/location.
+- **Favorites** — star photos for quick access.
+- **Archive** — hide from timeline but keep in search/albums.
+- **Trash** — recoverable for 30 days.
 
 ---
 
 ## Finding photos
 
-### Smart search
-
-Type what you're looking for in natural language:
-
-- "beach sunset"
-- "birthday cake"
-- "dog playing in snow"
-- "red car"
-- "food"
-
-Immich uses machine learning (CLIP model, runs locally) to understand photo content. No cloud API needed.
-
-### Filters
-
-- **By date** — click any month/year in the timeline
-- **By person** — click a face in the People section
-- **By location** — use the Map view, zoom to an area
-- **By media type** — photos only, videos only
-- **By camera** — filter by camera model or lens
-
-### Map view
-
-Every photo with GPS data appears on a world map. Zoom in to see clusters. Click to browse photos from that location. Works especially well after running `fix-gp` on Google Takeout exports — the GPS data gets written back into your photos.
+- **Smart search** — type "beach sunset", "birthday cake", "dog" etc. ML-powered, runs locally.
+- **By date** — click month/year in timeline
+- **By person** — click a face in People
+- **By location** — Map view
+- **By camera** — filter by camera model
 
 ---
 
 ## Face recognition
 
-Immich automatically scans every photo for faces. This runs locally on your machine using the ML container.
+Immich scans every photo for faces locally using the ML container.
 
-### How it works
+1. After upload, faces are detected and grouped by similarity
+2. You name each person once — Immich tags all matching faces
+3. New photos of that person are tagged going forward
 
-1. After upload, the ML container processes each photo (this takes a while on first import — ~1-2 seconds per photo)
-2. Detected faces are grouped by similarity
-3. You name each person once — Immich tags all matching faces automatically
-4. New photos of that person are tagged going forward
-
-### Tips
-
-- **Merge duplicates** — sometimes the same person gets split into two groups. Select both and merge.
-- **Hide faces** — if Immich detects faces in paintings, posters, or TV screens, you can hide those groups
-- **Minimum faces** — Immich only shows face groups with multiple photos by default. Check settings to adjust the threshold.
+**Tips:** merge duplicate groups, hide non-person faces (paintings, TV screens).
 
 ---
 
 ## Duplicates
 
-Immich detects duplicates by file hash. When duplicates are found:
-
-1. Go to the Duplicates section in the sidebar
-2. Review each group — Immich shows the duplicates side by side
-3. Keep the best version, trash the rest
-4. Or use "Keep all" if they're not actually duplicates
-
-Run this after migrating from multiple sources. It's common to have the same photo backed up in three different places.
+Immich detects duplicates by file hash. Go to Duplicates in the sidebar, review groups, keep the best version.
 
 ---
 
 ## Sharing
 
-### Shared albums
-
-1. Create an album
-2. Click Share → add users (they need accounts on your privcloud instance)
-3. Shared users can view and optionally add photos
-
-### Shared links
-
-1. Select an album or photos
-2. Create a shared link (with optional expiry and password)
-3. Anyone with the link can view — no account needed
-4. Great for sharing vacation albums with family
-
-### Multi-user
-
-Create accounts for family members. Each person gets their own library, timeline, and face recognition. The admin can see storage usage per user.
+- **Shared albums** — share with other Immich users
+- **Shared links** — shareable URL with optional expiry and password, no account needed
+- **Multi-user** — each family member gets their own library
 
 ---
 
 ## Background jobs and processing
 
-After uploading photos, Immich processes them in the background. Nothing is instant — here's what's running and why.
+After uploading, Immich processes photos in the background:
 
-### Jobs and what they do
+| Job | What | Timeline |
+|-----|------|----------|
+| Generate Thumbnails | Preview images | Minutes — photos appear as these complete |
+| Extract Metadata | EXIF data | Fast |
+| Smart Search | ML content indexing | Hours for large imports |
+| Face Detection + Recognition | Find and group faces | Hours (~1-2 sec per photo) |
+| Video Transcoding | Convert HEVC to H.264 | Depends on video count |
 
-| Job | What it does | Why it matters |
-|-----|-------------|----------------|
-| **Generate Thumbnails** | Creates small, medium, and blurred previews | Photos won't appear in the app or timeline until this completes |
-| **Extract Metadata** | Reads EXIF data (dates, GPS, camera info) | Needed for timeline sorting, map view, and filters |
-| **Smart Search** | Runs CLIP model on each photo | Enables natural language search ("beach", "dog", etc.) |
-| **Face Detection** | Scans photos for faces | Groups faces for recognition |
-| **Facial Recognition** | Groups detected faces into people | Lets you name people and browse by person |
-| **OCR** | Reads text in images | Makes text in screenshots/documents searchable |
-| **Transcode Videos** | Converts videos to H.264 | Makes HEVC (iPhone) videos playable in browsers |
-| **Duplicate Detection** | Hashes and compares photos | Flags duplicate photos for cleanup |
-
-### After a big import
-
-If you upload thousands of photos at once (Google Takeout, old hard drives), expect:
-
-- **Thumbnails**: minutes to an hour — photos appear in the timeline as these complete
-- **Face detection + recognition**: hours — ~1-2 seconds per photo on a laptop
-- **Smart search**: hours — runs ML on every photo
-- **Video transcoding**: depends on video count and length
-
-Check progress at **Administration → Jobs** in the web UI. All jobs resume where they left off if you stop and restart privcloud.
+Check progress at Administration → Jobs. All jobs resume where they left off after restart.
 
 ---
 
 ## Video playback issues
 
-### "No video with supported format and MIME type found"
-
-This means your browser can't play the video codec. Most iPhone videos are recorded in **HEVC (H.265)**, which many browsers on Linux don't support natively.
-
-### Fix: Enable transcoding
-
-1. Go to http://localhost:2283 → **Administration** → **Video Transcoding**
-2. Make sure it's enabled
-3. Set the target codec to **H.264** (universal browser support)
-4. Immich transcodes HEVC videos in the background — originals stay untouched
-
-Check progress at **Administration → Jobs → Transcode Videos**. Once a video is transcoded, it plays in any browser. The transcoded copy lives in `photos/encoded-video/`, separate from your originals.
-
-### Alternative: Use a browser with HEVC support
-
-Chrome/Edge on macOS and Windows support HEVC natively. On Linux, most browsers don't. Transcoding is the reliable fix.
+iPhone videos (HEVC/H.265) may not play in browsers on Linux. Fix: Administration → Video Transcoding → enable, set codec to H.264. Transcoded copies are stored separately from originals.
 
 ---
 
@@ -481,51 +381,23 @@ Chrome/Edge on macOS and Windows support HEVC natively. On Linux, most browsers 
 
 ### What's stored where
 
-privcloud uses two directories, configured in `.env`:
-
-| Directory | What's in it | Default |
-|-----------|-------------|---------|
-| `UPLOAD_LOCATION` | Original photos, thumbnails, encoded videos, profile pictures | Set during `./privcloud config` |
-| `DB_DATA_LOCATION` | PostgreSQL database (face data, search index, albums, user accounts, EXIF index) | Same parent as photos, `/postgres` subfolder |
-
-### How Immich uses PostgreSQL
-
-The database stores everything *about* your photos, but not the photos themselves:
-
-- Face recognition embeddings and person names
-- CLIP embeddings for smart search
-- Album membership, favorites, archive status
-- User accounts, API keys, sharing permissions
-- EXIF metadata index (parsed from files for fast filtering)
-- Duplicate detection hashes
-- Activity history
+| Directory | Contents |
+|-----------|---------|
+| `UPLOAD_LOCATION` | Original photos, thumbnails, encoded videos |
+| `DB_DATA_LOCATION` | PostgreSQL database (faces, search, albums, accounts) |
 
 ### Storage growth
 
-Immich stores the original file plus generated assets:
+Expect ~20-30% overhead on top of your original library for thumbnails and previews.
 
-| Asset | Approximate size |
-|-------|-----------------|
-| Original photo | As-is (not modified) |
-| Thumbnail | ~50-100 KB per photo |
-| Preview | ~200-500 KB per photo |
-| Encoded video | Varies (only if transcoding is enabled) |
-| Database | ~1-2 KB per photo |
+### Docker containers (Immich only)
 
-**Rule of thumb:** expect ~20-30% overhead on top of your original photo library size for thumbnails and previews.
-
-### Docker containers
-
-privcloud runs four containers:
-
-| Container | Purpose | Resource usage |
-|-----------|---------|---------------|
-| `immich_server` | Web UI, API, photo serving | ~500 MB RAM |
-| `immich_machine_learning` | Face recognition, smart search | ~1-2 GB RAM (spikes during processing) |
-| `immich_redis` | Job queue and caching | ~50 MB RAM |
-| `immich_postgres` | Database | ~200-500 MB RAM |
-
-Total: ~2-4 GB RAM when running. After initial ML processing, usage drops. The ML container is the heaviest — it processes new uploads in the background.
+| Container | Purpose | RAM |
+|-----------|---------|-----|
+| `immich_server` | Web UI, API | ~500 MB |
+| `immich_machine_learning` | Faces, search | ~1-2 GB |
+| `immich_redis` | Job queue | ~50 MB |
+| `immich_postgres` | Database | ~200-500 MB |
 
 ---
 
@@ -535,141 +407,80 @@ Total: ~2-4 GB RAM when running. After initial ML processing, usage drops. The M
 
 **Both directories.** Photos without the database = unsorted files. Database without photos = empty references.
 
-| If you lose... | What happens |
-|---|---|
-| Photos only | Database points to files that don't exist. Everything broken. |
-| Database only | Photos are on disk but Immich doesn't know they exist. Face recognition, albums, search — all gone. Re-import works but you lose all organization. |
-| Both | Clean slate. Start over. |
-
 ### How to backup
 
 ```bash
 ./privcloud backup
 ```
 
-The backup command handles everything:
+Stops server, copies photos + database + config to destination, restarts. Incremental after first run.
 
-1. Shows your photos and database sizes
-2. Asks for a destination (e.g. `/run/media/hamr/External`)
-3. Stops the server automatically (required for a clean database copy)
-4. Copies photos, database, and config to `privcloud-backup/` at the destination
-5. Shows live progress with percentage (uses rsync)
-6. Restarts the server when done
+### How often
 
-The backup directory structure:
-
-```
-/your/backup/drive/privcloud-backup/
-  photos/      ← originals, thumbnails, encoded videos
-  postgres/    ← database (faces, albums, search index)
-  .env         ← config + DB password
-```
-
-**Incremental backups:** After the first full backup, subsequent runs only copy files that changed or are new. A weekly backup of 70+ GB takes seconds if you only added a few photos.
-
-**Handles permissions:** The PostgreSQL directory is owned by Docker's internal user. The backup command uses `sudo` automatically so you don't have to deal with permission errors.
-
-### How often to backup
-
-- **After a big import** — migrating from Google Photos, uploading an old hard drive
-- **Monthly** if you're actively taking photos
-- **Before OS upgrades or hardware changes**
-
-### Backup to an external drive
-
-Plug in an external HDD, run `./privcloud backup`, point it at the drive. You now have a complete, portable copy of your entire photo library that works on any machine with Docker.
+- After big imports
+- Monthly if actively taking photos
+- Before OS upgrades
 
 ---
 
 ## Moving to a new machine
 
-1. Stop privcloud on the old machine: `./privcloud stop`
-2. Copy both `photos` and `postgres` directories to the new machine
-3. On the new machine:
-   ```bash
-   git clone https://github.com/hamr0/privcloud.git
-   cd privcloud
-   ./privcloud install
-   ```
-4. Run `./privcloud config` — point it at the copied photos directory
-5. Edit `.env` — make sure `DB_DATA_LOCATION` points to the copied postgres directory and `DB_PASSWORD` matches the old `.env`
-6. `./privcloud start`
+1. `./privcloud stop` on old machine
+2. Copy `photos` and `postgres` directories to new machine
+3. Clone privcloud, run `./privcloud install`
+4. Point config at the copied directories, make sure `DB_PASSWORD` matches
+5. `./privcloud start`
 
-Everything comes back — faces, albums, search, sharing, all of it. The database references files by relative path within the upload directory, so as long as the folder structure is preserved, it just works.
+Everything comes back — faces, albums, search, sharing.
 
 ---
 
-## Day-to-day usage
+## Day-to-day usage (Immich only)
 
-### The intended workflow
+1. Take photos normally
+2. Open Immich app occasionally — photos sync over WiFi
+3. Browse/organize at http://localhost:2283
+4. `./privcloud stop` when done (or leave running)
 
-1. Take photos on your phone like normal
-2. Open the Immich app occasionally — photos sync over WiFi
-3. When you want to browse, organize, or share: open http://localhost:2283
-4. When you're done: `./privcloud stop` (or leave it running — your choice)
-
-### You don't need to keep it running
-
-privcloud is designed for on-demand use:
-
-- `./privcloud start` — spin up when you want to backup or browse
-- `./privcloud stop` — shut down when done
-- Your photos stay on disk. Nothing is lost when stopped.
-
-The ML container processes new uploads in the background. If you upload 500 photos and stop immediately, face recognition and search indexing will resume where they left off next time you start.
-
-### Keeping Immich updated
-
-```bash
-./privcloud update
-```
-
-This checks for new Immich releases, tells you if you're already up to date, and applies updates with a single confirmation. It pulls the latest images, recreates only the containers that changed, and prunes old images to free disk space. Immich handles database migrations automatically on startup.
+ML processing resumes where it left off on next start.
 
 ---
 
-## Troubleshooting
+## Troubleshooting (Immich)
 
 ### "privcloud start" hangs or times out
 
-```bash
-./privcloud status
-```
+Run `./privcloud status` — it now shows container health and recent errors from logs. Common causes:
+- Port 2283 in use
+- Not enough RAM
+- Docker not running
 
-Check which containers are unhealthy. Common causes:
-- **Port 2283 already in use** — another service is on that port
-- **Not enough RAM** — the ML container needs ~1-2 GB
-- **Docker not running** — `./privcloud start` tries to start it, but check `docker info`
+### Password authentication failed
 
-### Photos not showing up after upload
+If you see `password authentication failed for user "postgres"` in logs, the `.env` password doesn't match what the database was initialized with. Find the original password (check old `.env` files or backups) and update `.env` to match. You **cannot** change the database password by just editing `.env` — the password is baked into the Postgres data directory when first created.
 
-Thumbnails must be generated before photos appear in the timeline or app. Check Administration → Jobs → Generate Thumbnails. See [Background jobs and processing](#background-jobs-and-processing) for details.
+### Photos not showing up
 
-If thumbnails are done and photos are still missing:
-- Verify the file format is supported
-- Check that the upload directory permissions are correct: `./privcloud status`
+Check Administration → Jobs → Generate Thumbnails. Photos appear in the timeline only after thumbnails are generated.
 
 ### Face recognition not working
 
-ML processing happens in the background and takes time after a large import. Check Administration → Jobs → Face Detection. See [Background jobs and processing](#background-jobs-and-processing).
+Check Administration → Jobs → Face Detection. Large imports take hours to process.
 
-### Videos won't play in browser
+### Videos won't play
 
-Most iPhone videos use HEVC which browsers on Linux can't play. Enable transcoding in Administration → Video Transcoding. See [Video playback issues](#video-playback-issues).
+Enable transcoding: Administration → Video Transcoding → H.264.
 
-### Wrong dates on photos
+### Wrong dates
 
-- Run `./privcloud fix-gp` on Google Takeout exports before uploading.
-- For other sources: check if the files have EXIF data. Immich falls back to file modification time when EXIF is missing.
+Run `./privcloud fix-gp` on Google Takeout exports before uploading. For other sources, check if files have EXIF data.
 
-### Database issues
+### Container keeps restarting
 
-```bash
-./privcloud stop
-./privcloud start
-```
-
-A restart fixes most database issues. If the postgres container won't start, check disk space — a full disk can corrupt the database.
+Run `docker logs <container_name> --tail 20` to see the error. Common causes:
+- Wrong password (postgres)
+- Disk full
+- Docker API version mismatch (Watchtower — set `DOCKER_API_VERSION=1.40`)
 
 ---
 
@@ -677,20 +488,266 @@ A restart fixes most database issues. If the postgres container won't start, che
 
 ### What stays local
 
-- **All your photos** — stored on your drive, never uploaded anywhere
-- **Face recognition** — ML models run locally in Docker, no cloud API
-- **Smart search** — CLIP model runs locally, no external calls
-- **Database** — PostgreSQL on your machine
+- All photos — on your drive, never uploaded
+- Face recognition — ML runs locally
+- Smart search — CLIP model runs locally
+- Database — PostgreSQL on your machine
 
 ### What goes over the network
 
-- **Phone ↔ computer** — photos sync over your local WiFi (HTTP on port 2283)
-- **Docker image pulls** — downloads container images from GitHub Container Registry during install/update
-- **Nothing else** — no telemetry, no analytics, no phoning home
+- Phone ↔ server: photos sync over local WiFi
+- Docker image pulls during install/update
+- Nothing else — no telemetry, no analytics
 
-### Security considerations
+---
 
-- The web UI runs on HTTP (not HTTPS) by default. This is fine for local WiFi but **do not expose port 2283 to the internet** without adding a reverse proxy with HTTPS.
-- API keys are stored in plaintext in Immich's database. Treat them like passwords.
-- The `.env` file contains your database password. Don't commit it to a public repo.
-- Each user account has its own library. Users cannot see each other's photos unless explicitly shared.
+# Home server setup
+
+Everything below is for the **full server** mode using `./setup.sh`.
+
+---
+
+## Hardware selection
+
+### Minimum specs
+
+- **CPU:** Intel i3 6th gen+ or i5 4th gen+ (need 4+ threads for Immich ML)
+- **RAM:** 8GB minimum, 16GB recommended (Immich ML + Jellyfin transcoding)
+- **Storage:** 128GB+ for OS + Docker, external drive for data
+- **Form factor:** Mini PC / USFF ideal (low power, quiet, small)
+
+### Recommended
+
+HP ProDesk 400 G4 DM or similar refurbished mini PC. Available on Refurbed/eBay for ~€100-120. These are enterprise-grade, quiet, low power (~35W), and have USB 3.0 for external drives.
+
+### RAM upgrade
+
+The G4 DM has 2 SO-DIMM slots. Get **2x8GB** (dual channel) rather than 1x16GB — dual channel gives ~20% better memory bandwidth. DDR4 2666MHz is backward compatible with 2400MHz motherboards — it just runs at the lower speed.
+
+### External storage
+
+Use a 2.5" SATA drive in a USB 3.0 enclosure (Orico, ~€10). Format as ext4 (not NTFS — causes permission issues with Docker). USB 3.0 is plenty fast for photo serving and media streaming.
+
+### Intel processor naming
+
+- `i3-8100T` = 8th gen i3, T suffix = low power
+- `i5-6500` = 6th gen i5, no suffix = standard
+- Generation is the first digit(s) after the dash
+
+---
+
+## Server setup walkthrough
+
+### Before you start
+
+- USB stick (8GB+) for Fedora installer
+- Ethernet cable (more reliable than WiFi for server)
+- Monitor + keyboard (only for initial setup)
+- Download Fedora XFCE Spin (x86_64 ISO)
+
+### Flash and install
+
+```bash
+# From your laptop — flash ISO to USB
+sudo dd if=Fedora-Xfce-Live-43.iso of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+Boot from USB (F9 on HP for boot menu), install Fedora. Use automatic partitioning — the entire internal drive is for the OS. Data goes on the external USB drive.
+
+### Run setup
+
+```bash
+git clone https://github.com/hamr0/privcloud.git
+cd privcloud
+./setup.sh
+```
+
+**Step 1 (with monitor):** Pick option 1. Enables SSH, sets hostname, auto-login. Note the IP. Unplug the monitor.
+
+**Step 2 (from laptop, not SSH):** Run `./setup.sh` → 2. Copies SSH key, disables password login. Back up the key in `pass`.
+
+**Steps 3-11 (over SSH):** SSH into the server, run `./setup.sh`, go through each step:
+
+- **3-4:** System update + auto-updates
+- **5:** Docker — **log out and SSH back in after this** (docker group)
+- **6:** Firewall — opens service ports locally, trusts Tailscale
+- **7:** Tailscale — create account at login.tailscale.com first, then approve the server. Install Tailscale on phone/laptop with same account.
+- **8:** Mount USB drive — plug in first, pick the partition (ignore nvme)
+- **9:** Deploy — asks for base data path, starts all services. Shows setup instructions for each service.
+- **10:** Backups — daily Immich DB dump at 3am
+- **11:** Log rotation — limits Docker logs to 10MB per container
+
+### BIOS setup
+
+After setup, enter BIOS (F10 on HP) and set **After Power Loss → Power On**. Now the server auto-starts after power outage.
+
+---
+
+## Service setup
+
+After step 9, configure each service in your browser. Run `./setup.sh` → **s** for URLs.
+
+### Immich (port 2283)
+
+1. Create admin account
+2. Install Immich app on phone, enter server URL, enable auto-upload
+3. If migrating: use `./privcloud upload` or `./privcloud fix-gp` for Google Takeout
+
+### Jellyfin (port 8096)
+
+1. Create admin account via setup wizard
+2. Add media libraries pointing to `/media`
+3. Install Jellyfin app on phone/TV for streaming
+4. Media files go in the data path's `media/` directory
+
+### FileBrowser (port 8080)
+
+1. Get the generated password: `docker logs filebrowser | grep password`
+2. Login as **admin** with that password
+3. Change the password immediately (Settings → Profile)
+4. Browse/upload/download files from the data directory
+
+### Uptime Kuma (port 3001)
+
+1. Create admin account
+2. Add monitors for each service:
+   - HTTP → `http://localhost:2283` (Immich)
+   - HTTP → `http://localhost:8096` (Jellyfin)
+   - HTTP → `http://localhost:8080` (FileBrowser)
+3. Optional: configure Telegram/email alerts in Settings → Notifications
+
+---
+
+## Tailscale remote access
+
+Tailscale creates a private encrypted network between your devices. No port forwarding, no dynamic DNS.
+
+### How it works
+
+```
+Your phone ──── Tailscale network ──── Your server
+Your laptop ───┘                       (at home)
+```
+
+Every device with Tailscale installed and logged into the same account gets a private IP (100.x.x.x). These work from anywhere — coffee shop, office, mobile data.
+
+### Setup
+
+1. Create free account at [login.tailscale.com](https://login.tailscale.com)
+2. Server: `sudo tailscale up` → approve via URL
+3. Phone: install Tailscale app, log in with same account
+4. Laptop: `sudo dnf install tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up`
+
+### Access from anywhere
+
+Use the Tailscale IP instead of the local IP:
+
+```
+http://<tailscale-ip>:2283   Immich
+http://<tailscale-ip>:8096   Jellyfin
+http://<tailscale-ip>:8080   FileBrowser
+http://<tailscale-ip>:3001   Uptime Kuma
+ssh ahassan@<tailscale-ip>   SSH
+```
+
+Free for up to 100 devices.
+
+---
+
+## Server maintenance
+
+### Daily (automated)
+
+- **3:00am** — Immich database backup (cron)
+- **4:00am** — Watchtower checks for container updates
+
+### Periodic (manual)
+
+| Task | Command | When |
+|------|---------|------|
+| Check status | `./setup.sh` → **s** | Anytime |
+| Update Immich | `./privcloud update` | Monthly |
+| Update other containers | `docker compose pull && docker compose up -d` | Monthly |
+| Update Fedora | `sudo dnf upgrade` | Monthly |
+| Check disk space | `df -h` | Monthly |
+| Check backup logs | `cat /var/log/immich-backup.log` | After issues |
+| Sync files | `./setup.sh` → **12** (from laptop) | As needed |
+
+### SSH access
+
+```bash
+# From home
+ssh ahassan@<hostname>
+
+# From anywhere (via Tailscale)
+ssh ahassan@<tailscale-ip>
+```
+
+---
+
+## Server troubleshooting
+
+### Can't SSH into server
+
+- **From home:** check the server is on, check IP with `hostname -I` (need monitor temporarily)
+- **From away:** make sure Tailscale is running on both devices
+- **"Permission denied":** your SSH key might not be on the server. Need monitor + keyboard to fix.
+- **Lost SSH key:** plug in monitor, log in locally, re-enable password auth or add new key
+
+### Container keeps restarting
+
+```bash
+docker logs <container_name> --tail 20
+```
+
+Common causes:
+- **Watchtower:** `client version too old` → set `DOCKER_API_VERSION=1.40` in docker-compose.yml
+- **Immich postgres:** `password authentication failed` → `.env` password doesn't match database. Find the original password and update `.env`.
+- **Any container:** `no space left on device` → disk full, clean up with `docker system prune`
+
+### Immich "Taking longer than expected"
+
+Immich's health check has a 60-second timeout. On first start or after updates, it may take longer. Check:
+
+```bash
+curl -s http://localhost:2283/api/server/ping
+docker logs immich_server --tail 10
+```
+
+If it returns `{"res":"pong"}`, it's fine — the timeout was just too short.
+
+### Display not working on mini PC
+
+- Reseat the DisplayPort cable firmly (DP connectors have a latch)
+- Try both DP ports
+- Select the correct input on the monitor (not auto-detect)
+- Try a different cable
+- If refurbished: may be DOA, check return policy
+
+### USB drive not detected or I/O errors
+
+- Try a different USB port (back ports are USB 3.0)
+- Check cable/enclosure — flaky adapters cause `Remote I/O error`
+- Format to ext4 (not NTFS): `sudo mkfs.ext4 -L data /dev/sda1`
+- If the old enclosure is dying, get a new SATA-to-USB 3.0 enclosure (~€10)
+
+### After power outage
+
+If BIOS is set to auto-power-on (F10 → After Power Loss → Power On), the server boots automatically. Fedora auto-logs in, Docker restarts all containers. Nothing to do.
+
+If services aren't running: `cd ~/privcloud && docker compose up -d && ./privcloud start`
+
+---
+
+## Moving data between drives
+
+When migrating from internal drive to external USB (or vice versa):
+
+1. Stop all services: `docker compose down && ./privcloud stop`
+2. Mount the new drive: `./setup.sh` → **8**
+3. Copy data: `rsync -avh --progress /old/path/ /new/path/`
+4. Update `.env` with new paths
+5. Redeploy: `./setup.sh` → **9** (enter new base path)
+6. Verify: `./setup.sh` → **s**
+
+**Important:** the Postgres database password is baked in when first created. If you copy the database directory, keep the same `DB_PASSWORD` in `.env`. Changing it will cause `password authentication failed`.

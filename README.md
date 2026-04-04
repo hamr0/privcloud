@@ -30,7 +30,61 @@ Self-hosted home server with photo backup, media streaming, file management, and
 - 256GB NVMe M.2 (OS + Docker)
 - 1TB external HDD via USB 3.0 (data/media)
 
-## Quick start
+## Two tools
+
+### `./setup.sh` — Server setup & management
+
+```
+========================================
+  Privcloud Setup
+========================================
+
+  -- Run on server with monitor --
+  1) Enable SSH + auto-login + hostname
+
+  -- Exit SSH, run from laptop --
+  2) SSH key auth                ← exit SSH first
+
+  -- Run over SSH from laptop --
+  3) System update
+  4) Enable auto-updates
+  5) Install Docker              ← log out & SSH back in after this
+  6) Configure firewall
+  7) Install Tailscale           ← opens a URL to approve on phone/laptop
+  8) Mount USB drive             ← plug in USB drive first
+  9) Deploy services             ← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma
+  10) Setup backups              ← daily Immich DB backup
+  11) Configure log rotation     ← prevent Docker logs eating disk
+
+  -- Immich management --
+      Run: ./privcloud [start|stop|status|update|backup]
+
+  -- Exit SSH, run from laptop --
+  12) Sync files                 ← exit SSH first
+
+  s) Status                     ← show all service URLs and config
+  a) Run all (3-11)
+  0) Exit
+```
+
+### `./privcloud` — Immich management
+
+```
+  1) install   Check prerequisites, pull images, set up config
+  2) start     Start privcloud
+  3) stop      Stop privcloud
+  4) status    Show status and diagnostics
+  5) config    Change photo storage location
+  6) update    Check for updates and apply
+  7) upload    Upload photos to privcloud
+  8) fix-gp    Fix Google Photos metadata (Takeout export)
+  9) backup    Backup photos + database to external drive
+  0) exit
+```
+
+Commands also work directly: `./privcloud start`, `./privcloud status`, `./privcloud backup`, etc.
+
+## Setup
 
 ### Step 1 — On the server (with monitor + keyboard)
 
@@ -85,22 +139,6 @@ Press **a** to run all (3-11) at once. Press **s** for status (URLs, IPs, contai
 
 Upload/download between laptop and server. Auto-detects local drives and USB drives.
 
-## Immich management
-
-The `privcloud` CLI manages Immich directly:
-
-```
-./privcloud              # interactive menu
-./privcloud start        # start Immich
-./privcloud stop         # stop Immich
-./privcloud status       # health check + recent errors
-./privcloud update       # pull latest images
-./privcloud backup       # backup photos + database to external drive
-./privcloud upload       # upload photos via Immich CLI
-./privcloud fix-gp       # fix Google Photos Takeout metadata
-./privcloud config       # change photo storage location
-```
-
 ## First-time service setup
 
 After deploying (step 9), each service needs initial configuration. Run `./setup.sh` → **s** for URLs.
@@ -138,16 +176,23 @@ After deploying (step 9), each service needs initial configuration. Run `./setup
 
 ### Tailscale
 
+Tailscale creates a private network between your devices — access your server from anywhere.
+
 1. Create a free account at [login.tailscale.com](https://login.tailscale.com)
-2. On the server: `sudo tailscale up` → open the URL, approve
+2. On the server: `sudo tailscale up` → open the URL it prints, approve the device
 3. Install the Tailscale app on your phone/laptop, log in with the same account
-4. Access all services remotely via the Tailscale IP
+4. All devices on the same account can now reach each other via Tailscale IPs
+5. Access all services remotely: `http://<tailscale-ip>:<port>`
+
+Free for up to 100 devices. No port forwarding, no dynamic DNS, encrypted end-to-end.
 
 ## Migrating from Google Photos
 
 1. Export via [Google Takeout](https://takeout.google.com) (select Google Photos)
 2. Fix metadata: `./privcloud fix-gp` — point it at the folder with your takeout zips
 3. Upload: `./privcloud upload` — prompts for your API key and photo folder
+
+The fix restores dates and GPS coordinates that Google strips from Takeout exports.
 
 ## Network access
 

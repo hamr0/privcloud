@@ -29,7 +29,7 @@ Open http://localhost:2283, create your account, connect the Immich app on your 
 
 ### Option 2 — Full home server
 
-Dedicated always-on machine running Immich + media streaming + file management + monitoring + remote access. `./setup.sh` handles everything from a fresh Fedora install — SSH, Docker, firewall, Tailscale, all services.
+Dedicated always-on machine running Immich + media streaming + file management + monitoring + remote access. `federver` handles everything from a fresh Fedora install — SSH, Docker, firewall, Tailscale, all services.
 
 **Good for:** 24/7 photo backup, streaming media to TV/phone, accessing files from anywhere, replacing Google Drive/iCloud/Plex.
 **Needs:** a mini PC or similar (see hardware below), Fedora XFCE, a monitor + keyboard for initial setup (then headless).
@@ -62,13 +62,13 @@ Access everything from anywhere — not just when you're on home WiFi. Like a pr
 - 256GB NVMe M.2 (OS + Docker)
 - 1TB external HDD via USB 3.0 (data/media)
 
-## Two tools
+## Two commands
 
-### `./setup.sh` — Server setup & management
+### `federver` — Fedora XFCE server manager
 
 ```
 ========================================
-  Privcloud Setup
+  Federver — Fedora XFCE Server Manager
 ========================================
 
   -- Run on server with monitor --
@@ -88,33 +88,34 @@ Access everything from anywhere — not just when you're on home WiFi. Like a pr
   10) Setup backups              ← daily Immich DB backup
   11) Configure log rotation     ← prevent Docker logs eating disk
 
-  -- Immich management --
-      Run: ./privcloud [start|stop|status|update|backup]
+  -- Immich photo management --
+      Run: privcloud [start|stop|status|update|backup]
 
   -- Exit SSH, run from laptop --
   12) Sync files                 ← exit SSH first
 
   s) Status                     ← show all service URLs and config
+  p) Power                      ← shutdown or restart server
   a) Run all (3-11)
   0) Exit
 ```
 
-### `./privcloud` — Immich management
+### `privcloud` — Immich photo management
 
 ```
   1) install   Check prerequisites, pull images, set up config
-  2) start     Start privcloud
-  3) stop      Stop privcloud
-  4) status    Show status and diagnostics
+  2) start     Start Immich
+  3) stop      Stop Immich
+  4) status    Show health, containers, recent errors
   5) config    Change photo storage location
   6) update    Check for updates and apply
-  7) upload    Upload photos to privcloud
+  7) upload    Upload photos via Immich CLI
   8) fix-gp    Fix Google Photos metadata (Takeout export)
   9) backup    Backup photos + database to external drive
   0) exit
 ```
 
-Commands also work directly: `./privcloud start`, `./privcloud status`, `./privcloud backup`, etc.
+Both commands work from anywhere on the server. Also available as `./setup.sh` and `./privcloud` from the repo directory.
 
 ## Setup
 
@@ -123,7 +124,7 @@ Commands also work directly: `./privcloud start`, `./privcloud status`, `./privc
 ```bash
 git clone https://github.com/hamr0/privcloud.git
 cd privcloud
-./setup.sh
+federver
 ```
 
 Pick **option 1**. This enables SSH, sets the hostname, configures auto-login, and disables sleep. It prints an SSH command at the end. **Unplug the monitor.**
@@ -132,7 +133,7 @@ Pick **option 1**. This enables SSH, sets the hostname, configures auto-login, a
 
 ```bash
 cd ~/PycharmProjects/privcloud
-./setup.sh
+federver
 ```
 
 Pick **option 2** to copy your SSH key and disable password login.
@@ -142,7 +143,7 @@ Pick **option 2** to copy your SSH key and disable password login.
 ```bash
 ssh ahassan@<ip-from-step-1>
 cd privcloud
-./setup.sh
+federver
 ```
 
 | Step | What | Where | Notes |
@@ -165,7 +166,7 @@ Press **a** to run all (3-11) at once. Press **s** for status (URLs, IPs, contai
 ### Step 12 — Sync files (run from laptop, not SSH)
 
 ```bash
-./setup.sh
+federver
 # Pick 12
 ```
 
@@ -173,7 +174,7 @@ Upload/download between laptop and server. Auto-detects local drives and USB dri
 
 ## First-time service setup
 
-After deploying (step 9), each service needs initial configuration. Run `./setup.sh` → **s** for URLs.
+After deploying (step 9), each service needs initial configuration. Run `federver` → **s** for URLs.
 
 ### Immich
 
@@ -281,14 +282,14 @@ cd privcloud
 
 | Task | Command |
 |------|---------|
-| Status dashboard | `./setup.sh` → **s** |
+| Status dashboard | `federver` → **s** |
 | Check all containers | `docker ps` |
 | Immich management | `./privcloud` |
 | View logs | `docker logs <container_name>` |
 | Update Immich | `./privcloud update` |
 | Update all containers | `docker compose pull && docker compose up -d` |
 | Update system | `sudo dnf upgrade` |
-| Re-run any setup step | `./setup.sh` |
+| Re-run any setup step | `federver` |
 | Manual backup | `./privcloud backup` or `sudo /usr/local/bin/immich-backup.sh` |
 | Monitoring | Uptime Kuma on port 3001 |
 
@@ -296,8 +297,8 @@ cd privcloud
 
 | File | What |
 |------|------|
-| `setup.sh` | Server setup & management menu (steps 1-12) |
-| `privcloud` | Immich CLI (start/stop/status/update/backup/upload) |
+| `setup.sh` | Server setup & management menu, runs as `federver` (steps 1-12) |
+| `privcloud` | Immich photo management CLI, runs as `privcloud` (start/stop/status/update/backup/upload) |
 | `docker-compose.yml` | All services (Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma) |
 | `.env.example` | Template for all config paths and credentials |
 | `.env` | Your config (gitignored, created by step 9) |

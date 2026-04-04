@@ -1,5 +1,5 @@
 #!/bin/bash
-# Privcloud — Server setup & management menu
+# Federver — Fedora XFCE server setup & management menu
 #
 # HOW TO USE:
 #   1. On the server (with monitor + keyboard):
@@ -65,7 +65,7 @@ show_menu() {
     clear
     echo ""
     echo -e "${BOLD}========================================"
-    echo -e "  Privcloud Setup"
+    echo -e "  Federver — Fedora XFCE Server Manager"
     echo -e "========================================${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Run on server with monitor --${NC}"
@@ -85,8 +85,8 @@ show_menu() {
     echo -e "  ${BOLD}10)${NC} Setup backups              ${DIM}← daily Immich DB backup${NC}"
     echo -e "  ${BOLD}11)${NC} Configure log rotation     ${DIM}← prevent Docker logs eating disk${NC}"
     echo ""
-    echo -e "  ${DIM}-- Immich management --${NC}"
-    echo -e "      ${DIM}Run: ${BOLD}./privcloud${NC} ${DIM}[start|stop|status|update|backup]${NC}"
+    echo -e "  ${DIM}-- Immich photo management --${NC}"
+    echo -e "      ${DIM}Run: ${BOLD}privcloud${NC} ${DIM}[start|stop|status|update|backup]${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Exit SSH, run from laptop --${NC}"
     echo -e "  ${BOLD}12)${NC} Sync files                 ${YELLOW}← exit SSH first${NC}"
@@ -121,17 +121,17 @@ EOF
 
     # Create global commands: 'setup' and 'privcloud'
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    sudo tee /usr/local/bin/setup > /dev/null << WRAPPER
+    sudo tee /usr/local/bin/federver > /dev/null << WRAPPER
 #!/bin/bash
 exec $SCRIPT_DIR/setup.sh "\$@"
 WRAPPER
-    sudo chmod +x /usr/local/bin/setup
+    sudo chmod +x /usr/local/bin/federver
     sudo tee /usr/local/bin/privcloud > /dev/null << WRAPPER
 #!/bin/bash
 exec $SCRIPT_DIR/privcloud "\$@"
 WRAPPER
     sudo chmod +x /usr/local/bin/privcloud
-    ok "Commands available: 'setup' and 'privcloud' (from anywhere)"
+    ok "Commands available: 'federver' and 'privcloud' (from anywhere)"
 
     IP=$(hostname -I | awk '{print $1}')
     echo ""
@@ -141,7 +141,7 @@ WRAPPER
     echo -e "  From your laptop, run:"
     echo -e "    ${BOLD}ssh $USER@$IP${NC}"
     echo ""
-    echo -e "  Then run: ${BOLD}setup${NC} (from anywhere)"
+    echo -e "  Then run: ${BOLD}federver${NC} (from anywhere)"
     echo -e "  Run step 2 from laptop (not SSH) to set up key auth."
     echo -e "  Then SSH in and continue with steps 3-11."
     echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -688,9 +688,9 @@ step_status() {
 
     echo ""
     echo -e "  ${BOLD}Management${NC}"
-    echo -e "    Immich:   ${BOLD}./privcloud${NC} [start|stop|status|update|backup]"
+    echo -e "    Immich:   ${BOLD}privcloud${NC} [start|stop|status|update|backup]"
+    echo -e "    Server:   ${BOLD}federver${NC}"
     echo -e "    Services: ${BOLD}docker compose [up -d|down|pull]${NC}"
-    echo -e "    Setup:    ${BOLD}./setup.sh${NC}"
 }
 
 step_power() {

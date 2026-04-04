@@ -404,29 +404,64 @@ cmd_status() {
 
   # --- Containers ---
   bold "Containers"
-  if curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; then
-    green "  privcloud is running"
-    if [ -n "$cc" ]; then
+  if [ -n "$cc" ]; then
+    local has_containers=false
+    while IFS= read -r line; do
+      has_containers=true
+      if echo "$line" | grep -q "(healthy)"; then
+        green "  $line"
+      elif echo "$line" | grep -q "NAME"; then
+        echo "  $line"
+      elif echo "$line" | grep -qi "exit\|restart\|unhealthy"; then
+        red "  $line"
+      else
+        yellow "  $line"
+      fi
+    done < <(run_compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null)
+
+    if ! $has_containers; then
+      yellow "  No containers running."
       echo ""
-      run_compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null | while IFS= read -r line; do
-        if echo "$line" | grep -q "(healthy)"; then
-          green "  $line"
-        elif echo "$line" | grep -q "NAME"; then
-          echo "  $line"
-        else
-          yellow "  $line"
-        fi
-      done
+      echo "  Run: privcloud start"
+      return
     fi
+  fi
+
+  echo ""
+
+  # --- Health check ---
+  if curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; then
+    green "  Immich is responding"
     echo ""
     local ip
     ip="$(get_ip)"
     bold "  Web UI:   http://localhost:2283"
-    bold "  iPhone:   http://${ip}:2283"
+    bold "  Network:  http://${ip}:2283"
   else
-    yellow "  privcloud is stopped"
-    echo ""
-    echo "  Run: privcloud start"
+    red "  Immich is NOT responding on port 2283"
+  fi
+
+  # --- Recent errors ---
+  echo ""
+  bold "Recent errors"
+  local errors_found=false
+
+  for container in immich_server immich_postgres immich_machine_learning immich_redis; do
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
+      local err_lines
+      err_lines="$(docker logs "$container" --tail 50 2>&1 | grep -iE 'error|fatal|panic|failed|exception|denied' | tail -3)"
+      if [ -n "$err_lines" ]; then
+        errors_found=true
+        red "  ── $container ──"
+        echo "$err_lines" | while IFS= read -r eline; do
+          echo "    $eline"
+        done
+      fi
+    fi
+  done
+
+  if ! $errors_found; then
+    green "  No recent errors."
   fi
 }
 

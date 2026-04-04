@@ -36,14 +36,23 @@ Dedicated always-on machine running Immich + media streaming + file management +
 
 ## What it runs (full server)
 
-| Service | Port | What it does |
-|---------|------|-------------|
-| Immich | 2283 | Photo backup from phone, face detection, search |
-| Jellyfin | 8096 | Stream movies, music, media |
-| FileBrowser | 8080 | Browse/download/upload files via web UI |
-| Watchtower | — | Auto-updates all containers daily at 4am |
-| Uptime Kuma | 3001 | Monitoring dashboard, alerts if services go down |
-| Tailscale | — | Secure remote access from anywhere |
+### Immich — Photo backup (port 2283)
+Back up every photo from your phone automatically over WiFi. Face recognition groups your family and friends. Search by content ("beach", "birthday", "dog"). Map view, timeline, albums, duplicate detection. Replace iCloud and Google Photos completely.
+
+### Jellyfin — Media streaming (port 8096)
+Stream your movies, TV shows, and music to any device — phone, laptop, smart TV. Like a personal Netflix/Spotify. Organizes your media library with metadata, artwork, and subtitles. No subscription, no tracking.
+
+### FileBrowser — File management (port 8080)
+Access all your files from any browser. Upload, download, rename, move — like a web-based file manager for your server. No need to SSH in just to grab a file.
+
+### Watchtower — Auto-updates
+Checks for new container images daily at 4am and updates automatically. Your services stay up to date without you lifting a finger.
+
+### Uptime Kuma — Monitoring (port 3001)
+Dashboard showing if each service is up or down. Set up Telegram or email alerts so you know immediately if something breaks at 2am.
+
+### Tailscale — Remote access
+Access everything from anywhere — not just when you're on home WiFi. Like a private VPN between your devices. Free, encrypted, no port forwarding needed.
 
 ## Hardware (full server)
 

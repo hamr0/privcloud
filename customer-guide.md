@@ -729,8 +729,32 @@ Install "RD Client" from App Store. Add PC with Tailscale IP.
 
 ### Daily (automated)
 
+- **Hourly** — Disk space check (alerts if any mount exceeds 85%)
 - **3:00am** — Immich database backup (cron)
 - **4:00am** — Watchtower checks for container updates
+
+### Monitoring
+
+| What | How | Where |
+|------|-----|-------|
+| Service health | Uptime Kuma monitors | `http://<server-ip>:3001` |
+| Server online | Ping monitor in Uptime Kuma | Type: Ping → server IP |
+| Disk space | Hourly cron check | `cat /var/log/disk-check.log` |
+| Backup status | Check log | `cat /var/log/immich-backup.log` |
+| Container errors | `privcloud status` | Shows recent errors per container |
+
+**Uptime Kuma monitors to add:**
+
+| Name | Type | URL/Host |
+|------|------|----------|
+| Immich | HTTP(s) | `http://<server-ip>:2283/api/server/ping` |
+| Jellyfin | HTTP(s) | `http://<server-ip>:8096` |
+| FileBrowser | HTTP(s) | `http://<server-ip>:8080` |
+| Server | Ping | `<server-ip>` |
+
+Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
+
+Optional: add a **Push** monitor for disk alerts — see step 11 in `federver` for instructions.
 
 ### Periodic (manual)
 
@@ -741,8 +765,9 @@ Install "RD Client" from App Store. Add PC with Tailscale IP.
 | Update other containers | `docker compose pull && docker compose up -d` | Monthly |
 | Update Fedora | `sudo dnf upgrade` | Monthly |
 | Check disk space | `df -h` | Monthly |
+| Check disk alerts | `cat /var/log/disk-check.log` | After alerts |
 | Check backup logs | `cat /var/log/immich-backup.log` | After issues |
-| Sync files | `federver` → **12** (from laptop) | As needed |
+| Sync files | `federver` → **13** (from laptop) | As needed |
 
 ### SSH access
 

@@ -14,6 +14,7 @@
   - Service deployment (Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma)
   - Remote desktop via xrdp (disables local display, RDP from any device)
   - Daily Immich DB backup (cron at 3am)
+  - Hourly disk space monitoring (alerts above 85%)
   - Docker log rotation
   - File sync between laptop and server (upload/download)
   - Status dashboard (URLs, IPs, containers, disk)

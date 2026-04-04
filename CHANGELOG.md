@@ -12,6 +12,7 @@
   - Tailscale remote access with guided setup
   - USB drive mount (permanent via fstab)
   - Service deployment (Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma)
+  - Remote desktop via xrdp (disables local display, RDP from any device)
   - Daily Immich DB backup (cron at 3am)
   - Docker log rotation
   - File sync between laptop and server (upload/download)

@@ -35,6 +35,7 @@ Your server. Your data. No cloud required.
 - [Server setup walkthrough](#server-setup-walkthrough)
 - [Service setup](#service-setup)
 - [Tailscale remote access](#tailscale-remote-access)
+- [Remote desktop](#remote-desktop)
 - [Server maintenance](#server-maintenance)
 - [Server troubleshooting](#server-troubleshooting)
 - [Moving data between drives](#moving-data-between-drives)
@@ -89,20 +90,40 @@ Dedicated always-on machine running Immich + media streaming + file management +
 
 ### From federver (server setup)
 
-| Step | What it does |
-|------|-------------|
-| SSH + auto-login | Remote access, no password on boot |
-| SSH key auth | Key-only login, disables passwords |
-| System update | Updates all packages |
-| Auto-updates | Automatic security patches |
-| Docker | Container runtime for all services |
-| Firewall | Opens service ports locally, trusts Tailscale |
-| Tailscale | Remote access from anywhere |
-| USB mount | Permanent mount for data drive |
-| Deploy | Starts all services (Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma) |
-| Backups | Daily Immich DB backup cron |
-| Log rotation | Prevents Docker logs eating disk |
-| Sync | Upload/download files between laptop and server |
+```
+========================================
+  Federver — Fedora XFCE Server Manager
+========================================
+
+  -- Run on server with monitor --
+  1) Enable SSH + auto-login + hostname
+
+  -- Exit SSH, run from laptop --
+  2) SSH key auth                ← exit SSH first
+
+  -- Run over SSH from laptop --
+  3) System update
+  4) Enable auto-updates
+  5) Install Docker              ← log out & SSH back in after this
+  6) Configure firewall
+  7) Install Tailscale           ← opens a URL to approve on phone/laptop
+  8) Mount USB drive             ← plug in USB drive first
+  9) Deploy services             ← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma
+  10) Remote desktop             ← access XFCE desktop from laptop
+  11) Setup backups              ← daily Immich DB backup
+  12) Configure log rotation     ← prevent Docker logs eating disk
+
+  -- Immich photo management --
+      Run: privcloud [start|stop|status|update|backup]
+
+  -- Exit SSH, run from laptop --
+  13) Sync files                 ← exit SSH first
+
+  s) Status                     ← show all service URLs and config
+  p) Power                      ← shutdown or restart server
+  a) Run all (3-12)
+  0) Exit
+```
 
 ### From Immich (the photo server)
 
@@ -651,6 +672,46 @@ ssh ahassan@<tailscale-ip>   SSH
 ```
 
 Free for up to 100 devices.
+
+### Family / multi-device access
+
+Each device that needs remote access needs Tailscale installed and logged into the **same account**. For family members:
+
+1. They download Tailscale on their phone
+2. Log in with your Tailscale account
+3. They can now access all services via the Tailscale IP
+
+Tailscale only routes traffic to your server — it does NOT route all their internet through a VPN. Normal browsing, apps, everything else goes through their regular connection.
+
+---
+
+## Remote desktop
+
+Access the full XFCE desktop from any device. Step 10 in `federver` installs xrdp.
+
+### How it works
+
+xrdp replaces the local display (lightdm) since the server is headless. The desktop is only accessible remotely via RDP protocol.
+
+### Connecting
+
+**From Linux (Fedora):**
+```
+sudo dnf install remmina
+```
+Open Remmina → New → Protocol: RDP → Server: `<server-ip>` → Username + Password.
+
+**From Mac:**
+Install "Microsoft Remote Desktop" from App Store. Add PC with server IP.
+
+**From iPhone/iPad:**
+Install "RD Client" from App Store. Add PC with Tailscale IP.
+
+### Troubleshooting
+
+- **Session opens then closes:** lightdm is still running. Run `sudo systemctl disable --now lightdm` on the server.
+- **Black screen:** XFCE session packages may be missing. Run `sudo dnf install xfce4-session xfwm4 xfce4-panel xfdesktop`.
+- **Can't connect:** check firewall port 3389 is open: `sudo firewall-cmd --list-ports`.
 
 ---
 

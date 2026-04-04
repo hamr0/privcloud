@@ -801,6 +801,24 @@ Common causes:
 - **Immich postgres:** `password authentication failed` → `.env` password doesn't match database. Find the original password and update `.env`.
 - **Any container:** `no space left on device` → disk full, clean up with `docker system prune`
 
+### Immich 500 error / "Permission denied" on postgres
+
+If Immich shows a 500 error and logs say `could not open file ... Permission denied`, the postgres data directory has wrong ownership. This happens if you run `chown` on the entire data directory.
+
+**Fix:**
+```bash
+docker compose stop database
+sudo chown -R 999:999 ~/data/immich/postgres
+docker compose start database
+docker restart immich_server
+```
+
+**Never run `chown` on the postgres directory.** Postgres uses its own internal user (999). Only chown the upload directory:
+```bash
+sudo chown -R ahassan:ahassan ~/data/immich/upload   # safe
+# sudo chown -R ahassan:ahassan ~/data/immich/        # BREAKS POSTGRES
+```
+
 ### Immich "Taking longer than expected"
 
 Immich's health check has a 60-second timeout. On first start or after updates, it may take longer. Check:

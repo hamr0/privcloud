@@ -9,9 +9,32 @@
 
 **Your server. Your data. No cloud required.**
 
-Self-hosted home server with photo backup, media streaming, file management, and remote access. One script sets up everything from a fresh Fedora install.
+Privcloud has two modes. Pick what fits you:
 
-## What it runs
+### Option 1 — Immich only (no server needed)
+
+Just want to back up your photos locally? Run `./privcloud` on any machine — laptop, desktop, whatever. No dedicated server, no setup script. Start it when you want to sync, stop it when done.
+
+```bash
+git clone https://github.com/hamr0/privcloud.git
+cd privcloud
+./privcloud install
+./privcloud start
+```
+
+Open http://localhost:2283, create your account, connect the Immich app on your phone. Done.
+
+**Good for:** backing up phone photos, replacing iCloud/Google Photos, occasional use.
+**Needs:** Docker, ~4GB RAM, storage for your photos. Linux, macOS, or WSL.
+
+### Option 2 — Full home server
+
+Dedicated always-on machine running Immich + media streaming + file management + monitoring + remote access. `./setup.sh` handles everything from a fresh Fedora install — SSH, Docker, firewall, Tailscale, all services.
+
+**Good for:** 24/7 photo backup, streaming media to TV/phone, accessing files from anywhere, replacing Google Drive/iCloud/Plex.
+**Needs:** a mini PC or similar (see hardware below), Fedora XFCE, a monitor + keyboard for initial setup (then headless).
+
+## What it runs (full server)
 
 | Service | Port | What it does |
 |---------|------|-------------|
@@ -22,7 +45,7 @@ Self-hosted home server with photo backup, media streaming, file management, and
 | Uptime Kuma | 3001 | Monitoring dashboard, alerts if services go down |
 | Tailscale | — | Secure remote access from anywhere |
 
-## Hardware
+## Hardware (full server)
 
 - HP ProDesk 400 G4 DM (Desktop Mini)
 - Intel Core i5-8500T (6 cores, 6 threads)

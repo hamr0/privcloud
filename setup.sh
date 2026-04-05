@@ -563,8 +563,7 @@ step_wireguard() {
                 # Add peer mode
                 local server_public=$(sudo cat "$WG_DIR/server_public.key")
                 local server_ip=$(hostname -I | awk '{print $1}')
-                local ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
-                local endpoint="${ts_ip:-$server_ip}"
+                local endpoint="${server_ip}"
 
                 read -p "  How many new peers to add [1]: " peer_count
                 peer_count="${peer_count:-1}"
@@ -665,25 +664,39 @@ PersistentKeepalive = 25"
     read -p "  Number of peers [1]: " peer_count
     peer_count="${peer_count:-1}"
 
-    # Build server config
-    local server_conf="[Interface]
-Address = ${wg_subnet}.1/24
-ListenPort = ${wg_port}
-PrivateKey = ${server_private}
-PostUp = firewall-cmd --add-port=${wg_port}/udp && firewall-cmd --add-masquerade
-PostDown = firewall-cmd --remove-port=${wg_port}/udp && firewall-cmd --remove-masquerade"
+    # Detect main network interface
+    local iface
+    iface=$(ip route | grep default | awk '{print $5}' | head -1)
+    info "Network interface: $iface"
 
     # Enable IP forwarding
     echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-wireguard.conf > /dev/null
     sudo sysctl -p /etc/sysctl.d/99-wireguard.conf > /dev/null
 
+    # Open firewall port permanently
+    sudo firewall-cmd --permanent --add-port=${wg_port}/udp 2>/dev/null || true
+    sudo firewall-cmd --reload 2>/dev/null || true
+
+    # Build server config (PostUp/PostDown must be single lines)
+    local post_up="iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${iface} -j MASQUERADE"
+    local post_down="iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${iface} -j MASQUERADE"
+
+    local server_conf="[Interface]
+Address = ${wg_subnet}.1/24
+ListenPort = ${wg_port}
+PrivateKey = ${server_private}
+PostUp = ${post_up}
+PostDown = ${post_down}"
+
+    local server_ip
     local server_ip
     server_ip=$(hostname -I | awk '{print $1}')
-    local ts_ip
-    ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
 
-    # Use Tailscale IP as endpoint if available, otherwise local IP
-    local endpoint="${ts_ip:-$server_ip}"
+    # Use local IP as endpoint (Tailscale + WireGuard creates routing loops)
+    # For remote WireGuard, set up port forwarding on your router (port 51820 → server)
+    local endpoint="${server_ip}"
+    info "Endpoint: ${endpoint}:${wg_port}"
+    info "For remote access, forward port ${wg_port}/udp on your router to ${server_ip}"
 
     for i in $(seq 1 "$peer_count"); do
         echo ""

@@ -1,6 +1,9 @@
 #!/bin/bash
 # fedvpn — WireGuard VPN client for connecting to your home server
-# Install: copy this script to /usr/local/bin/fedvpn
+#
+# First time:  fedvpn → 1 (setup)
+# After that:  fedvpn → 2 (connect) / 3 (disconnect)
+# Or directly: fedvpn start / fedvpn stop / fedvpn status
 
 set -e
 
@@ -13,30 +16,80 @@ NC='\033[0m'
 
 WG_CONF="/etc/wireguard/wg0.conf"
 
-check_installed() {
-    if ! command -v wg &>/dev/null; then
-        echo -e "${RED}WireGuard not installed.${NC}"
-        echo -e "Run: ${BOLD}sudo dnf install wireguard-tools${NC} (Fedora)"
-        echo -e "     ${BOLD}sudo apt install wireguard${NC} (Ubuntu/Debian)"
-        echo -e "     ${BOLD}brew install wireguard-tools${NC} (Mac)"
-        exit 1
-    fi
-}
+vpn_setup() {
+    echo -e "${BOLD}fedvpn setup${NC}"
+    echo ""
 
-check_config() {
-    if [[ ! -f "$WG_CONF" ]]; then
-        echo -e "${RED}No WireGuard config found at $WG_CONF${NC}"
-        echo ""
-        echo -e "Copy it from your server:"
-        echo -e "  ${BOLD}scp <user>@<server-ip>:/etc/wireguard/<peer-name>.conf /tmp/wg.conf${NC}"
-        echo -e "  ${BOLD}sudo cp /tmp/wg.conf $WG_CONF${NC}"
-        exit 1
+    # Install WireGuard if missing
+    if ! command -v wg &>/dev/null; then
+        echo -e "  Installing WireGuard..."
+        if command -v dnf &>/dev/null; then
+            sudo dnf install -y wireguard-tools
+        elif command -v apt-get &>/dev/null; then
+            sudo apt-get install -y wireguard
+        elif command -v brew &>/dev/null; then
+            brew install wireguard-tools
+        else
+            echo -e "  ${RED}Can't detect package manager. Install wireguard-tools manually.${NC}"
+            return 1
+        fi
+        echo -e "  ${GREEN}WireGuard installed.${NC}"
+    else
+        echo -e "  ${GREEN}WireGuard already installed.${NC}"
     fi
+
+    echo ""
+
+    # Check if config already exists
+    if [[ -f "$WG_CONF" ]]; then
+        echo -e "  ${YELLOW}Config already exists at $WG_CONF${NC}"
+        read -p "  Overwrite? [y/N] " -n 1 -r
+        echo ""
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo -e "  Keeping existing config."
+            return
+        fi
+    fi
+
+    # Get config from user
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━���━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}PASTE YOUR WIREGUARD CONFIG${NC}"
+    echo ""
+    echo -e "  On your server, run: ${BOLD}federver${NC} → ${BOLD}11${NC}"
+    echo -e "  It shows a config block starting with ${BOLD}[Interface]${NC}"
+    echo -e "  Copy the entire config, paste it below, then press ${BOLD}Ctrl+D${NC}"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━���━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    local config=""
+    echo -e "  Paste config (Ctrl+D when done):"
+    config=$(cat)
+
+    if [[ -z "$config" ]] || ! echo "$config" | grep -q "\[Interface\]"; then
+        echo -e "  ${RED}Invalid config — must contain [Interface] section.${NC}"
+        return 1
+    fi
+
+    # Write config
+    sudo mkdir -p /etc/wireguard
+    echo "$config" | sudo tee "$WG_CONF" > /dev/null
+    sudo chmod 600 "$WG_CONF"
+
+    echo ""
+    echo -e "  ${GREEN}Config saved to $WG_CONF${NC}"
+    echo ""
+    echo -e "  ${GREEN}Setup complete!${NC} Run ${BOLD}fedvpn${NC} → ${BOLD}2${NC} to connect."
 }
 
 vpn_start() {
-    check_installed
-    check_config
+    if ! command -v wg &>/dev/null; then
+        echo -e "${RED}WireGuard not installed. Run fedvpn → 1 (setup) first.${NC}"
+        return 1
+    fi
+    if [[ ! -f "$WG_CONF" ]]; then
+        echo -e "${RED}No config found. Run fedvpn → 1 (setup) first.${NC}"
+        return 1
+    fi
     if sudo wg show wg0 &>/dev/null 2>&1; then
         echo -e "${GREEN}VPN already connected.${NC}"
         vpn_status
@@ -48,7 +101,6 @@ vpn_start() {
 }
 
 vpn_stop() {
-    check_installed
     if ! sudo wg show wg0 &>/dev/null 2>&1; then
         echo -e "${DIM}VPN not running.${NC}"
         return
@@ -59,7 +111,10 @@ vpn_stop() {
 }
 
 vpn_status() {
-    check_installed
+    if ! command -v wg &>/dev/null; then
+        echo -e "${RED}WireGuard not installed.${NC}"
+        return
+    fi
     if sudo wg show wg0 &>/dev/null 2>&1; then
         echo -e "${GREEN}VPN: connected${NC}"
         echo ""
@@ -75,27 +130,40 @@ show_menu() {
     echo ""
     echo -e "${BOLD}fedvpn — WireGuard VPN${NC}"
     echo ""
-    echo -e "  ${BOLD}1)${NC} Connect"
-    echo -e "  ${BOLD}2)${NC} Disconnect"
-    echo -e "  ${BOLD}3)${NC} Status"
+    if [[ -f "$WG_CONF" ]]; then
+        echo -e "  ${GREEN}Config: installed${NC}"
+    else
+        echo -e "  ${YELLOW}Config: not set up — run setup first${NC}"
+    fi
+    if sudo wg show wg0 &>/dev/null 2>&1; then
+        echo -e "  ${GREEN}Status: connected${NC}"
+    else
+        echo -e "  ${DIM}Status: disconnected${NC}"
+    fi
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Setup              ${DIM}← first time: install + paste config${NC}"
+    echo -e "  ${BOLD}2)${NC} Connect"
+    echo -e "  ${BOLD}3)${NC} Disconnect"
+    echo -e "  ${BOLD}4)${NC} Status"
     echo -e "  ${BOLD}0)${NC} Exit"
     echo ""
     read -p "  Choose: " choice
     case $choice in
-        1|start|up)     vpn_start ;;
-        2|stop|down)    vpn_stop ;;
-        3|status)       vpn_status ;;
-        0|exit|q)       exit 0 ;;
-        *)              echo -e "${RED}Invalid choice.${NC}" ;;
+        1|setup)    vpn_setup ;;
+        2|start)    vpn_start ;;
+        3|stop)     vpn_stop ;;
+        4|status)   vpn_status ;;
+        0|exit|q)   exit 0 ;;
+        *)          echo -e "${RED}Invalid choice.${NC}" ;;
     esac
 }
 
-# Direct commands or interactive menu
 case "${1:-}" in
+    setup)          vpn_setup ;;
     start|up)       vpn_start ;;
     stop|down)      vpn_stop ;;
     status)         vpn_status ;;
-    -h|--help|help) echo "Usage: fedvpn [start|stop|status]" ;;
+    -h|--help|help) echo "Usage: fedvpn [setup|start|stop|status]" ;;
     "")             show_menu ;;
-    *)              echo "Usage: fedvpn [start|stop|status]" ;;
+    *)              echo "Usage: fedvpn [setup|start|stop|status]" ;;
 esac

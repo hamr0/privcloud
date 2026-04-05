@@ -35,6 +35,7 @@ Your server. Your data. No cloud required.
 - [Server setup walkthrough](#server-setup-walkthrough)
 - [Service setup](#service-setup)
 - [Tailscale remote access](#tailscale-remote-access)
+- [WireGuard VPN](#wireguard-vpn)
 - [Remote desktop](#remote-desktop)
 - [Server maintenance](#server-maintenance)
 - [Server troubleshooting](#server-troubleshooting)
@@ -95,34 +96,32 @@ Dedicated always-on machine running Immich + media streaming + file management +
   Federver — Fedora XFCE Server Manager
 ========================================
 
-  -- Run on server with monitor --
-  1) Enable SSH + auto-login + hostname
+  -- Initial setup (run once, in order) --
+  1)  Enable SSH + auto-login + hostname    ← with monitor
+  2)  SSH key auth                          ← from laptop, exit SSH first
+  3)  System update
+  4)  Enable auto-updates
+  5)  Install Docker                        ← log out & SSH back in after
 
-  -- Exit SSH, run from laptop --
-  2) SSH key auth                ← exit SSH first
+  -- Services --
+  6)  Configure firewall
+  7)  Deploy services                       ← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma
+  8)  Setup backups + disk monitoring
+  9)  Configure log rotation
 
-  -- Run over SSH from laptop --
-  3) System update
-  4) Enable auto-updates
-  5) Install Docker              ← log out & SSH back in after this
-  6) Configure firewall
-  7) Install Tailscale           ← opens a URL to approve on phone/laptop
-  8) Mount USB drive             ← plug in USB drive first
-  9) Deploy services             ← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma
-  10) Remote desktop             ← access XFCE desktop from laptop
-  11) Setup backups              ← daily Immich DB backup
-  12) Configure log rotation     ← prevent Docker logs eating disk
+  -- Extras (optional, run anytime) --
+  10) Install Tailscale                     ← remote access VPN
+  11) Install WireGuard                     ← full VPN, route all traffic
+  12) Mount USB drive                       ← plug in drive first
+  13) Remote desktop                        ← access XFCE desktop via RDP
 
   -- Immich photo management --
       Run: privcloud [start|stop|status|update|backup]
 
-  -- Exit SSH, run from laptop --
-  13) Sync files                 ← exit SSH first
+  -- Tools (from laptop, exit SSH first) --
+  14) Sync files
 
-  s) Status                     ← show all service URLs and config
-  p) Power                      ← shutdown or restart server
-  a) Run all (3-12)
-  0) Exit
+  s)  Status        p)  Power        a)  Run all (3-9)        0)  Exit
 ```
 
 ### From Immich (the photo server)
@@ -692,6 +691,44 @@ Each device that needs remote access needs Tailscale installed and logged into t
 3. They can now access all services via the Tailscale IP
 
 Tailscale only routes traffic to your server — it does NOT route all their internet through a VPN. Normal browsing, apps, everything else goes through their regular connection.
+
+---
+
+## WireGuard VPN
+
+WireGuard routes ALL your device traffic through the server. Unlike Tailscale (which only lets you access the server), WireGuard makes your phone/laptop appear to be on your home network from anywhere.
+
+### Tailscale vs WireGuard
+
+| | Tailscale | WireGuard |
+|--|-----------|-----------|
+| **Purpose** | Access your server remotely | Route all traffic through server |
+| **Setup** | Easy (managed service) | Step 11 handles everything |
+| **Privacy** | Only server traffic | All internet traffic encrypted |
+| **Geo-restrictions** | No help | Bypass (appear to be at home) |
+| **Public WiFi** | Server access only | Full protection |
+| **Can coexist** | Yes | Yes |
+
+### Setup
+
+Run `federver` → **11**. The script:
+
+1. Installs WireGuard and generates server keys
+2. Asks how many devices (phone, laptop, etc.)
+3. Generates a config + QR code for each device
+4. Configures firewall and IP forwarding
+
+### Connecting devices
+
+1. Install the **WireGuard app** on your phone/laptop
+2. Scan the QR code shown during setup, or import the config file
+3. Toggle the VPN on — all traffic now routes through your server
+
+### Managing peers later
+
+Configs are saved in `/etc/wireguard/`. To add more peers later, run step 11 again or manually edit `/etc/wireguard/wg0.conf`.
+
+Check status: `sudo wg show`
 
 ---
 

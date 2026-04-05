@@ -12,7 +12,9 @@
   - Tailscale remote access with guided setup
   - USB drive mount (permanent via fstab)
   - Service deployment (Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma)
+  - WireGuard VPN (full traffic routing, auto key generation, QR codes for peers)
   - Remote desktop via xrdp (disables local display, RDP from any device)
+  - Reorganized menu: Initial setup (1-5), Services (6-9), Extras (10-13), Tools (14)
   - Daily Immich DB backup (cron at 3am)
   - Hourly disk space monitoring with Uptime Kuma push alerts (above 85%)
   - Docker log rotation

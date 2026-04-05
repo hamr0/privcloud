@@ -43,6 +43,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
 | **Uptime Kuma** | 3001 | Monitoring dashboard, alerts if services go down |
 | **Watchtower** | — | Auto-updates all containers daily at 4am |
 | **Tailscale** | — | Remote access from anywhere, no port forwarding |
+| **WireGuard** | 51820 | Full VPN — route all traffic through server |
 | **Remote Desktop** | 3389 | Full XFCE desktop via RDP from any device |
 
 ## Commands
@@ -54,34 +55,32 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
   Federver — Fedora XFCE Server Manager
 ========================================
 
-  -- Run on server with monitor --
-  1) Enable SSH + auto-login + hostname
+  -- Initial setup (run once, in order) --
+  1)  Enable SSH + auto-login + hostname    ← with monitor
+  2)  SSH key auth                          ← from laptop, exit SSH first
+  3)  System update
+  4)  Enable auto-updates
+  5)  Install Docker                        ← log out & SSH back in after
 
-  -- Exit SSH, run from laptop --
-  2) SSH key auth                ← exit SSH first
+  -- Services --
+  6)  Configure firewall
+  7)  Deploy services                       ← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma
+  8)  Setup backups + disk monitoring
+  9)  Configure log rotation
 
-  -- Run over SSH from laptop --
-  3) System update
-  4) Enable auto-updates
-  5) Install Docker              ← log out & SSH back in after this
-  6) Configure firewall
-  7) Install Tailscale           ← opens a URL to approve on phone/laptop
-  8) Mount USB drive             ← plug in USB drive first
-  9) Deploy services             ← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma
-  10) Remote desktop             ← access XFCE desktop from laptop
-  11) Setup backups              ← daily Immich DB backup
-  12) Configure log rotation     ← prevent Docker logs eating disk
+  -- Extras (optional, run anytime) --
+  10) Install Tailscale                     ← remote access VPN
+  11) Install WireGuard                     ← full VPN, route all traffic
+  12) Mount USB drive                       ← plug in drive first
+  13) Remote desktop                        ← access XFCE desktop via RDP
 
   -- Immich photo management --
       Run: privcloud [start|stop|status|update|backup]
 
-  -- Exit SSH, run from laptop --
-  13) Sync files                 ← exit SSH first
+  -- Tools (from laptop, exit SSH first) --
+  14) Sync files
 
-  s) Status                     ← show all service URLs and config
-  p) Power                      ← shutdown or restart server
-  a) Run all (3-12)
-  0) Exit
+  s)  Status        p)  Power        a)  Run all (3-9)        0)  Exit
 ```
 
 ### `privcloud` — Immich photo manager

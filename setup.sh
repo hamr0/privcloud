@@ -538,7 +538,7 @@ step_wireguard() {
     local is_new_install=false
 
     # Check if already installed
-    if [[ -f "$WG_DIR/wg0.conf" ]]; then
+    if sudo test -f "$WG_DIR/wg0.conf"; then
         ok "WireGuard is already installed."
         echo ""
 

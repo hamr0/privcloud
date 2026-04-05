@@ -1,9 +1,7 @@
 #!/bin/bash
-# fedvpn — WireGuard VPN client for connecting to your home server
-#
+# fedvpn — WireGuard VPN client
 # First time:  fedvpn → 1 (setup)
 # After that:  fedvpn → 2 (connect) / 3 (disconnect)
-# Or directly: fedvpn start / fedvpn stop / fedvpn status
 
 set -e
 
@@ -17,7 +15,6 @@ NC='\033[0m'
 WG_CONF="/etc/wireguard/wg0.conf"
 
 vpn_setup() {
-    echo -e "${BOLD}fedvpn setup${NC}"
     echo ""
 
     # Install WireGuard if missing
@@ -35,94 +32,77 @@ vpn_setup() {
         fi
         echo -e "  ${GREEN}WireGuard installed.${NC}"
     else
-        echo -e "  ${GREEN}WireGuard already installed.${NC}"
+        echo -e "  ${GREEN}WireGuard installed.${NC}"
     fi
 
     echo ""
 
     # Check if config already exists
     if [[ -f "$WG_CONF" ]]; then
-        echo -e "  ${YELLOW}Config already exists at $WG_CONF${NC}"
+        echo -e "  ${YELLOW}Config already exists.${NC}"
         read -p "  Overwrite? [y/N] " -n 1 -r
         echo ""
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            echo -e "  Keeping existing config."
             return
         fi
     fi
 
-    # Get config from user
-    echo -e "  ${YELLOW}━━━━━━━━━━━━━━���━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${YELLOW}PASTE YOUR WIREGUARD CONFIG${NC}"
-    echo ""
-    echo -e "  On your server, run: ${BOLD}federver${NC} → ${BOLD}11${NC}"
-    echo -e "  It shows a config block starting with ${BOLD}[Interface]${NC}"
-    echo -e "  Copy the entire config, paste it below, then press ${BOLD}Ctrl+D${NC}"
-    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━���━━━━━━━━━━━━━━${NC}"
+    echo -e "  Paste the config from the server, then press ${BOLD}Ctrl+D${NC}:"
     echo ""
 
     local config=""
-    echo -e "  Paste config (Ctrl+D when done):"
     config=$(cat)
 
     if [[ -z "$config" ]] || ! echo "$config" | grep -q "\[Interface\]"; then
-        echo -e "  ${RED}Invalid config — must contain [Interface] section.${NC}"
+        echo ""
+        echo -e "  ${RED}Invalid config.${NC}"
         return 1
     fi
 
-    # Write config
     sudo mkdir -p /etc/wireguard
     echo "$config" | sudo tee "$WG_CONF" > /dev/null
     sudo chmod 600 "$WG_CONF"
 
     echo ""
-    echo -e "  ${GREEN}Config saved to $WG_CONF${NC}"
-    echo ""
-    echo -e "  ${GREEN}Setup complete!${NC} Run ${BOLD}fedvpn${NC} → ${BOLD}2${NC} to connect."
+    echo -e "  ${GREEN}Config saved.${NC}"
+    echo -e "  Run ${BOLD}fedvpn${NC} → ${BOLD}2${NC} to connect."
 }
 
 vpn_start() {
-    if ! command -v wg &>/dev/null; then
-        echo -e "${RED}WireGuard not installed. Run fedvpn → 1 (setup) first.${NC}"
-        return 1
-    fi
-    if [[ ! -f "$WG_CONF" ]]; then
-        echo -e "${RED}No config found. Run fedvpn → 1 (setup) first.${NC}"
+    if ! command -v wg &>/dev/null || [[ ! -f "$WG_CONF" ]]; then
+        echo -e "  ${RED}Not set up. Run fedvpn → 1 first.${NC}"
         return 1
     fi
     if sudo wg show wg0 &>/dev/null 2>&1; then
-        echo -e "${GREEN}VPN already connected.${NC}"
-        vpn_status
+        echo -e "  ${GREEN}Already connected.${NC}"
         return
     fi
     sudo wg-quick up wg0
-    echo ""
-    echo -e "${GREEN}VPN connected.${NC} All traffic routed through home server."
+    echo -e "  ${GREEN}Connected.${NC} All traffic routed through server."
 }
 
 vpn_stop() {
     if ! sudo wg show wg0 &>/dev/null 2>&1; then
-        echo -e "${DIM}VPN not running.${NC}"
+        echo -e "  ${DIM}Not running.${NC}"
         return
     fi
     sudo wg-quick down wg0
-    echo ""
-    echo -e "${YELLOW}VPN disconnected.${NC} Normal internet resumed."
+    echo -e "  ${YELLOW}Disconnected.${NC}"
 }
 
 vpn_status() {
     if ! command -v wg &>/dev/null; then
-        echo -e "${RED}WireGuard not installed.${NC}"
+        echo -e "  ${RED}Not installed.${NC}"
         return
     fi
     if sudo wg show wg0 &>/dev/null 2>&1; then
-        echo -e "${GREEN}VPN: connected${NC}"
+        echo -e "  ${GREEN}VPN: connected${NC}"
         echo ""
         sudo wg show wg0 | while IFS= read -r line; do
             echo "  $line"
         done
     else
-        echo -e "${RED}VPN: disconnected${NC}"
+        echo -e "  ${RED}VPN: disconnected${NC}"
     fi
 }
 
@@ -131,17 +111,16 @@ show_menu() {
     echo -e "${BOLD}fedvpn — WireGuard VPN${NC}"
     echo ""
     if [[ -f "$WG_CONF" ]]; then
-        echo -e "  ${GREEN}Config: installed${NC}"
+        if sudo wg show wg0 &>/dev/null 2>&1; then
+            echo -e "  ${GREEN}connected${NC}"
+        else
+            echo -e "  ${DIM}disconnected${NC}"
+        fi
     else
-        echo -e "  ${YELLOW}Config: not set up — run setup first${NC}"
-    fi
-    if sudo wg show wg0 &>/dev/null 2>&1; then
-        echo -e "  ${GREEN}Status: connected${NC}"
-    else
-        echo -e "  ${DIM}Status: disconnected${NC}"
+        echo -e "  ${YELLOW}not set up${NC}"
     fi
     echo ""
-    echo -e "  ${BOLD}1)${NC} Setup              ${DIM}← first time: install + paste config${NC}"
+    echo -e "  ${BOLD}1)${NC} Setup"
     echo -e "  ${BOLD}2)${NC} Connect"
     echo -e "  ${BOLD}3)${NC} Disconnect"
     echo -e "  ${BOLD}4)${NC} Status"
@@ -154,7 +133,7 @@ show_menu() {
         3|stop)     vpn_stop ;;
         4|status)   vpn_status ;;
         0|exit|q)   exit 0 ;;
-        *)          echo -e "${RED}Invalid choice.${NC}" ;;
+        *)          echo -e "  ${RED}Invalid choice.${NC}" ;;
     esac
 }
 

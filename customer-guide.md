@@ -609,15 +609,22 @@ After step 9, configure each service in your browser. Run `federver` → **s** f
 
 ### Immich (port 2283)
 
-1. Create admin account
-2. Install Immich app on phone, enter server URL, enable auto-upload
-3. If migrating: use `privcloud upload` or `privcloud fix-gp` for Google Takeout
+1. Open in browser, create admin account
+2. Install Immich app on phone:
+   - **iPhone:** [App Store](https://apps.apple.com/app/immich/id1613945652)
+   - **Android:** [Play Store](https://play.google.com/store/apps/details?id=app.alextran.immich)
+3. In the app: enter server URL (`http://<server-ip>:2283`), log in, enable auto-upload
+4. If migrating: use `privcloud upload` or `privcloud fix-gp` for Google Takeout
 
 ### Jellyfin (port 8096)
 
-1. Create admin account via setup wizard
+1. Open in browser, create admin account via setup wizard
 2. Add media libraries pointing to `/media`
-3. Install Jellyfin app on phone/TV for streaming
+3. Install Jellyfin app:
+   - **iPhone:** [App Store](https://apps.apple.com/app/jellyfin-mobile/id1480732557)
+   - **Android:** [Play Store](https://play.google.com/store/apps/details?id=org.jellyfin.mobile)
+   - **Smart TV:** search "Jellyfin" in your TV's app store
+   - **Laptop:** open `http://<server-ip>:8096` in browser (no install needed)
 4. Media files go in the data path's `media/` directory
 
 ### FileBrowser (port 8080)
@@ -664,9 +671,20 @@ Every device with Tailscale installed and logged into the same account gets a pr
 ### Setup
 
 1. Create free account at [login.tailscale.com](https://login.tailscale.com)
-2. Server: `sudo tailscale up` → approve via URL
-3. Phone: install Tailscale app, log in with same account
-4. Laptop: `sudo dnf install tailscale && sudo systemctl enable --now tailscaled && sudo tailscale up`
+2. Server: `federver` → **10** (handles installation and authentication)
+3. Install on your other devices:
+
+**Laptop (Fedora):**
+```bash
+sudo dnf install tailscale
+sudo systemctl enable --now tailscaled
+sudo tailscale up
+# If DNS issues: sudo tailscale up --accept-dns=false
+```
+
+**iPhone/Android:** Install "Tailscale" from App Store / Play Store, log in with same account.
+
+**Mac:** Download from [tailscale.com/download](https://tailscale.com/download).
 
 ### Access from anywhere
 
@@ -720,9 +738,21 @@ Run `federver` → **11**. The script:
 
 ### Connecting devices
 
-1. Install the **WireGuard app** on your phone/laptop
-2. Scan the QR code shown during setup, or import the config file
-3. Toggle the VPN on — all traffic now routes through your server
+**Laptop (Fedora):**
+```bash
+sudo dnf install wireguard-tools
+# Copy config from server:
+scp ahassan@<server-ip>:/etc/wireguard/<peer-name>.conf /tmp/wg.conf
+sudo cp /tmp/wg.conf /etc/wireguard/wg0.conf
+# Connect:
+sudo wg-quick up wg0
+# Disconnect:
+sudo wg-quick down wg0
+```
+
+**iPhone/Android:** Install "WireGuard" from App Store / Play Store. Scan the QR code shown during setup.
+
+**Mac:** Download WireGuard from App Store. Import the config file.
 
 ### Managing peers later
 

@@ -563,7 +563,7 @@ step_wireguard() {
             2)
                 # Show existing peer configs
                 echo ""
-                local conf_files=$(sudo ls "$WG_DIR"/*.conf 2>/dev/null | grep -v wg0.conf)
+                local conf_files=$(sudo find "$WG_DIR" -name "*.conf" ! -name "wg0.conf" 2>/dev/null)
                 if [[ -z "$conf_files" ]]; then
                     fail "No peer configs found."
                     return

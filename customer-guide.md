@@ -738,21 +738,16 @@ Run `federver` → **11**. The script:
 
 ### Connecting devices
 
-**Laptop (Fedora):**
-```bash
-sudo dnf install wireguard-tools
-# Copy config from server:
-scp ahassan@<server-ip>:/etc/wireguard/<peer-name>.conf /tmp/wg.conf
-sudo cp /tmp/wg.conf /etc/wireguard/wg0.conf
-# Connect:
-sudo wg-quick up wg0
-# Disconnect:
-sudo wg-quick down wg0
-```
+**Laptop (Linux):**
+1. Get `fedvpn` from the server: `scp <user>@<server-ip>:~/privcloud/fedvpn /tmp/fedvpn && sudo cp /tmp/fedvpn /usr/local/bin/fedvpn && sudo chmod +x /usr/local/bin/fedvpn`
+2. Get config: `federver` → **11** → **2** (show peer config) on server, copy it
+3. Run `fedvpn` → **1** (setup) → paste config → Ctrl+D
+4. Connect: `fedvpn` → **2** or `fedvpn start`
+5. Disconnect: `fedvpn` → **3** or `fedvpn stop`
 
-**iPhone/Android:** Install "WireGuard" from App Store / Play Store. Scan the QR code shown during setup.
+**iPhone/Android:** Install "WireGuard" from App Store / Play Store. Get QR from `federver` → **11** → **2** on server.
 
-**Mac:** Download WireGuard from App Store. Import the config file.
+**Mac:** Install WireGuard (`brew install wireguard-tools` or App Store). Get config from `federver` → **11** → **2**, save to file, import.
 
 ### Managing peers
 

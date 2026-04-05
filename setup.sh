@@ -515,8 +515,18 @@ PostDown = firewall-cmd --remove-port=${wg_port}/udp && firewall-cmd --remove-ma
 
     for i in $(seq 1 "$peer_count"); do
         echo ""
-        read -p "  Name for peer $i (e.g. phone, laptop): " peer_name
+        echo -e "  ${BOLD}── Peer $i of $peer_count ──${NC}"
+        echo ""
+        read -p "  Name for this device (e.g. phone, laptop, wife-phone): " peer_name
         peer_name="${peer_name:-peer$i}"
+
+        echo ""
+        echo -e "  What type of device is '${BOLD}$peer_name${NC}'?"
+        echo -e "  ${BOLD}1)${NC} Phone (iPhone/Android)"
+        echo -e "  ${BOLD}2)${NC} Laptop/Desktop (Linux)"
+        echo -e "  ${BOLD}3)${NC} Laptop/Desktop (Mac)"
+        echo -e "  ${BOLD}4)${NC} Laptop/Desktop (Windows)"
+        read -p "  Device type [1-4]: " device_type
 
         local peer_ip="${wg_subnet}.$((i + 1))"
 
@@ -551,18 +561,90 @@ PersistentKeepalive = 25"
         echo "$peer_conf" | sudo tee "$WG_DIR/${peer_name}.conf" > /dev/null
         sudo chmod 600 "$WG_DIR/${peer_name}.conf"
 
-        # Generate QR code
-        echo "$peer_conf" | qrencode -t UTF8
         echo ""
         ok "Peer '${peer_name}' configured (IP: ${peer_ip})"
         echo -e "  Config saved: ${BOLD}$WG_DIR/${peer_name}.conf${NC}"
         echo ""
 
-        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "  ${YELLOW}SCAN QR CODE ABOVE${NC} with WireGuard app"
-        echo -e "  Or import the config file manually."
-        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        # Device-specific instructions
+        case $device_type in
+            1)  # Phone
+                echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo -e "  ${YELLOW}SETUP: $peer_name (phone)${NC}"
+                echo ""
+                echo -e "  1. Install ${BOLD}WireGuard${NC} app:"
+                echo -e "     iPhone: App Store → search 'WireGuard'"
+                echo -e "     Android: Play Store → search 'WireGuard'"
+                echo -e "  2. Open the app → tap ${BOLD}+${NC} → ${BOLD}Scan from QR code${NC}"
+                echo -e "  3. Scan this QR code:"
+                echo ""
+                echo "$peer_conf" | qrencode -t UTF8
+                echo ""
+                echo -e "  4. Give it a name (e.g. '${peer_name}')"
+                echo -e "  5. Toggle the switch to connect"
+                echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                ;;
+            2)  # Linux
+                echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo -e "  ${YELLOW}SETUP: $peer_name (Linux)${NC}"
+                echo ""
+                echo -e "  1. Install WireGuard:"
+                echo -e "     ${BOLD}sudo dnf install wireguard-tools${NC}  (Fedora)"
+                echo -e "     ${BOLD}sudo apt install wireguard${NC}        (Ubuntu/Debian)"
+                echo ""
+                echo -e "  2. Copy the config from server:"
+                echo -e "     ${BOLD}scp ahassan@${endpoint}:${WG_DIR}/${peer_name}.conf /tmp/${peer_name}.conf${NC}"
+                echo -e "     ${BOLD}sudo cp /tmp/${peer_name}.conf /etc/wireguard/wg0.conf${NC}"
+                echo ""
+                echo -e "  3. Connect:"
+                echo -e "     ${BOLD}sudo wg-quick up wg0${NC}"
+                echo ""
+                echo -e "  4. Disconnect:"
+                echo -e "     ${BOLD}sudo wg-quick down wg0${NC}"
+                echo ""
+                echo -e "  Or scan the QR code with a GUI WireGuard client:"
+                echo ""
+                echo "$peer_conf" | qrencode -t UTF8
+                echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                ;;
+            3)  # Mac
+                echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo -e "  ${YELLOW}SETUP: $peer_name (Mac)${NC}"
+                echo ""
+                echo -e "  1. Install ${BOLD}WireGuard${NC} from the Mac App Store"
+                echo -e "  2. Open WireGuard → ${BOLD}Import Tunnel(s) from File${NC}"
+                echo -e "  3. Copy config from server to your Mac:"
+                echo -e "     ${BOLD}scp ahassan@${endpoint}:${WG_DIR}/${peer_name}.conf ~/Downloads/${peer_name}.conf${NC}"
+                echo -e "  4. Import the file → click ${BOLD}Activate${NC}"
+                echo ""
+                echo -e "  Or scan QR with your phone camera and transfer:"
+                echo ""
+                echo "$peer_conf" | qrencode -t UTF8
+                echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                ;;
+            4)  # Windows
+                echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo -e "  ${YELLOW}SETUP: $peer_name (Windows)${NC}"
+                echo ""
+                echo -e "  1. Download WireGuard from ${BOLD}wireguard.com/install${NC}"
+                echo -e "  2. Open WireGuard → ${BOLD}Add Tunnel → Add empty tunnel${NC}"
+                echo -e "  3. Paste this config:"
+                echo ""
+                echo "$peer_conf"
+                echo ""
+                echo -e "  4. Click ${BOLD}Save${NC} → ${BOLD}Activate${NC}"
+                echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                ;;
+            *)
+                echo "$peer_conf" | qrencode -t UTF8
+                echo ""
+                echo -e "  Config file: ${BOLD}$WG_DIR/${peer_name}.conf${NC}"
+                echo -e "  Scan QR or import config into WireGuard app."
+                ;;
+        esac
+
         if (( i < peer_count )); then
+            echo ""
             read -p "  Press Enter for next peer..." -r
         fi
     done

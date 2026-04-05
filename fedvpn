@@ -77,7 +77,10 @@ vpn_start() {
         echo -e "  ${GREEN}Already connected.${NC}"
         return
     fi
+    # Disable IPv6 (leaks traffic outside WireGuard tunnel)
+    sudo sysctl -qw net.ipv6.conf.all.disable_ipv6=0
     sudo wg-quick up wg0
+    sudo sysctl -qw net.ipv6.conf.all.disable_ipv6=1
     echo -e "  ${GREEN}Connected.${NC} All traffic routed through server."
 }
 
@@ -87,6 +90,8 @@ vpn_stop() {
         return
     fi
     sudo wg-quick down wg0
+    # Re-enable IPv6
+    sudo sysctl -qw net.ipv6.conf.all.disable_ipv6=0
     echo -e "  ${YELLOW}Disconnected.${NC}"
 }
 

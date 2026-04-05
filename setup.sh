@@ -68,34 +68,32 @@ show_menu() {
     echo -e "  Federver — Fedora XFCE Server Manager"
     echo -e "========================================${NC}"
     echo ""
-    echo -e "  ${YELLOW}-- Run on server with monitor --${NC}"
-    echo -e "  ${BOLD}1)${NC} Enable SSH + auto-login + hostname"
+    echo -e "  ${YELLOW}-- Initial setup (run once, in order) --${NC}"
+    echo -e "  ${BOLD}1)${NC}  Enable SSH + auto-login + hostname  ${YELLOW}← with monitor${NC}"
+    echo -e "  ${BOLD}2)${NC}  SSH key auth                        ${YELLOW}← from laptop, exit SSH first${NC}"
+    echo -e "  ${BOLD}3)${NC}  System update"
+    echo -e "  ${BOLD}4)${NC}  Enable auto-updates"
+    echo -e "  ${BOLD}5)${NC}  Install Docker                      ${YELLOW}← log out & SSH back in after${NC}"
     echo ""
-    echo -e "  ${YELLOW}-- Exit SSH, run from laptop --${NC}"
-    echo -e "  ${BOLD}2)${NC} SSH key auth                ${YELLOW}← exit SSH first${NC}"
+    echo -e "  ${DIM}-- Services --${NC}"
+    echo -e "  ${BOLD}6)${NC}  Configure firewall"
+    echo -e "  ${BOLD}7)${NC}  Deploy services                     ${DIM}← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma${NC}"
+    echo -e "  ${BOLD}8)${NC}  Setup backups + disk monitoring"
+    echo -e "  ${BOLD}9)${NC}  Configure log rotation"
     echo ""
-    echo -e "  ${DIM}-- Run over SSH from laptop --${NC}"
-    echo -e "  ${BOLD}3)${NC} System update"
-    echo -e "  ${BOLD}4)${NC} Enable auto-updates"
-    echo -e "  ${BOLD}5)${NC} Install Docker              ${YELLOW}← log out & SSH back in after this${NC}"
-    echo -e "  ${BOLD}6)${NC} Configure firewall"
-    echo -e "  ${BOLD}7)${NC} Install Tailscale           ${DIM}← opens a URL to approve on phone/laptop${NC}"
-    echo -e "  ${BOLD}8)${NC} Mount USB drive             ${DIM}← plug in USB drive first${NC}"
-    echo -e "  ${BOLD}9)${NC} Deploy services             ${DIM}← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma${NC}"
-    echo -e "  ${BOLD}10)${NC} Remote desktop             ${DIM}← access XFCE desktop from laptop${NC}"
-    echo -e "  ${BOLD}11)${NC} Setup backups              ${DIM}← daily Immich DB backup${NC}"
-    echo -e "  ${BOLD}12)${NC} Configure log rotation     ${DIM}← prevent Docker logs eating disk${NC}"
+    echo -e "  ${DIM}-- Extras (optional, run anytime) --${NC}"
+    echo -e "  ${BOLD}10)${NC} Install Tailscale                   ${DIM}← remote access VPN${NC}"
+    echo -e "  ${BOLD}11)${NC} Install WireGuard                   ${DIM}← full VPN, route all traffic${NC}"
+    echo -e "  ${BOLD}12)${NC} Mount USB drive                     ${DIM}← plug in drive first${NC}"
+    echo -e "  ${BOLD}13)${NC} Remote desktop                      ${DIM}← access XFCE desktop via RDP${NC}"
     echo ""
     echo -e "  ${DIM}-- Immich photo management --${NC}"
     echo -e "      ${DIM}Run: ${BOLD}privcloud${NC} ${DIM}[start|stop|status|update|backup]${NC}"
     echo ""
-    echo -e "  ${YELLOW}-- Exit SSH, run from laptop --${NC}"
-    echo -e "  ${BOLD}13)${NC} Sync files                 ${YELLOW}← exit SSH first${NC}"
+    echo -e "  ${YELLOW}-- Tools (from laptop, exit SSH first) --${NC}"
+    echo -e "  ${BOLD}14)${NC} Sync files"
     echo ""
-    echo -e "  ${BOLD}s)${NC} Status                     ${DIM}← show all service URLs and config${NC}"
-    echo -e "  ${BOLD}p)${NC} Power                      ${DIM}← shutdown or restart server${NC}"
-    echo -e "  ${BOLD}a)${NC} Run all (3-11)"
-    echo -e "  ${BOLD}0)${NC} Exit"
+    echo -e "  ${BOLD}s)${NC}  Status        ${BOLD}p)${NC}  Power        ${BOLD}a)${NC}  Run all (3-9)        ${BOLD}0)${NC}  Exit"
     echo ""
 }
 
@@ -450,6 +448,149 @@ XRDPEOF
     echo -e "    Install 'RD Client' from App Store"
     echo -e "    Add PC → server: ${BOLD}$ts_ip${NC} (via Tailscale)"
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+step_wireguard() {
+    info "WireGuard routes ALL your traffic through this server."
+    info "Unlike Tailscale (access server only), this is a full VPN."
+    info "Use it for privacy, bypassing geo-restrictions, or securing public WiFi."
+    echo ""
+
+    # Install WireGuard
+    info "Installing WireGuard..."
+    sudo dnf install -y wireguard-tools qrencode > /dev/null 2>&1
+    ok "WireGuard installed."
+
+    # Generate keys if not already done
+    WG_DIR="/etc/wireguard"
+    sudo mkdir -p "$WG_DIR"
+
+    if [[ ! -f "$WG_DIR/server_private.key" ]]; then
+        info "Generating server keys..."
+        wg genkey | sudo tee "$WG_DIR/server_private.key" > /dev/null
+        sudo cat "$WG_DIR/server_private.key" | wg pubkey | sudo tee "$WG_DIR/server_public.key" > /dev/null
+        sudo chmod 600 "$WG_DIR/server_private.key"
+        ok "Server keys generated."
+    else
+        ok "Server keys already exist."
+    fi
+
+    local server_private=$(sudo cat "$WG_DIR/server_private.key")
+    local server_public=$(sudo cat "$WG_DIR/server_public.key")
+    local wg_port=51820
+    local wg_subnet="10.100.0"
+
+    # Get the main network interface
+    local iface=$(ip route | grep default | awk '{print $5}' | head -1)
+
+    echo ""
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}ADD PEERS${NC}"
+    echo ""
+    echo -e "  How many devices do you want to connect?"
+    echo -e "  (phone, laptop, partner's phone, etc.)"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -p "  Number of peers [1]: " peer_count
+    peer_count="${peer_count:-1}"
+
+    # Build server config
+    local server_conf="[Interface]
+Address = ${wg_subnet}.1/24
+ListenPort = ${wg_port}
+PrivateKey = ${server_private}
+PostUp = firewall-cmd --add-port=${wg_port}/udp && firewall-cmd --add-masquerade
+PostDown = firewall-cmd --remove-port=${wg_port}/udp && firewall-cmd --remove-masquerade"
+
+    # Enable IP forwarding
+    echo 'net.ipv4.ip_forward = 1' | sudo tee /etc/sysctl.d/99-wireguard.conf > /dev/null
+    sudo sysctl -p /etc/sysctl.d/99-wireguard.conf > /dev/null
+
+    local server_ip
+    server_ip=$(hostname -I | awk '{print $1}')
+    local ts_ip
+    ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+
+    # Use Tailscale IP as endpoint if available, otherwise local IP
+    local endpoint="${ts_ip:-$server_ip}"
+
+    for i in $(seq 1 "$peer_count"); do
+        echo ""
+        read -p "  Name for peer $i (e.g. phone, laptop): " peer_name
+        peer_name="${peer_name:-peer$i}"
+
+        local peer_ip="${wg_subnet}.$((i + 1))"
+
+        # Generate peer keys
+        local peer_private=$(wg genkey)
+        local peer_public=$(echo "$peer_private" | wg pubkey)
+        local peer_psk=$(wg genpsk)
+
+        # Add peer to server config
+        server_conf="${server_conf}
+
+[Peer]
+# ${peer_name}
+PublicKey = ${peer_public}
+PresharedKey = ${peer_psk}
+AllowedIPs = ${peer_ip}/32"
+
+        # Create peer config
+        local peer_conf="[Interface]
+PrivateKey = ${peer_private}
+Address = ${peer_ip}/24
+DNS = 1.1.1.1, 8.8.8.8
+
+[Peer]
+PublicKey = ${server_public}
+PresharedKey = ${peer_psk}
+Endpoint = ${endpoint}:${wg_port}
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25"
+
+        # Save peer config
+        echo "$peer_conf" | sudo tee "$WG_DIR/${peer_name}.conf" > /dev/null
+        sudo chmod 600 "$WG_DIR/${peer_name}.conf"
+
+        # Generate QR code
+        echo "$peer_conf" | qrencode -t UTF8
+        echo ""
+        ok "Peer '${peer_name}' configured (IP: ${peer_ip})"
+        echo -e "  Config saved: ${BOLD}$WG_DIR/${peer_name}.conf${NC}"
+        echo ""
+
+        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "  ${YELLOW}SCAN QR CODE ABOVE${NC} with WireGuard app"
+        echo -e "  Or import the config file manually."
+        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        if (( i < peer_count )); then
+            read -p "  Press Enter for next peer..." -r
+        fi
+    done
+
+    # Write server config
+    echo "$server_conf" | sudo tee "$WG_DIR/wg0.conf" > /dev/null
+    sudo chmod 600 "$WG_DIR/wg0.conf"
+
+    # Enable and start
+    sudo systemctl enable --now wg-quick@wg0 2>/dev/null || sudo systemctl restart wg-quick@wg0
+
+    # Open firewall
+    sudo firewall-cmd --permanent --add-port=${wg_port}/udp 2>/dev/null || true
+    sudo firewall-cmd --reload 2>/dev/null || true
+
+    echo ""
+    ok "WireGuard running!"
+    echo ""
+    echo -e "  ${BOLD}Server:${NC}    ${wg_subnet}.1"
+    echo -e "  ${BOLD}Port:${NC}      ${wg_port}/udp"
+    echo -e "  ${BOLD}Endpoint:${NC}  ${endpoint}:${wg_port}"
+    echo -e "  ${BOLD}Peers:${NC}     ${peer_count}"
+    echo ""
+    echo -e "  ${BOLD}Peer configs saved in:${NC} $WG_DIR/"
+    echo -e "  ${BOLD}Check status:${NC} sudo wg show"
+    echo ""
+    info "Install WireGuard app on phone/laptop, scan QR or import config."
+    info "When connected, ALL traffic routes through this server."
 }
 
 step_backup() {
@@ -864,10 +1005,7 @@ run_all() {
     step_autoupdates
     step_docker
     step_firewall
-    step_tailscale
-    step_usbmount
     step_deploy
-    step_remotedesktop
     step_backup
     step_logrotation
 }
@@ -883,16 +1021,17 @@ while true; do
         4)  run_step "[4] Auto-updates" step_autoupdates ;;
         5)  run_step "[5] Install Docker" step_docker ;;
         6)  run_step "[6] Configure firewall" step_firewall ;;
-        7)  run_step "[7] Install Tailscale" step_tailscale ;;
-        8)  run_step "[8] Mount USB drive" step_usbmount ;;
-        9)  run_step "[9] Deploy services" step_deploy ;;
-        10) run_step "[10] Remote desktop" step_remotedesktop ;;
-        11) run_step "[11] Setup backups" step_backup ;;
-        12) run_step "[12] Log rotation" step_logrotation ;;
-        13) run_step "[13] Sync files" step_sync ;;
+        7)  run_step "[7] Deploy services" step_deploy ;;
+        8)  run_step "[8] Setup backups + disk monitoring" step_backup ;;
+        9)  run_step "[9] Log rotation" step_logrotation ;;
+        10) run_step "[10] Install Tailscale" step_tailscale ;;
+        11) run_step "[11] Install WireGuard" step_wireguard ;;
+        12) run_step "[12] Mount USB drive" step_usbmount ;;
+        13) run_step "[13] Remote desktop" step_remotedesktop ;;
+        14) run_step "[14] Sync files" step_sync ;;
         s)  run_step "[s] Status" step_status ;;
         p)  run_step "[p] Power management" step_power ;;
-        a)  run_step "Run all (3-12)" run_all ;;
+        a)  run_step "Run all (3-9)" run_all ;;
         0)  echo "Bye."; exit 0 ;;
         *)  echo -e "  ${RED}Invalid choice.${NC}" ;;
     esac

@@ -78,7 +78,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
       Run: privcloud [start|stop|status|update|backup]
 
   -- Tools (from laptop, exit SSH first) --
-  14) Sync files
+  14) Sync files                          ← copy/backup files between laptop & server
 
   s)  Status        p)  Power        a)  Run all (3-9)        0)  Exit
 ```

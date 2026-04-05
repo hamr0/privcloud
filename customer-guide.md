@@ -119,7 +119,7 @@ Dedicated always-on machine running Immich + media streaming + file management +
       Run: privcloud [start|stop|status|update|backup]
 
   -- Tools (from laptop, exit SSH first) --
-  14) Sync files
+  14) Sync files                          ← copy/backup files between laptop & server
 
   s)  Status        p)  Power        a)  Run all (3-9)        0)  Exit
 ```
@@ -754,11 +754,16 @@ sudo wg-quick down wg0
 
 **Mac:** Download WireGuard from App Store. Import the config file.
 
-### Managing peers later
+### Adding peers later
 
-Configs are saved in `/etc/wireguard/`. To add more peers later, run step 11 again or manually edit `/etc/wireguard/wg0.conf`.
+Run `federver` → **11** again. It detects WireGuard is already installed and offers:
 
-Check status: `sudo wg show`
+1. **Add new peer** — generates keys, appends to config, shows device-specific instructions
+2. **Reinstall** — regenerates all keys (existing peers stop working)
+
+Each new peer gets tailored setup instructions based on device type (phone QR code, Linux dnf+scp commands, Mac App Store, Windows paste config).
+
+Configs saved in `/etc/wireguard/`. Check status: `sudo wg show`
 
 ---
 

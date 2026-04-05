@@ -38,7 +38,7 @@ vpn_setup() {
     echo ""
 
     # Check if config already exists
-    if [[ -f "$WG_CONF" ]]; then
+    if sudo test -f "$WG_CONF"; then
         echo -e "  ${YELLOW}Config already exists.${NC}"
         read -p "  Overwrite? [y/N] " -n 1 -r
         echo ""
@@ -69,7 +69,7 @@ vpn_setup() {
 }
 
 vpn_start() {
-    if ! command -v wg &>/dev/null || [[ ! -f "$WG_CONF" ]]; then
+    if ! command -v wg &>/dev/null || ! sudo test -f "$WG_CONF"; then
         echo -e "  ${RED}Not set up. Run fedvpn → 1 first.${NC}"
         return 1
     fi
@@ -110,7 +110,7 @@ show_menu() {
     echo ""
     echo -e "${BOLD}fedvpn — WireGuard VPN${NC}"
     echo ""
-    if [[ -f "$WG_CONF" ]]; then
+    if sudo test -f "$WG_CONF"; then
         if sudo wg show wg0 &>/dev/null 2>&1; then
             echo -e "  ${GREEN}connected${NC}"
         else

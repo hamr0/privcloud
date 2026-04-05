@@ -1,0 +1,101 @@
+#!/bin/bash
+# fedvpn — WireGuard VPN client for connecting to your home server
+# Install: copy this script to /usr/local/bin/fedvpn
+
+set -e
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m'
+
+WG_CONF="/etc/wireguard/wg0.conf"
+
+check_installed() {
+    if ! command -v wg &>/dev/null; then
+        echo -e "${RED}WireGuard not installed.${NC}"
+        echo -e "Run: ${BOLD}sudo dnf install wireguard-tools${NC} (Fedora)"
+        echo -e "     ${BOLD}sudo apt install wireguard${NC} (Ubuntu/Debian)"
+        echo -e "     ${BOLD}brew install wireguard-tools${NC} (Mac)"
+        exit 1
+    fi
+}
+
+check_config() {
+    if [[ ! -f "$WG_CONF" ]]; then
+        echo -e "${RED}No WireGuard config found at $WG_CONF${NC}"
+        echo ""
+        echo -e "Copy it from your server:"
+        echo -e "  ${BOLD}scp <user>@<server-ip>:/etc/wireguard/<peer-name>.conf /tmp/wg.conf${NC}"
+        echo -e "  ${BOLD}sudo cp /tmp/wg.conf $WG_CONF${NC}"
+        exit 1
+    fi
+}
+
+vpn_start() {
+    check_installed
+    check_config
+    if sudo wg show wg0 &>/dev/null 2>&1; then
+        echo -e "${GREEN}VPN already connected.${NC}"
+        vpn_status
+        return
+    fi
+    sudo wg-quick up wg0
+    echo ""
+    echo -e "${GREEN}VPN connected.${NC} All traffic routed through home server."
+}
+
+vpn_stop() {
+    check_installed
+    if ! sudo wg show wg0 &>/dev/null 2>&1; then
+        echo -e "${DIM}VPN not running.${NC}"
+        return
+    fi
+    sudo wg-quick down wg0
+    echo ""
+    echo -e "${YELLOW}VPN disconnected.${NC} Normal internet resumed."
+}
+
+vpn_status() {
+    check_installed
+    if sudo wg show wg0 &>/dev/null 2>&1; then
+        echo -e "${GREEN}VPN: connected${NC}"
+        echo ""
+        sudo wg show wg0 | while IFS= read -r line; do
+            echo "  $line"
+        done
+    else
+        echo -e "${RED}VPN: disconnected${NC}"
+    fi
+}
+
+show_menu() {
+    echo ""
+    echo -e "${BOLD}fedvpn — WireGuard VPN${NC}"
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Connect"
+    echo -e "  ${BOLD}2)${NC} Disconnect"
+    echo -e "  ${BOLD}3)${NC} Status"
+    echo -e "  ${BOLD}0)${NC} Exit"
+    echo ""
+    read -p "  Choose: " choice
+    case $choice in
+        1|start|up)     vpn_start ;;
+        2|stop|down)    vpn_stop ;;
+        3|status)       vpn_status ;;
+        0|exit|q)       exit 0 ;;
+        *)              echo -e "${RED}Invalid choice.${NC}" ;;
+    esac
+}
+
+# Direct commands or interactive menu
+case "${1:-}" in
+    start|up)       vpn_start ;;
+    stop|down)      vpn_stop ;;
+    status)         vpn_status ;;
+    -h|--help|help) echo "Usage: fedvpn [start|stop|status]" ;;
+    "")             show_menu ;;
+    *)              echo "Usage: fedvpn [start|stop|status]" ;;
+esac

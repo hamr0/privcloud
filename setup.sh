@@ -551,14 +551,48 @@ step_wireguard() {
         local existing_peers=$(sudo grep -c "^\[Peer\]" "$WG_DIR/wg0.conf" 2>/dev/null || echo "0")
 
         echo -e "  ${BOLD}1)${NC} Add new peer"
-        echo -e "  ${BOLD}2)${NC} Reinstall (regenerate all keys — existing peers stop working)"
+        echo -e "  ${BOLD}2)${NC} Show peer config (to set up a device)"
+        echo -e "  ${BOLD}3)${NC} Reinstall (regenerate all keys — existing peers stop working)"
         echo -e "  ${BOLD}0)${NC} Cancel"
         echo ""
-        read -p "  Choose [1/2/0]: " wg_action
+        read -p "  Choose [1/2/3/0]: " wg_action
 
         case $wg_action in
             0) return ;;
-            2) is_new_install=true ;;
+            3) is_new_install=true ;;
+            2)
+                # Show existing peer configs
+                echo ""
+                local conf_files=$(sudo ls "$WG_DIR"/*.conf 2>/dev/null | grep -v wg0.conf)
+                if [[ -z "$conf_files" ]]; then
+                    fail "No peer configs found."
+                    return
+                fi
+                echo -e "  ${BOLD}Available configs:${NC}"
+                local idx=1
+                declare -a conf_arr
+                for f in $conf_files; do
+                    local name=$(basename "$f" .conf)
+                    echo -e "    ${BOLD}$idx)${NC} $name"
+                    conf_arr[$idx]="$f"
+                    idx=$((idx + 1))
+                done
+                echo ""
+                read -p "  Which peer? " peer_choice
+                local chosen="${conf_arr[$peer_choice]}"
+                if [[ -n "$chosen" ]]; then
+                    echo ""
+                    echo -e "  ${BOLD}Config for $(basename "$chosen" .conf):${NC}"
+                    echo ""
+                    sudo cat "$chosen"
+                    echo ""
+                    echo -e "  ${DIM}On laptop: fedvpn → 1 (setup) → paste above → Ctrl+D${NC}"
+                    echo -e "  ${DIM}On phone: WireGuard app → scan QR below${NC}"
+                    echo ""
+                    sudo cat "$chosen" | qrencode -t UTF8
+                fi
+                return
+                ;;
             1)
                 # Add peer mode
                 local server_public=$(sudo cat "$WG_DIR/server_public.key")

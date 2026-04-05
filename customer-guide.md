@@ -754,16 +754,38 @@ sudo wg-quick down wg0
 
 **Mac:** Download WireGuard from App Store. Import the config file.
 
-### Adding peers later
+### Managing peers
 
 Run `federver` → **11** again. It detects WireGuard is already installed and offers:
 
-1. **Add new peer** — generates keys, appends to config, shows device-specific instructions
-2. **Reinstall** — regenerates all keys (existing peers stop working)
-
-Each new peer gets tailored setup instructions based on device type (phone QR code, Linux dnf+scp commands, Mac App Store, Windows paste config).
+1. **Add new peer** — generates keys, shows device-specific instructions (phone QR, Linux/Mac config)
+2. **Show peer config** — retrieve an existing peer's config (to set up a new device or re-paste)
+3. **Reinstall** — regenerates all keys (existing peers stop working)
 
 Configs saved in `/etc/wireguard/`. Check status: `sudo wg show`
+
+### fedvpn — laptop VPN client
+
+`fedvpn` is a CLI tool that runs on your laptop to manage the WireGuard connection:
+
+```
+fedvpn           # interactive menu
+fedvpn start     # connect
+fedvpn stop      # disconnect
+fedvpn status    # show connection info
+```
+
+**First-time setup:** `fedvpn` → 1 (setup) — installs WireGuard, asks you to paste the config from the server.
+
+**How it works:** disables IPv6 on connect (prevents traffic leaking outside the tunnel), re-enables on disconnect.
+
+**Install fedvpn on laptop:** copy from server with `scp <user>@<server-ip>:~/privcloud/fedvpn /tmp/fedvpn && sudo cp /tmp/fedvpn /usr/local/bin/fedvpn && sudo chmod +x /usr/local/bin/fedvpn`
+
+### Important notes
+
+- **WireGuard uses local IP as endpoint** — it only works on your home network by default. For remote WireGuard, set up port forwarding on your router (port 51820/udp → server IP).
+- **Tailscale and WireGuard serve different purposes** — Tailscale for accessing the server from anywhere, WireGuard for routing all traffic through the server (privacy, public WiFi).
+- **Don't use both simultaneously** — Tailscale IP as WireGuard endpoint creates routing loops.
 
 ---
 

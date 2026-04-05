@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.0 — 2026-04-04
+## v0.2.0 — 2026-04-05
 
 ### Added
 - `setup.sh` — full server setup menu (`federver` command)
@@ -12,19 +12,29 @@
   - Tailscale remote access with guided setup
   - USB drive mount (permanent via fstab)
   - Service deployment (Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma)
-  - WireGuard VPN (full traffic routing, auto key generation, QR codes, device-specific instructions, add peers without reinstall)
+  - WireGuard VPN (iptables NAT, auto key gen, QR codes, device-specific instructions, add/show peers)
   - Remote desktop via xrdp (disables local display, RDP from any device)
-  - Reorganized menu: Initial setup (1-5), Services (6-9), Extras (10-13), Tools (14)
   - Daily Immich DB backup (cron at 3am)
   - Hourly disk space monitoring with Uptime Kuma push alerts (above 85%)
   - Docker log rotation
   - File sync between laptop and server (upload/download)
   - Status dashboard (URLs, IPs, containers, disk)
   - Power management (shutdown/restart)
-- Jellyfin, FileBrowser, Watchtower, Uptime Kuma in docker-compose.yml
+- `fedvpn` — WireGuard client CLI for laptop (setup/start/stop/status, IPv6 leak fix)
+- Jellyfin, FileBrowser, Watchtower, Uptime Kuma v2 in docker-compose.yml
 - `privcloud status` now shows container health and recent errors
 - Colored output with success/fail banners
 - `federver` and `privcloud` commands available globally
+- Reorganized menu: Initial setup (1-5), Services (6-9), Extras (10-13), Tools (14)
+
+### Fixed
+- WireGuard: use iptables with detected interface instead of firewall-cmd (NAT routing)
+- WireGuard: use local IP as endpoint (Tailscale IP creates routing loops)
+- fedvpn: disable IPv6 on connect to prevent tunnel bypass
+- fedvpn: use sudo for config file checks (root-owned)
+- Uptime Kuma: use server IP not localhost in monitors (Docker networking)
+- FileBrowser: read generated password from docker logs
+- Postgres permissions: document never to chown postgres directory
 
 ## v0.1.0 — 2026-03-06
 

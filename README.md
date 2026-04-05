@@ -100,12 +100,28 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
 
 Both commands work from anywhere on the server. First run `federver` → step 1 to register the commands.
 
+### `fedvpn` — WireGuard VPN client (runs on laptop)
+
+```
+fedvpn — WireGuard VPN
+
+  1) Setup              ← first time: install + paste config
+  2) Connect
+  3) Disconnect
+  4) Status
+  0) Exit
+```
+
+Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
+
 ## Quick reference
 
 | Task | Command |
 |------|---------|
 | Server status | `federver` → **s** |
 | Immich management | `privcloud` |
+| VPN connect/disconnect | `fedvpn start` / `fedvpn stop` (laptop) |
+| Show WireGuard peer config | `federver` → **11** → **2** (server) |
 | Check containers | `docker ps` |
 | View logs | `docker logs <container>` |
 | Update Immich | `privcloud update` |
@@ -129,6 +145,7 @@ Both commands work from anywhere on the server. First run `federver` → step 1 
 |------|------|
 | `setup.sh` | Server manager (runs as `federver`) |
 | `privcloud` | Photo manager (runs as `privcloud`) |
+| `fedvpn` | WireGuard VPN client for laptop |
 | `docker-compose.yml` | All service definitions |
 | `.env.example` | Config template |
 | `scripts/` | Google Takeout fix, installer |

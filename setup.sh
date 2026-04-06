@@ -341,7 +341,8 @@ _storage_status() {
     echo ""
 
     echo -e "  ${BOLD}Current paths (.env)${NC}"
-    echo -e "    Media:      ${MEDIA_LOCATION:-not set}  ${DIM}(Jellyfin + FileBrowser)${NC}"
+    echo -e "    Files:      ${FILES_LOCATION:-not set}  ${DIM}(FileBrowser root)${NC}"
+    echo -e "    Media:      ${MEDIA_LOCATION:-not set}  ${DIM}(Jellyfin)${NC}"
     echo ""
     echo -e "    ${BOLD}Immich${NC}"
     echo -e "    Photos:     ${UPLOAD_LOCATION:-not set}"
@@ -600,6 +601,7 @@ step_deploy() {
     _set_env "UPLOAD_LOCATION" "${base_path}/immich/upload" "$SCRIPT_DIR/.env"
     _set_env "DB_DATA_LOCATION" "${base_path}/immich/postgres" "$SCRIPT_DIR/.env"
     _set_env "MEDIA_LOCATION" "${base_path}/media" "$SCRIPT_DIR/.env"
+    _set_env "FILES_LOCATION" "${base_path}" "$SCRIPT_DIR/.env"
 
     source "$SCRIPT_DIR/.env"
     sudo mkdir -p "$UPLOAD_LOCATION" "$DB_DATA_LOCATION" "$MEDIA_LOCATION" 2>/dev/null || true
@@ -1408,7 +1410,8 @@ step_status() {
     echo ""
     echo -e "  ${BOLD}Data paths${NC}"
     if [[ -f "$SCRIPT_DIR/.env" ]]; then
-        echo -e "    Media:       $(grep MEDIA_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)  ${DIM}(Jellyfin + FileBrowser)${NC}"
+        echo -e "    Files:       $(grep FILES_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)  ${DIM}(FileBrowser root)${NC}"
+        echo -e "    Media:       $(grep MEDIA_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)  ${DIM}(Jellyfin)${NC}"
     fi
     if [[ -f "$SCRIPT_DIR_STATUS/.env" ]]; then
         echo ""

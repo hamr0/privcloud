@@ -37,6 +37,7 @@ Your server. Your data. No cloud required.
 - [Tailscale remote access](#tailscale-remote-access)
 - [WireGuard VPN](#wireguard-vpn)
 - [Remote desktop](#remote-desktop)
+- [Save to pass](#save-to-pass)
 - [Server maintenance](#server-maintenance)
 - [Server troubleshooting](#server-troubleshooting)
 - [Moving data between drives](#moving-data-between-drives)
@@ -811,6 +812,49 @@ Install "RD Client" from App Store. Add PC with Tailscale IP.
 - **Session opens then closes:** lightdm is still running. Run `sudo systemctl disable --now lightdm` on the server.
 - **Black screen:** XFCE session packages may be missing. Run `sudo dnf install xfce4-session xfwm4 xfce4-panel xfdesktop`.
 - **Can't connect:** check firewall port 3389 is open: `sudo firewall-cmd --list-ports`.
+
+---
+
+## Save to pass
+
+Option **15** in `federver` backs up everything to the `pass` password manager. Run from your **laptop** (where pass is installed) — it SSHes into the server to fetch data.
+
+```bash
+federver    # pick 15
+```
+
+Saves:
+
+```
+privcloud/
+├── server/
+│   ├── hostname              # Server hostname
+│   ├── local_ip              # Local network IP
+│   ├── tailscale_ip          # Tailscale IP (if installed)
+│   └── user                  # SSH username
+├── ssh/
+│   ├── private_key           # SSH private key (from laptop)
+│   └── public_key            # SSH public key
+├── services/
+│   └── urls                  # All service URLs (local + Tailscale)
+├── config/
+│   ├── env                   # .env file (DB password, data paths)
+│   └── docker_compose        # docker-compose.yml
+└── wireguard/
+    ├── server_conf           # Server wg0.conf
+    └── peers/
+        ├── phone             # Phone peer config
+        └── laptop            # Laptop peer config
+```
+
+All entries are overwritten on each save. To view:
+
+```bash
+pass show privcloud/                       # list everything
+pass show privcloud/services/urls          # all service URLs
+pass show privcloud/config/env             # .env (DB password, paths)
+pass show privcloud/ssh/private_key        # SSH key
+```
 
 ---
 

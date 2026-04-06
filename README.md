@@ -79,6 +79,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
 
   -- Tools (from laptop, exit SSH first) --
   14) Sync files                          ← copy/backup files between laptop & server
+  15) Save to pass                        ← from laptop, backup everything to pass
 
   s)  Status        p)  Power        a)  Run all (3-9)        0)  Exit
 ```
@@ -130,6 +131,7 @@ Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
 | Remote desktop | RDP client → server IP port 3389 |
 | Backup | `privcloud backup` or `sudo /usr/local/bin/immich-backup.sh` |
 | Disk alerts | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
+| Backup to pass | `federver` → **15** (from laptop) |
 | Shutdown | `federver` → **p** |
 
 ## Docs

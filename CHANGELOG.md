@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.1 — 2026-04-06
+
+### Added
+- Save to pass (option 15) — backs up all server config to `pass` password manager
+  - Runs from laptop, SSHes into server to fetch data
+  - Saves: hostname, local IP, Tailscale IP, SSH keys, service URLs, .env, docker-compose.yml, WireGuard configs
+  - All entries overwritten on each save (idempotent)
+  - Updated README, customer guide, and changelog
+
 ## v0.2.0 — 2026-04-05
 
 ### Added

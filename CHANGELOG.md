@@ -11,19 +11,21 @@
 ### Changed
 - Option 12 "Mount USB drive" replaced with "Manage storage" sub-menu:
   - Status: shows drives, mounts, current paths, disk usage
-  - Mount USB: auto-detects USB drives (no more guessing device names)
+  - Mount USB: auto-detects USB drives (filters by TRAN=usb, no guessing)
   - Unmount USB: safely unmount and remove from fstab
-  - Change media location: updates Jellyfin + FileBrowser path, redeploys
+  - Change media location: updates Jellyfin, redeploys
   - Change data location: updates Immich photo/DB paths, redeploys
-- Removed `DATA_ROOT` from .env (no longer used by any container)
+- FileBrowser mounts `FILES_LOCATION` (base data path) — browse media, files, and immich
+- Jellyfin mounts `MEDIA_LOCATION` only — media files only
+- Replaced `DATA_ROOT` with `FILES_LOCATION` in .env
+- Status display: separated media path from Immich paths
+- FileBrowser password auto-set to `privcloud` during deploy (no more random passwords)
+- Deploy no longer sets unused `DATA_ROOT`
 
 ### Fixed
-- FileBrowser and Jellyfin now share the same `MEDIA_LOCATION`
-  - FileBrowser mounts as `/srv` (was `DATA_ROOT` which included immich data)
-  - Jellyfin drops `:ro` flag
-  - Upload in FileBrowser, plays in Jellyfin immediately
-  - `DATA_ROOT` removed from .env (no longer used)
-- Updated customer guide with media sharing docs and Jellyfin library setup
+- Jellyfin `:ro` flag removed from media mount
+- FileBrowser upload now works (correct ownership on media dir)
+- FileBrowser password no longer lost on container recreate
 
 ## v0.2.0 — 2026-04-05
 

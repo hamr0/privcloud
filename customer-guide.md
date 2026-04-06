@@ -402,19 +402,33 @@ iPhone videos (HEVC/H.265) may not play in browsers on Linux. Fix: Administratio
 
 ### What's stored where
 
-| Directory | Contents | Used by |
-|-----------|---------|---------|
+| .env variable | Contents | Used by |
+|---------------|---------|---------|
+| `FILES_LOCATION` | Base data directory (everything below) | FileBrowser root |
+| `MEDIA_LOCATION` | Movies, music, TV shows | Jellyfin + FileBrowser |
 | `UPLOAD_LOCATION` | Original photos, thumbnails, encoded videos | Immich |
 | `DB_DATA_LOCATION` | PostgreSQL database (faces, search, albums, accounts) | Immich |
-| `MEDIA_LOCATION` | Movies, music, TV shows — any media | Jellyfin + FileBrowser |
 
-### Media sharing between FileBrowser and Jellyfin
+### Default layout
 
-FileBrowser and Jellyfin both mount `MEDIA_LOCATION`:
-- **FileBrowser** mounts it as `/srv` (read-write) — upload and organize files here
-- **Jellyfin** mounts it as `/media` (read-write) — plays files from here
+```
+data/                    <- FILES_LOCATION (FileBrowser root)
+├── media/               <- MEDIA_LOCATION (Jellyfin + FileBrowser)
+│   ├── movies/
+│   ├── shows/
+│   └── music/
+├── files/               <- your private files (FileBrowser only)
+└── immich/              <- UPLOAD_LOCATION + DB (Immich only, leave alone)
+    ├── upload/
+    └── postgres/
+```
 
-They see the same directory. Upload a movie via FileBrowser, it appears in Jellyfin immediately.
+### How FileBrowser and Jellyfin share media
+
+- **FileBrowser** mounts `FILES_LOCATION` as `/srv` — sees everything (media, files, immich)
+- **Jellyfin** mounts `MEDIA_LOCATION` as `/media` — sees media only
+
+Upload a movie via FileBrowser into `media/movies/`, it appears in Jellyfin immediately.
 
 **Adding a library in Jellyfin:**
 1. Dashboard > Libraries > Add Media Library
@@ -656,10 +670,12 @@ After step 9, configure each service in your browser. Run `federver` → **s** f
 
 ### FileBrowser (port 8080)
 
-1. Get the generated password: `docker logs filebrowser | grep password`
-2. Login as **admin** with that password
-3. Change the password immediately (Settings → Profile)
-4. Browse/upload/download files from the data directory
+1. Login: **admin** / **privcloud** (set automatically during deploy)
+2. Change the password if you want (Settings → Profile)
+3. You'll see:
+   - `media/` — movies, music, shows (also visible to Jellyfin)
+   - `files/` — your private files, docs (create this folder)
+   - `immich/` — photo backup data (leave alone, managed by Immich)
 
 ### Uptime Kuma (port 3001)
 

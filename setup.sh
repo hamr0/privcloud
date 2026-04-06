@@ -601,7 +601,7 @@ step_deploy() {
     _set_env "UPLOAD_LOCATION" "${base_path}/immich/upload" "$SCRIPT_DIR/.env"
     _set_env "DB_DATA_LOCATION" "${base_path}/immich/postgres" "$SCRIPT_DIR/.env"
     _set_env "MEDIA_LOCATION" "${base_path}/media" "$SCRIPT_DIR/.env"
-    _set_env "FILES_LOCATION" "${base_path}/files" "$SCRIPT_DIR/.env"
+    _set_env "FILES_LOCATION" "${base_path}" "$SCRIPT_DIR/.env"
 
     source "$SCRIPT_DIR/.env"
     sudo mkdir -p "$UPLOAD_LOCATION" "$DB_DATA_LOCATION" "$MEDIA_LOCATION" 2>/dev/null || true

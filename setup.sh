@@ -84,7 +84,7 @@ show_menu() {
     echo -e "  ${DIM}-- Extras (optional, run anytime) --${NC}"
     echo -e "  ${BOLD}10)${NC} Install Tailscale                   ${DIM}← remote access VPN${NC}"
     echo -e "  ${BOLD}11)${NC} Install WireGuard                   ${DIM}← full VPN, route all traffic${NC}"
-    echo -e "  ${BOLD}12)${NC} Mount USB drive                     ${DIM}← plug in drive first${NC}"
+    echo -e "  ${BOLD}12)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
     echo -e "  ${BOLD}13)${NC} Remote desktop                      ${DIM}← access XFCE desktop via RDP${NC}"
     echo ""
     echo -e "  ${DIM}-- Immich photo management --${NC}"
@@ -291,31 +291,289 @@ step_tailscale() {
     fi
 }
 
-step_usbmount() {
-    info "This permanently mounts your USB drive so it auto-connects on reboot."
-    info "Make sure the USB drive is plugged into a back USB 3.0 port (blue)."
+step_storage() {
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    echo -e "  ${BOLD}1)${NC} Status                     ${DIM}<- drives, mounts, paths${NC}"
+    echo -e "  ${BOLD}2)${NC} Mount USB drive"
+    echo -e "  ${BOLD}3)${NC} Unmount USB drive"
+    echo -e "  ${BOLD}4)${NC} Change media location      ${DIM}<- Jellyfin + FileBrowser${NC}"
+    echo -e "  ${BOLD}5)${NC} Change data location       ${DIM}<- Immich photos + database${NC}"
+    echo -e "  ${BOLD}0)${NC} Cancel"
     echo ""
-    echo -e "  ${BOLD}Available drives:${NC}"
-    lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL | grep -v loop
+    read -p "  Choose: " storage_choice
+
+    case $storage_choice in
+        1) _storage_status ;;
+        2) _storage_mount ;;
+        3) _storage_unmount ;;
+        4) _storage_change_media ;;
+        5) _storage_change_data ;;
+        0|*) return ;;
+    esac
+}
+
+_storage_status() {
     echo ""
-    info "Pick the partition for your data drive (ignore nvme — that's the system disk)."
-    info "Example: if you see 'sda1', type 'sda1'"
+    source "$SCRIPT_DIR/.env" 2>/dev/null
+
+    echo -e "  ${BOLD}Internal drives${NC}"
+    lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL -n | grep -v loop | while IFS= read -r line; do
+        if lsblk -o NAME,TRAN -n 2>/dev/null | grep "$(echo "$line" | awk '{print $1}' | tr -d '├─└─│ ')" | grep -q "usb"; then
+            continue
+        fi
+        echo "    $line"
+    done
     echo ""
-    read -p "  Which partition? (or Enter to skip): " partition
-    if [[ -n "$partition" ]]; then
-        sudo mkdir -p /mnt/data
-        uuid=$(sudo blkid -s UUID -o value /dev/$partition)
-        fstype=$(sudo blkid -s TYPE -o value /dev/$partition)
-        if grep -q "$uuid" /etc/fstab 2>/dev/null; then
-            ok "Already in fstab, skipping."
+
+    # USB drives
+    local usb_drives
+    usb_drives=$(lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL,TRAN -n 2>/dev/null | grep "usb")
+    if [[ -n "$usb_drives" ]]; then
+        echo -e "  ${BOLD}USB drives${NC}"
+        echo "$usb_drives" | while IFS= read -r line; do
+            echo "    $line"
+        done
+    else
+        echo -e "  ${BOLD}USB drives${NC}"
+        echo -e "    ${DIM}none detected${NC}"
+    fi
+    echo ""
+
+    echo -e "  ${BOLD}Current paths (.env)${NC}"
+    echo -e "    Media:     ${MEDIA_LOCATION:-not set}"
+    echo -e "    Photos:    ${UPLOAD_LOCATION:-not set}"
+    echo -e "    Database:  ${DB_DATA_LOCATION:-not set}"
+    echo ""
+
+    echo -e "  ${BOLD}Disk usage${NC}"
+    df -h / /home /mnt/data 2>/dev/null | awk 'NR==1{printf "    %-25s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5} NR>1{printf "    %-25s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5}'
+}
+
+_storage_mount() {
+    echo ""
+    info "Plug in a USB drive, then select the partition to mount."
+    echo ""
+
+    # Show only USB drives
+    local usb_parts
+    usb_parts=$(lsblk -rno NAME,SIZE,FSTYPE,LABEL,TRAN 2>/dev/null | awk '$5=="usb" && $3!=""')
+
+    if [[ -z "$usb_parts" ]]; then
+        fail "No USB drives detected. Is one plugged in?"
+        return 1
+    fi
+
+    echo -e "  ${BOLD}USB partitions:${NC}"
+    local idx=1
+    declare -a part_arr
+    while IFS= read -r line; do
+        local name=$(echo "$line" | awk '{print $1}')
+        local size=$(echo "$line" | awk '{print $2}')
+        local fstype=$(echo "$line" | awk '{print $3}')
+        local label=$(echo "$line" | awk '{print $4}')
+        echo -e "    ${BOLD}$idx)${NC} /dev/$name  ${size}  ${fstype}  ${label:-no label}"
+        part_arr[$idx]="$name"
+        idx=$((idx + 1))
+    done <<< "$usb_parts"
+
+    echo ""
+    read -p "  Which partition? " part_choice
+    local partition="${part_arr[$part_choice]}"
+
+    if [[ -z "$partition" ]]; then
+        fail "Invalid choice."
+        return 1
+    fi
+
+    # Ask mount point
+    read -p "  Mount point [/mnt/data]: " mount_point
+    mount_point="${mount_point:-/mnt/data}"
+
+    sudo mkdir -p "$mount_point"
+    local uuid=$(sudo blkid -s UUID -o value "/dev/$partition")
+    local fstype=$(sudo blkid -s TYPE -o value "/dev/$partition")
+
+    if [[ -z "$uuid" ]]; then
+        fail "Could not read UUID for /dev/$partition."
+        return 1
+    fi
+
+    if grep -q "$uuid" /etc/fstab 2>/dev/null; then
+        ok "Already in fstab."
+        if mountpoint -q "$mount_point" 2>/dev/null; then
+            ok "Already mounted at $mount_point."
         else
-            echo "UUID=$uuid /mnt/data $fstype defaults,nofail 0 2" | sudo tee -a /etc/fstab
             sudo mount -a
-            ok "Mounted /dev/$partition at /mnt/data"
+            ok "Mounted at $mount_point."
         fi
     else
-        info "Skipped. Run this step again when USB drive is plugged in."
+        echo "UUID=$uuid $mount_point $fstype defaults,nofail 0 2" | sudo tee -a /etc/fstab > /dev/null
+        sudo mount -a
+        ok "Mounted /dev/$partition at $mount_point (permanent via fstab)."
     fi
+
+    echo ""
+    info "Contents:"
+    ls "$mount_point" 2>/dev/null || true
+}
+
+_storage_unmount() {
+    echo ""
+
+    # Find USB-mounted partitions
+    local usb_mounts
+    usb_mounts=$(lsblk -rno NAME,MOUNTPOINT,SIZE,TRAN 2>/dev/null | awk '$4=="usb" && $2!=""')
+
+    if [[ -z "$usb_mounts" ]]; then
+        fail "No mounted USB drives found."
+        return 1
+    fi
+
+    echo -e "  ${BOLD}Mounted USB drives:${NC}"
+    local idx=1
+    declare -a mount_arr
+    declare -a name_arr
+    while IFS= read -r line; do
+        local name=$(echo "$line" | awk '{print $1}')
+        local mpoint=$(echo "$line" | awk '{print $2}')
+        local size=$(echo "$line" | awk '{print $3}')
+        echo -e "    ${BOLD}$idx)${NC} /dev/$name  ${mpoint}  ${size}"
+        mount_arr[$idx]="$mpoint"
+        name_arr[$idx]="$name"
+        idx=$((idx + 1))
+    done <<< "$usb_mounts"
+
+    echo ""
+    read -p "  Which drive to unmount? " umount_choice
+    local mpoint="${mount_arr[$umount_choice]}"
+    local devname="${name_arr[$umount_choice]}"
+
+    if [[ -z "$mpoint" ]]; then
+        fail "Invalid choice."
+        return 1
+    fi
+
+    warn "This will unmount $mpoint (/dev/$devname)."
+    warn "Make sure no services are using files on this drive."
+    read -p "  Continue? [y/N] " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        return
+    fi
+
+    sudo umount "$mpoint" 2>/dev/null || true
+
+    # Remove from fstab
+    local uuid=$(sudo blkid -s UUID -o value "/dev/$devname" 2>/dev/null)
+    if [[ -n "$uuid" ]]; then
+        sudo sed -i "\|UUID=$uuid|d" /etc/fstab
+    fi
+
+    ok "Unmounted $mpoint and removed from fstab."
+    info "Safe to unplug the drive."
+}
+
+# Helper to update .env and redeploy affected containers
+_set_env() {
+    local key="$1" val="$2" file="$3"
+    if grep -q "^${key}=" "$file"; then
+        sed -i "s|^${key}=.*|${key}=${val}|" "$file"
+    else
+        echo "${key}=${val}" >> "$file"
+    fi
+}
+
+_storage_change_media() {
+    echo ""
+    source "$SCRIPT_DIR/.env" 2>/dev/null
+
+    info "Current media location: ${MEDIA_LOCATION:-not set}"
+    info "Used by: Jellyfin (streaming) + FileBrowser (upload/manage)"
+    echo ""
+    read -p "  New media path: " new_path
+
+    if [[ -z "$new_path" ]]; then
+        fail "Path is required."
+        return 1
+    fi
+
+    new_path="${new_path/#\~/$HOME}"
+
+    if [[ ! -d "$new_path" ]]; then
+        read -p "  '$new_path' doesn't exist. Create it? [Y/n] " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Nn]$ ]]; then
+            return
+        fi
+        sudo mkdir -p "$new_path"
+        sudo chown "$USER:$USER" "$new_path"
+        ok "Created $new_path"
+    fi
+
+    _set_env "MEDIA_LOCATION" "$new_path" "$SCRIPT_DIR/.env"
+    ok "Updated .env: MEDIA_LOCATION=$new_path"
+
+    echo ""
+    info "Redeploying Jellyfin + FileBrowser..."
+    cd "$SCRIPT_DIR"
+    sg docker -c "docker compose up -d --force-recreate jellyfin filebrowser" 2>&1 | grep -v "^$"
+
+    ok "Done. Jellyfin and FileBrowser now use: $new_path"
+}
+
+_storage_change_data() {
+    echo ""
+    source "$SCRIPT_DIR/.env" 2>/dev/null
+
+    info "Current Immich paths:"
+    echo -e "    Photos:    ${UPLOAD_LOCATION:-not set}"
+    echo -e "    Database:  ${DB_DATA_LOCATION:-not set}"
+    echo ""
+    warn "Changing this does NOT move existing data."
+    warn "Move files manually first, then update the path here."
+    echo ""
+    read -p "  New base data path (e.g. /mnt/data/immich): " new_base
+
+    if [[ -z "$new_base" ]]; then
+        fail "Path is required."
+        return 1
+    fi
+
+    new_base="${new_base/#\~/$HOME}"
+
+    local new_upload="${new_base}/upload"
+    local new_db="${new_base}/postgres"
+
+    echo ""
+    info "Will set:"
+    echo -e "    Photos:    $new_upload"
+    echo -e "    Database:  $new_db"
+    echo ""
+    read -p "  Continue? [Y/n] " -n 1 -r
+    echo ""
+    if [[ $REPLY =~ ^[Nn]$ ]]; then
+        return
+    fi
+
+    if [[ ! -d "$new_upload" ]]; then
+        sudo mkdir -p "$new_upload" "$new_db"
+        sudo chown -R "$USER:$USER" "$new_base"
+        ok "Created directories"
+    fi
+
+    _set_env "UPLOAD_LOCATION" "$new_upload" "$SCRIPT_DIR/.env"
+    _set_env "DB_DATA_LOCATION" "$new_db" "$SCRIPT_DIR/.env"
+    ok "Updated .env"
+
+    echo ""
+    info "Redeploying Immich..."
+    cd "$SCRIPT_DIR"
+    sg docker -c "docker compose up -d --force-recreate immich-server database" 2>&1 | grep -v "^$"
+
+    ok "Done. Immich now uses: $new_base"
+    echo ""
+    warn "If you moved existing data, verify with: privcloud status"
 }
 
 step_deploy() {
@@ -323,16 +581,6 @@ step_deploy() {
     echo ""
 
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-    # ── Helper to set env vars ──
-    _set_env() {
-        local key="$1" val="$2" file="$3"
-        if grep -q "^${key}=" "$file"; then
-            sed -i "s|^${key}=.*|${key}=${val}|" "$file"
-        else
-            echo "${key}=${val}" >> "$file"
-        fi
-    }
 
     # ── Ask for base data path ──
     info "Default: /mnt/data (USB drive)"
@@ -350,7 +598,6 @@ step_deploy() {
     _set_env "UPLOAD_LOCATION" "${base_path}/immich/upload" "$SCRIPT_DIR/.env"
     _set_env "DB_DATA_LOCATION" "${base_path}/immich/postgres" "$SCRIPT_DIR/.env"
     _set_env "MEDIA_LOCATION" "${base_path}/media" "$SCRIPT_DIR/.env"
-    _set_env "DATA_ROOT" "${base_path}" "$SCRIPT_DIR/.env"
 
     source "$SCRIPT_DIR/.env"
     sudo mkdir -p "$UPLOAD_LOCATION" "$DB_DATA_LOCATION" "$MEDIA_LOCATION" 2>/dev/null || true
@@ -1163,8 +1410,7 @@ step_status() {
         echo -e "    Immich DB:      $(grep DB_DATA_LOCATION "$SCRIPT_DIR_STATUS/.env" | cut -d= -f2)"
     fi
     if [[ -f "$SCRIPT_DIR/.env" ]]; then
-        echo -e "    Media:          $(grep MEDIA_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)"
-        echo -e "    FileBrowser:    $(grep DATA_ROOT "$SCRIPT_DIR/.env" | cut -d= -f2)"
+        echo -e "    Media:          $(grep MEDIA_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)  ${DIM}(Jellyfin + FileBrowser)${NC}"
     fi
 
     echo ""
@@ -1397,7 +1643,7 @@ while true; do
         9)  run_step "[9] Log rotation" step_logrotation ;;
         10) run_step "[10] Install Tailscale" step_tailscale ;;
         11) run_step "[11] Install WireGuard" step_wireguard ;;
-        12) run_step "[12] Mount USB drive" step_usbmount ;;
+        12) run_step "[12] Manage storage" step_storage ;;
         13) run_step "[13] Remote desktop" step_remotedesktop ;;
         14) run_step "[14] Sync files" step_sync ;;
         15) run_step "[15] Save to pass" step_save_to_pass ;;

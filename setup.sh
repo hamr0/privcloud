@@ -341,9 +341,11 @@ _storage_status() {
     echo ""
 
     echo -e "  ${BOLD}Current paths (.env)${NC}"
-    echo -e "    Media:     ${MEDIA_LOCATION:-not set}"
-    echo -e "    Photos:    ${UPLOAD_LOCATION:-not set}"
-    echo -e "    Database:  ${DB_DATA_LOCATION:-not set}"
+    echo -e "    Media:      ${MEDIA_LOCATION:-not set}  ${DIM}(Jellyfin + FileBrowser)${NC}"
+    echo ""
+    echo -e "    ${BOLD}Immich${NC}"
+    echo -e "    Photos:     ${UPLOAD_LOCATION:-not set}"
+    echo -e "    Database:   ${DB_DATA_LOCATION:-not set}"
     echo ""
 
     echo -e "  ${BOLD}Disk usage${NC}"
@@ -1405,12 +1407,14 @@ step_status() {
 
     echo ""
     echo -e "  ${BOLD}Data paths${NC}"
-    if [[ -f "$SCRIPT_DIR_STATUS/.env" ]]; then
-        echo -e "    Immich photos:  $(grep UPLOAD_LOCATION "$SCRIPT_DIR_STATUS/.env" | cut -d= -f2)"
-        echo -e "    Immich DB:      $(grep DB_DATA_LOCATION "$SCRIPT_DIR_STATUS/.env" | cut -d= -f2)"
-    fi
     if [[ -f "$SCRIPT_DIR/.env" ]]; then
-        echo -e "    Media:          $(grep MEDIA_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)  ${DIM}(Jellyfin + FileBrowser)${NC}"
+        echo -e "    Media:       $(grep MEDIA_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)  ${DIM}(Jellyfin + FileBrowser)${NC}"
+    fi
+    if [[ -f "$SCRIPT_DIR_STATUS/.env" ]]; then
+        echo ""
+        echo -e "    ${BOLD}Immich${NC}"
+        echo -e "    Photos:      $(grep UPLOAD_LOCATION "$SCRIPT_DIR_STATUS/.env" | cut -d= -f2)"
+        echo -e "    Database:    $(grep DB_DATA_LOCATION "$SCRIPT_DIR_STATUS/.env" | cut -d= -f2)"
     fi
 
     echo ""

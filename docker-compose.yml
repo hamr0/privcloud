@@ -74,7 +74,7 @@ services:
     volumes:
       - jellyfin-config:/config
       - jellyfin-cache:/cache
-      - ${MEDIA_LOCATION}:/media:ro
+      - ${MEDIA_LOCATION}:/media
     ports:
       - 8096:8096
     restart: always
@@ -84,7 +84,7 @@ services:
     container_name: filebrowser
     image: filebrowser/filebrowser:latest
     volumes:
-      - ${DATA_ROOT}:/srv
+      - ${MEDIA_LOCATION}:/srv
       - filebrowser-db:/database
     ports:
       - 8080:80

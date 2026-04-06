@@ -7,7 +7,14 @@
   - Runs from laptop, SSHes into server to fetch data
   - Saves: hostname, local IP, Tailscale IP, SSH keys, service URLs, .env, docker-compose.yml, WireGuard configs
   - All entries overwritten on each save (idempotent)
-  - Updated README, customer guide, and changelog
+
+### Fixed
+- FileBrowser and Jellyfin now share the same `MEDIA_LOCATION`
+  - FileBrowser mounts as `/srv` (was `DATA_ROOT` which included immich data)
+  - Jellyfin drops `:ro` flag
+  - Upload in FileBrowser, plays in Jellyfin immediately
+  - `DATA_ROOT` removed from .env (no longer used)
+- Updated customer guide with media sharing docs and Jellyfin library setup
 
 ## v0.2.0 — 2026-04-05
 

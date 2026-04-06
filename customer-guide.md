@@ -402,10 +402,36 @@ iPhone videos (HEVC/H.265) may not play in browsers on Linux. Fix: Administratio
 
 ### What's stored where
 
-| Directory | Contents |
-|-----------|---------|
-| `UPLOAD_LOCATION` | Original photos, thumbnails, encoded videos |
-| `DB_DATA_LOCATION` | PostgreSQL database (faces, search, albums, accounts) |
+| Directory | Contents | Used by |
+|-----------|---------|---------|
+| `UPLOAD_LOCATION` | Original photos, thumbnails, encoded videos | Immich |
+| `DB_DATA_LOCATION` | PostgreSQL database (faces, search, albums, accounts) | Immich |
+| `MEDIA_LOCATION` | Movies, music, TV shows — any media | Jellyfin + FileBrowser |
+
+### Media sharing between FileBrowser and Jellyfin
+
+FileBrowser and Jellyfin both mount `MEDIA_LOCATION`:
+- **FileBrowser** mounts it as `/srv` (read-write) — upload and organize files here
+- **Jellyfin** mounts it as `/media` (read-write) — plays files from here
+
+They see the same directory. Upload a movie via FileBrowser, it appears in Jellyfin immediately.
+
+**Adding a library in Jellyfin:**
+1. Dashboard > Libraries > Add Media Library
+2. Content type: Movies (or Music, Shows, etc.)
+3. Click the **+** next to "Folders"
+4. Navigate to `/media` (or a subfolder like `/media/movies`)
+5. Click OK
+
+**Recommended folder structure** (create in FileBrowser):
+```
+media/
+├── movies/
+├── shows/
+└── music/
+```
+
+Then add one Jellyfin library per folder (`/media/movies`, `/media/shows`, etc.).
 
 ### Storage growth
 

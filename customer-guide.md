@@ -958,6 +958,32 @@ ssh ahassan@<tailscale-ip>
 
 ## Server troubleshooting
 
+### `privcloud` or `federver` command not found / wrong path
+
+The global commands are created by step 1 (Enable SSH). If they point to the wrong path or don't exist:
+
+```bash
+# Check where they point
+cat /usr/local/bin/privcloud
+cat /usr/local/bin/federver
+
+# Fix — update to point to your repo location
+REPO_DIR="$(cd ~/privcloud && pwd)"
+sudo tee /usr/local/bin/federver > /dev/null <<EOF
+#!/bin/bash
+exec $REPO_DIR/setup.sh "\$@"
+EOF
+sudo chmod +x /usr/local/bin/federver
+
+sudo tee /usr/local/bin/privcloud > /dev/null <<EOF
+#!/bin/bash
+exec $REPO_DIR/privcloud "\$@"
+EOF
+sudo chmod +x /usr/local/bin/privcloud
+```
+
+Or re-run `federver` → step 1 which recreates both wrappers with the correct paths.
+
 ### Can't SSH into server
 
 - **From home:** check the server is on, check IP with `hostname -I` (need monitor temporarily)
@@ -990,8 +1016,8 @@ docker restart immich_server
 
 **Never run `chown` on the postgres directory.** Postgres uses its own internal user (999). Only chown the upload directory:
 ```bash
-sudo chown -R ahassan:ahassan ~/data/immich/upload   # safe
-# sudo chown -R ahassan:ahassan ~/data/immich/        # BREAKS POSTGRES
+sudo chown -R $USER:$USER ~/data/immich/upload   # safe
+# sudo chown -R $USER:$USER ~/data/immich/        # BREAKS POSTGRES
 ```
 
 ### Immich "Taking longer than expected"

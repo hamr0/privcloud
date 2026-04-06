@@ -92,6 +92,7 @@ show_menu() {
     echo ""
     echo -e "  ${YELLOW}-- Tools (from laptop, exit SSH first) --${NC}"
     echo -e "  ${BOLD}14)${NC} Sync files                          ${DIM}← copy/backup files between laptop & server${NC}"
+    echo -e "  ${BOLD}15)${NC} Save to pass                        ${DIM}← backup config, keys, URLs to pass${NC}"
     echo ""
     echo -e "  ${BOLD}s)${NC}  Status        ${BOLD}p)${NC}  Power        ${BOLD}a)${NC}  Run all (3-9)        ${BOLD}0)${NC}  Exit"
     echo ""
@@ -1227,6 +1228,100 @@ step_power() {
     esac
 }
 
+step_save_to_pass() {
+    if ! command -v pass &>/dev/null; then
+        fail "pass is not installed."
+        info "Install: sudo dnf install pass"
+        return 1
+    fi
+
+    info "Saves server config, SSH key, service URLs, and WireGuard configs to pass."
+    info "Overwrites existing entries."
+    echo ""
+
+    local IP=$(hostname -I | awk '{print $1}')
+    local TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
+    local HOSTNAME=$(hostname)
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    # Server details
+    echo "$HOSTNAME" | pass insert -e -f privcloud/server/hostname 2>/dev/null && ok "privcloud/server/hostname"
+    echo "$IP" | pass insert -e -f privcloud/server/local_ip 2>/dev/null && ok "privcloud/server/local_ip"
+    echo "$SERVER_USER" | pass insert -e -f privcloud/server/user 2>/dev/null && ok "privcloud/server/user"
+
+    if [[ -n "$TS_IP" ]]; then
+        echo "$TS_IP" | pass insert -e -f privcloud/server/tailscale_ip 2>/dev/null && ok "privcloud/server/tailscale_ip"
+    fi
+
+    # SSH key
+    local key_file=""
+    if [[ -f ~/.ssh/id_ed25519 ]]; then
+        key_file=~/.ssh/id_ed25519
+    elif [[ -f ~/.ssh/id_rsa ]]; then
+        key_file=~/.ssh/id_rsa
+    fi
+
+    if [[ -n "$key_file" ]]; then
+        cat "$key_file" | pass insert -m -f privcloud/ssh/private_key 2>/dev/null && ok "privcloud/ssh/private_key"
+        cat "${key_file}.pub" | pass insert -m -f privcloud/ssh/public_key 2>/dev/null && ok "privcloud/ssh/public_key"
+    fi
+
+    # Service URLs (local)
+    echo ""
+    info "Service URLs..."
+    local urls="Immich:       http://$IP:2283
+Jellyfin:     http://$IP:8096
+FileBrowser:  http://$IP:8080
+Uptime Kuma:  http://$IP:3001"
+
+    if [[ -n "$TS_IP" ]]; then
+        urls="$urls
+
+Remote (Tailscale):
+Immich:       http://$TS_IP:2283
+Jellyfin:     http://$TS_IP:8096
+FileBrowser:  http://$TS_IP:8080
+Uptime Kuma:  http://$TS_IP:3001"
+    fi
+
+    echo "$urls" | pass insert -m -f privcloud/services/urls 2>/dev/null && ok "privcloud/services/urls"
+
+    # .env file (has DB password, paths)
+    if [[ -f "$SCRIPT_DIR/.env" ]]; then
+        cat "$SCRIPT_DIR/.env" | pass insert -m -f privcloud/config/env 2>/dev/null && ok "privcloud/config/env"
+    fi
+
+    # Docker compose
+    if [[ -f "$SCRIPT_DIR/docker-compose.yml" ]]; then
+        cat "$SCRIPT_DIR/docker-compose.yml" | pass insert -m -f privcloud/config/docker_compose 2>/dev/null && ok "privcloud/config/docker_compose"
+    fi
+
+    # WireGuard configs (if installed)
+    if sudo test -f /etc/wireguard/wg0.conf; then
+        echo ""
+        info "WireGuard configs..."
+        sudo cat /etc/wireguard/wg0.conf | pass insert -m -f privcloud/wireguard/server_conf 2>/dev/null && ok "privcloud/wireguard/server_conf"
+
+        local conf_files
+        conf_files=$(sudo find /etc/wireguard -name '*.conf' ! -name 'wg0.conf' -printf '%f\n' 2>/dev/null)
+        if [[ -n "$conf_files" ]]; then
+            while IFS= read -r f; do
+                local name="${f%.conf}"
+                sudo cat "/etc/wireguard/$f" | pass insert -m -f "privcloud/wireguard/peers/${name}" 2>/dev/null && ok "privcloud/wireguard/peers/${name}"
+            done <<< "$conf_files"
+        fi
+    fi
+
+    echo ""
+    ok "All saved to pass."
+    echo ""
+    info "pass show privcloud/                       # list everything"
+    info "pass show privcloud/server/local_ip         # server IP"
+    info "pass show privcloud/services/urls           # all service URLs"
+    info "pass show privcloud/config/env              # .env (DB password, paths)"
+    info "pass show privcloud/ssh/private_key         # SSH key"
+}
+
 run_all() {
     step_update
     step_autoupdates
@@ -1256,6 +1351,7 @@ while true; do
         12) run_step "[12] Mount USB drive" step_usbmount ;;
         13) run_step "[13] Remote desktop" step_remotedesktop ;;
         14) run_step "[14] Sync files" step_sync ;;
+        15) run_step "[15] Save to pass" step_save_to_pass ;;
         s)  run_step "[s] Status" step_status ;;
         p)  run_step "[p] Power management" step_power ;;
         a)  run_step "Run all (3-9)" run_all ;;

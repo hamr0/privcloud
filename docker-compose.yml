@@ -84,7 +84,8 @@ services:
     container_name: filebrowser
     image: filebrowser/filebrowser:latest
     volumes:
-      - ${FILES_LOCATION}:/srv
+      - ${MEDIA_LOCATION}:/srv/media
+      - ${FILES_LOCATION}:/srv/files
       - filebrowser-db:/database
     ports:
       - 8080:80

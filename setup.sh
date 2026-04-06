@@ -628,27 +628,13 @@ step_deploy() {
     echo -e "    Create admin account, add media libraries from /media"
     echo ""
     echo -e "  ${BOLD}FileBrowser${NC} (port 8080)"
-    echo ""
-    read -p "    Set FileBrowser admin password: " fb_new_pass
-    if [[ -n "$fb_new_pass" ]]; then
-        # Wait for container to be ready
-        sleep 2
-        docker stop filebrowser > /dev/null 2>&1
-        docker run --rm \
-            -v privcloud_filebrowser-db:/database \
-            filebrowser/filebrowser:latest \
-            users update admin --password "$fb_new_pass" --database /database/filebrowser.db > /dev/null 2>&1
-        docker start filebrowser > /dev/null 2>&1
-        ok "Login: admin / $fb_new_pass"
-    else
-        local fb_pass
-        fb_pass=$(docker logs filebrowser 2>&1 | grep "randomly generated password" | awk '{print $NF}')
-        if [[ -n "$fb_pass" ]]; then
-            echo -e "    Login: ${BOLD}admin${NC} / ${BOLD}$fb_pass${NC} (change it after login)"
-        else
-            echo -e "    Check password: ${BOLD}docker logs filebrowser | grep password${NC}"
-        fi
-    fi
+    # Set a known password instead of the random generated one
+    local fb_pass="privcloud"
+    sleep 2
+    sg docker -c "docker stop filebrowser" > /dev/null 2>&1
+    sg docker -c "docker run --rm -v privcloud_filebrowser-db:/database filebrowser/filebrowser:latest users update admin --password '$fb_pass' --database /database/filebrowser.db" > /dev/null 2>&1
+    sg docker -c "docker start filebrowser" > /dev/null 2>&1
+    echo -e "    Login: ${BOLD}admin${NC} / ${BOLD}$fb_pass${NC}"
     echo ""
     echo -e "  ${BOLD}Uptime Kuma${NC} (port 3001)"
     echo -e "    Create admin account, then add monitors (use server IP, not localhost):"

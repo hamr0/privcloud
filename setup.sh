@@ -92,7 +92,7 @@ show_menu() {
     echo ""
     echo -e "  ${YELLOW}-- Tools (from laptop, exit SSH first) --${NC}"
     echo -e "  ${BOLD}14)${NC} Sync files                          ${DIM}← copy/backup files between laptop & server${NC}"
-    echo -e "  ${BOLD}15)${NC} Save to pass                        ${DIM}← backup config, keys, URLs to pass${NC}"
+    echo -e "  ${BOLD}15)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
     echo ""
     echo -e "  ${BOLD}s)${NC}  Status        ${BOLD}p)${NC}  Power        ${BOLD}a)${NC}  Run all (3-9)        ${BOLD}0)${NC}  Exit"
     echo ""
@@ -1229,20 +1229,50 @@ step_power() {
 }
 
 step_save_to_pass() {
+    info "Run this from your LAPTOP (where pass is installed)."
+    info "Fetches server config via SSH, saves everything to pass."
+    echo ""
+
     if ! command -v pass &>/dev/null; then
-        fail "pass is not installed."
+        fail "pass is not installed on this machine."
         info "Install: sudo dnf install pass"
         return 1
     fi
 
-    info "Saves server config, SSH key, service URLs, and WireGuard configs to pass."
-    info "Overwrites existing entries."
+    info "Connecting to $SERVER_USER@$SERVER_IP..."
     echo ""
 
-    local IP=$(hostname -I | awk '{print $1}')
-    local TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
-    local HOSTNAME=$(hostname)
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    # Fetch all data from server in one SSH call
+    local server_data
+    server_data=$(ssh "$SERVER_USER@$SERVER_IP" bash -s <<'FETCH'
+echo "HOSTNAME=$(hostname)"
+echo "LOCAL_IP=$(hostname -I | awk '{print $1}')"
+echo "TS_IP=$(tailscale ip -4 2>/dev/null || echo '')"
+echo "---ENV---"
+cat ~/privcloud/.env 2>/dev/null || cat ~/data/.env 2>/dev/null || true
+echo "---DOCKER_COMPOSE---"
+cat ~/privcloud/docker-compose.yml 2>/dev/null || true
+echo "---WG_SERVER---"
+sudo cat /etc/wireguard/wg0.conf 2>/dev/null || true
+echo "---WG_PEERS---"
+for f in $(sudo find /etc/wireguard -name '*.conf' ! -name 'wg0.conf' 2>/dev/null); do
+    echo "PEER_FILE=$(basename "$f" .conf)"
+    sudo cat "$f"
+    echo "END_PEER_FILE"
+done
+echo "---END---"
+FETCH
+)
+
+    if [[ -z "$server_data" ]]; then
+        fail "Could not connect to server."
+        return 1
+    fi
+
+    # Parse server details
+    local HOSTNAME=$(echo "$server_data" | grep "^HOSTNAME=" | cut -d= -f2)
+    local IP=$(echo "$server_data" | grep "^LOCAL_IP=" | cut -d= -f2)
+    local TS_IP=$(echo "$server_data" | grep "^TS_IP=" | cut -d= -f2)
 
     # Server details
     echo "$HOSTNAME" | pass insert -e -f privcloud/server/hostname 2>/dev/null && ok "privcloud/server/hostname"
@@ -1253,7 +1283,7 @@ step_save_to_pass() {
         echo "$TS_IP" | pass insert -e -f privcloud/server/tailscale_ip 2>/dev/null && ok "privcloud/server/tailscale_ip"
     fi
 
-    # SSH key
+    # SSH key (from laptop)
     local key_file=""
     if [[ -f ~/.ssh/id_ed25519 ]]; then
         key_file=~/.ssh/id_ed25519
@@ -1266,10 +1296,11 @@ step_save_to_pass() {
         cat "${key_file}.pub" | pass insert -m -f privcloud/ssh/public_key 2>/dev/null && ok "privcloud/ssh/public_key"
     fi
 
-    # Service URLs (local)
+    # Service URLs
     echo ""
     info "Service URLs..."
-    local urls="Immich:       http://$IP:2283
+    local urls="Local:
+Immich:       http://$IP:2283
 Jellyfin:     http://$IP:8096
 FileBrowser:  http://$IP:8080
 Uptime Kuma:  http://$IP:3001"
@@ -1286,30 +1317,48 @@ Uptime Kuma:  http://$TS_IP:3001"
 
     echo "$urls" | pass insert -m -f privcloud/services/urls 2>/dev/null && ok "privcloud/services/urls"
 
-    # .env file (has DB password, paths)
-    if [[ -f "$SCRIPT_DIR/.env" ]]; then
-        cat "$SCRIPT_DIR/.env" | pass insert -m -f privcloud/config/env 2>/dev/null && ok "privcloud/config/env"
+    # .env file
+    local env_data=$(echo "$server_data" | sed -n '/^---ENV---$/,/^---DOCKER_COMPOSE---$/p' | sed '1d;$d')
+    if [[ -n "$env_data" ]]; then
+        echo "$env_data" | pass insert -m -f privcloud/config/env 2>/dev/null && ok "privcloud/config/env"
     fi
 
     # Docker compose
-    if [[ -f "$SCRIPT_DIR/docker-compose.yml" ]]; then
-        cat "$SCRIPT_DIR/docker-compose.yml" | pass insert -m -f privcloud/config/docker_compose 2>/dev/null && ok "privcloud/config/docker_compose"
+    local compose_data=$(echo "$server_data" | sed -n '/^---DOCKER_COMPOSE---$/,/^---WG_SERVER---$/p' | sed '1d;$d')
+    if [[ -n "$compose_data" ]]; then
+        echo "$compose_data" | pass insert -m -f privcloud/config/docker_compose 2>/dev/null && ok "privcloud/config/docker_compose"
     fi
 
-    # WireGuard configs (if installed)
-    if sudo test -f /etc/wireguard/wg0.conf; then
+    # WireGuard server config
+    local wg_server=$(echo "$server_data" | sed -n '/^---WG_SERVER---$/,/^---WG_PEERS---$/p' | sed '1d;$d')
+    if [[ -n "$wg_server" ]]; then
         echo ""
         info "WireGuard configs..."
-        sudo cat /etc/wireguard/wg0.conf | pass insert -m -f privcloud/wireguard/server_conf 2>/dev/null && ok "privcloud/wireguard/server_conf"
+        echo "$wg_server" | pass insert -m -f privcloud/wireguard/server_conf 2>/dev/null && ok "privcloud/wireguard/server_conf"
+    fi
 
-        local conf_files
-        conf_files=$(sudo find /etc/wireguard -name '*.conf' ! -name 'wg0.conf' -printf '%f\n' 2>/dev/null)
-        if [[ -n "$conf_files" ]]; then
-            while IFS= read -r f; do
-                local name="${f%.conf}"
-                sudo cat "/etc/wireguard/$f" | pass insert -m -f "privcloud/wireguard/peers/${name}" 2>/dev/null && ok "privcloud/wireguard/peers/${name}"
-            done <<< "$conf_files"
-        fi
+    # WireGuard peer configs
+    local wg_peers=$(echo "$server_data" | sed -n '/^---WG_PEERS---$/,/^---END---$/p' | sed '1d;$d')
+    if [[ -n "$wg_peers" ]]; then
+        local current_peer=""
+        local peer_conf=""
+        while IFS= read -r line; do
+            if [[ "$line" == PEER_FILE=* ]]; then
+                current_peer="${line#PEER_FILE=}"
+                peer_conf=""
+            elif [[ "$line" == "END_PEER_FILE" ]]; then
+                if [[ -n "$current_peer" && -n "$peer_conf" ]]; then
+                    echo "$peer_conf" | pass insert -m -f "privcloud/wireguard/peers/${current_peer}" 2>/dev/null && ok "privcloud/wireguard/peers/${current_peer}"
+                fi
+            else
+                if [[ -n "$peer_conf" ]]; then
+                    peer_conf="$peer_conf
+$line"
+                else
+                    peer_conf="$line"
+                fi
+            fi
+        done <<< "$wg_peers"
     fi
 
     echo ""

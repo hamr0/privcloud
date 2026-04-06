@@ -8,6 +8,15 @@
   - Saves: hostname, local IP, Tailscale IP, SSH keys, service URLs, .env, docker-compose.yml, WireGuard configs
   - All entries overwritten on each save (idempotent)
 
+### Changed
+- Option 12 "Mount USB drive" replaced with "Manage storage" sub-menu:
+  - Status: shows drives, mounts, current paths, disk usage
+  - Mount USB: auto-detects USB drives (no more guessing device names)
+  - Unmount USB: safely unmount and remove from fstab
+  - Change media location: updates Jellyfin + FileBrowser path, redeploys
+  - Change data location: updates Immich photo/DB paths, redeploys
+- Removed `DATA_ROOT` from .env (no longer used by any container)
+
 ### Fixed
 - FileBrowser and Jellyfin now share the same `MEDIA_LOCATION`
   - FileBrowser mounts as `/srv` (was `DATA_ROOT` which included immich data)

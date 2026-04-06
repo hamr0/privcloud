@@ -40,7 +40,7 @@ Your server. Your data. No cloud required.
 - [Save to pass](#save-to-pass)
 - [Server maintenance](#server-maintenance)
 - [Server troubleshooting](#server-troubleshooting)
-- [Moving data between drives](#moving-data-between-drives)
+- [Managing storage](#managing-storage)
 
 ---
 
@@ -1012,15 +1012,50 @@ If services aren't running: `cd ~/privcloud && docker compose up -d && privcloud
 
 ---
 
-## Moving data between drives
+## Managing storage
 
-When migrating from internal drive to external USB (or vice versa):
+`federver` → **12** opens the storage sub-menu:
 
-1. Stop all services: `docker compose down && privcloud stop`
-2. Mount the new drive: `federver` → **8**
-3. Copy data: `rsync -avh --progress /old/path/ /new/path/`
-4. Update `.env` with new paths
-5. Redeploy: `federver` → **9** (enter new base path)
-6. Verify: `federver` → **s**
+```
+1) Status                     <- drives, mounts, paths
+2) Mount USB drive
+3) Unmount USB drive
+4) Change media location      <- Jellyfin + FileBrowser
+5) Change data location       <- Immich photos + database
+0) Cancel
+```
+
+### Mounting a USB drive
+
+1. Plug in the USB drive
+2. `federver` → **12** → **2**
+3. Select the USB partition (auto-detected, internal drives filtered out)
+4. Choose mount point (default: `/mnt/data`)
+
+The drive is added to `/etc/fstab` so it auto-mounts on reboot.
+
+### Changing media location
+
+If you want to move media to a USB drive:
+
+1. Mount the USB: `federver` → **12** → **2**
+2. Move files: `rsync -avh --progress /old/media/path/ /mnt/data/media/`
+3. Change location: `federver` → **12** → **4** → enter `/mnt/data/media`
+
+This updates `.env` and redeploys Jellyfin + FileBrowser automatically.
+
+### Changing Immich data location
+
+1. Stop Immich: `privcloud stop`
+2. Move files: `rsync -avh --progress /old/immich/ /mnt/data/immich/`
+3. Change location: `federver` → **12** → **5** → enter `/mnt/data/immich`
+4. Verify: `privcloud status`
 
 **Important:** the Postgres database password is baked in when first created. If you copy the database directory, keep the same `DB_PASSWORD` in `.env`. Changing it will cause `password authentication failed`.
+
+### Unmounting a USB drive
+
+1. Stop services using the drive first
+2. `federver` → **12** → **3**
+3. Select the USB to unmount
+4. Safe to unplug after confirmation

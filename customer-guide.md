@@ -101,7 +101,7 @@ Dedicated always-on machine running Immich + media streaming + file management +
   1)  Enable SSH + auto-login + hostname    ← with monitor
   2)  SSH key auth                          ← from laptop, exit SSH first
   3)  System update
-  4)  Enable auto-updates
+  4)  Enable auto-updates                   ← security only, kernel excluded
   5)  Install Docker                        ← log out & SSH back in after
 
   -- Services --
@@ -629,7 +629,7 @@ federver
 
 **Steps 3-11 (over SSH):** SSH into the server, run `federver`, go through each step:
 
-- **3-4:** System update + auto-updates
+- **3-4:** System update + auto-updates (userspace security only — kernel is excluded so the server never auto-reboots into an untested kernel while you're away; update kernels manually with `sudo dnf upgrade kernel` + reboot when you're home)
 - **5:** Docker — **log out and SSH back in after this** (docker group)
 - **6:** Firewall — opens service ports locally, trusts Tailscale
 - **7:** Tailscale — create account at login.tailscale.com first, then approve the server. Install Tailscale on phone/laptop with same account.

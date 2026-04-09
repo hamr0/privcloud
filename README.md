@@ -59,7 +59,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
   1)  Enable SSH + auto-login + hostname    ← with monitor
   2)  SSH key auth                          ← from laptop, exit SSH first
   3)  System update
-  4)  Enable auto-updates
+  4)  Enable auto-updates                   ← security only, kernel excluded
   5)  Install Docker                        ← log out & SSH back in after
 
   -- Services --

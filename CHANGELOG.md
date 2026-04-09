@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Security
+- FileBrowser admin password is now randomly generated per-deploy (16-char) and saved to `~/.privcloud/filebrowser.pass` (mode 0600). Removes the hardcoded `privcloud` credential that was published in README and customer-guide.
+- `dnf-automatic` now applies **security updates only**, with kernel packages explicitly excluded (`kernel`, `kernel-core`, `kernel-modules*`, `kernel-devel`, `kernel-headers`). A headless home server should never auto-reboot into an untested kernel while the owner is away. Update kernels manually with `sudo dnf upgrade kernel` + reboot when you're home.
+
 ## v0.2.1 — 2026-04-06
 
 ### Added

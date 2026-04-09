@@ -72,7 +72,7 @@ show_menu() {
     echo -e "  ${BOLD}1)${NC}  Enable SSH + auto-login + hostname  ${YELLOW}← with monitor${NC}"
     echo -e "  ${BOLD}2)${NC}  SSH key auth                        ${YELLOW}← from laptop, exit SSH first${NC}"
     echo -e "  ${BOLD}3)${NC}  System update"
-    echo -e "  ${BOLD}4)${NC}  Enable auto-updates"
+    echo -e "  ${BOLD}4)${NC}  Enable auto-updates                 ${YELLOW}← security only, kernel excluded${NC}"
     echo -e "  ${BOLD}5)${NC}  Install Docker                      ${YELLOW}← log out & SSH back in after${NC}"
     echo ""
     echo -e "  ${DIM}-- Services --${NC}"
@@ -185,7 +185,8 @@ step_update() {
 }
 
 step_autoupdates() {
-    info "Installs automatic security updates so you don't have to."
+    info "Installs automatic userspace security updates."
+    info "Kernel is excluded — reboot for new kernels manually when you're home."
     echo ""
     sudo dnf install -y dnf5-plugin-automatic
     local conf="/etc/dnf/dnf5-plugins/automatic.conf"
@@ -193,9 +194,20 @@ step_autoupdates() {
         sudo mkdir -p /etc/dnf/dnf5-plugins
         sudo cp /usr/share/dnf5/dnf5-plugins/automatic.conf "$conf"
     fi
-    sudo sed -i 's/apply_updates = no/apply_updates = yes/' "$conf"
+    # Security advisories only (skip routine updates)
+    sudo sed -i 's/^upgrade_type = .*/upgrade_type = security/' "$conf"
+    # Actually apply the updates (default is download-only)
+    sudo sed -i 's/^apply_updates = .*/apply_updates = yes/' "$conf"
+    # Belt-and-suspenders: exclude kernel packages even if a kernel ships
+    # under a security advisory. Kernel updates require a reboot, and we
+    # don't want unattended kernel swaps on a headless home server.
+    if ! grep -q '^exclude = ' "$conf"; then
+        sudo sed -i '/^\[base\]/a exclude = kernel kernel-core kernel-modules kernel-modules-core kernel-modules-extra kernel-devel kernel-headers' "$conf"
+    else
+        sudo sed -i 's/^exclude = .*/exclude = kernel kernel-core kernel-modules kernel-modules-core kernel-modules-extra kernel-devel kernel-headers/' "$conf"
+    fi
     sudo systemctl enable --now dnf-automatic.timer
-    ok "Auto-updates enabled."
+    ok "Auto-updates enabled (security only, kernel excluded)."
 }
 
 step_docker() {

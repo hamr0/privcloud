@@ -121,7 +121,7 @@ Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
 |------|---------|
 | Server status | `federver` → **s** |
 | Immich management | `privcloud` |
-| Upload media/files | FileBrowser → `http://<ip>:8080` (admin / privcloud) |
+| Upload media/files | FileBrowser → `http://<ip>:8080` (user `admin`, password: `cat ~/.privcloud/filebrowser.pass`) |
 | Manage storage | `federver` → **12** (mount USB, change paths) |
 | VPN connect/disconnect | `fedvpn start` / `fedvpn stop` (laptop) |
 | Show WireGuard peer config | `federver` → **11** → **2** (server) |

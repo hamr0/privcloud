@@ -628,13 +628,20 @@ step_deploy() {
     echo -e "    Create admin account, add media libraries from /media"
     echo ""
     echo -e "  ${BOLD}FileBrowser${NC} (port 8080)"
-    # Set a known password instead of the random generated one
-    local fb_pass="privcloud"
+    # Generate a random password, persist it across container recreations,
+    # and save it to a root-readable file so the user can retrieve it later.
+    local fb_pass
+    fb_pass=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
+    local fb_pass_file="$HOME/.privcloud/filebrowser.pass"
+    mkdir -p "$(dirname "$fb_pass_file")"
+    printf '%s\n' "$fb_pass" > "$fb_pass_file"
+    chmod 600 "$fb_pass_file"
     sleep 2
     sg docker -c "docker stop filebrowser" > /dev/null 2>&1
     sg docker -c "docker run --rm -v privcloud_filebrowser-db:/database filebrowser/filebrowser:latest users update admin --password '$fb_pass' --database /database/filebrowser.db" > /dev/null 2>&1
     sg docker -c "docker start filebrowser" > /dev/null 2>&1
     echo -e "    Login: ${BOLD}admin${NC} / ${BOLD}$fb_pass${NC}"
+    echo -e "    Saved to: ${BLUE}$fb_pass_file${NC} (retrieve with: ${BOLD}cat $fb_pass_file${NC})"
     echo ""
     echo -e "  ${BOLD}Uptime Kuma${NC} (port 3001)"
     echo -e "    Create admin account, then add monitors (use server IP, not localhost):"

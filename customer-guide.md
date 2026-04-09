@@ -670,8 +670,8 @@ After step 9, configure each service in your browser. Run `federver` → **s** f
 
 ### FileBrowser (port 8080)
 
-1. Login: **admin** / **privcloud** (set automatically during deploy)
-2. Change the password if you want (Settings → Profile)
+1. Login: user `admin`. The password is randomly generated during deploy and saved to `~/.privcloud/filebrowser.pass` on the server. Retrieve it with `cat ~/.privcloud/filebrowser.pass`. It's also printed once at the end of step 7 (Deploy services).
+2. Change the password if you want (Settings → Profile) — then you can delete `~/.privcloud/filebrowser.pass`
 3. You'll see:
    - `media/` — movies, music, shows (also visible to Jellyfin)
    - `files/` — your private files, docs (create this folder)

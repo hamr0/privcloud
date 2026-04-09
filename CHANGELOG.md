@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+- WireGuard **Remove peer** option in `setup.sh` → `11`. Lists current peers by name, pick a number, confirms, deletes the `[Peer]` block from `wg0.conf` and the client `.conf`, then hot-reloads. Closes the gap where revoking a lost device required a full reinstall.
+
+### Changed
+- WireGuard add/remove now hot-reload via `wg syncconf` instead of `systemctl restart wg-quick@wg0`. Other connected peers stay up during config changes (previously every peer dropped for a few seconds on every add). Falls back to restart if `wg syncconf` is unavailable.
+
 ### Security
 - FileBrowser admin password is now randomly generated per-deploy (16-char) and saved to `~/.privcloud/filebrowser.pass` (mode 0600). Removes the hardcoded `privcloud` credential that was published in README and customer-guide.
 - `dnf-automatic` now applies **security updates only**, with kernel packages explicitly excluded (`kernel`, `kernel-core`, `kernel-modules*`, `kernel-devel`, `kernel-headers`). A headless home server should never auto-reboot into an untested kernel while the owner is away. Update kernels manually with `sudo dnf upgrade kernel` + reboot when you're home.

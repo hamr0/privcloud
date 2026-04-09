@@ -797,6 +797,69 @@ _wg_show_instructions() {
     esac
 }
 
+_wg_remove_peer() {
+    local WG_DIR="/etc/wireguard"
+
+    # List peers from wg0.conf (source of truth)
+    local names
+    names=$(sudo grep "^# " "$WG_DIR/wg0.conf" 2>/dev/null | sed 's/^# //')
+
+    if [[ -z "$names" ]]; then
+        fail "No peers to remove."
+        return
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Current peers:${NC}"
+    local idx=1
+    declare -a name_arr
+    while IFS= read -r n; do
+        echo -e "    ${BOLD}$idx)${NC} $n"
+        name_arr[$idx]="$n"
+        idx=$((idx + 1))
+    done <<< "$names"
+    echo ""
+    read -p "  Which peer to remove? [number] " peer_choice
+
+    local peer_name="${name_arr[$peer_choice]:-}"
+    if [[ -z "$peer_name" ]]; then
+        fail "Invalid choice."
+        return
+    fi
+
+    echo ""
+    read -p "  Remove peer '${peer_name}'? [y/N] " -n 1 -r
+    echo ""
+    [[ ! $REPLY =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
+
+    # Remove the [Peer] block whose body contains "# <name>"
+    # Paragraph-mode awk: RS="" treats blank-line-separated blocks as records.
+    # index() is literal (not regex) so names with hyphens/dots are safe.
+    local tmp
+    tmp=$(mktemp)
+    sudo awk -v name="$peer_name" '
+        BEGIN { RS=""; ORS="\n\n" }
+        /^\[Peer\]/ { if (index("\n" $0 "\n", "\n# " name "\n") > 0) next }
+        { print }
+    ' "$WG_DIR/wg0.conf" > "$tmp"
+    sudo cp "$tmp" "$WG_DIR/wg0.conf"
+    sudo chmod 600 "$WG_DIR/wg0.conf"
+    rm -f "$tmp"
+
+    # Delete the peer's client config if it exists
+    if sudo test -f "$WG_DIR/${peer_name}.conf"; then
+        sudo rm -f "$WG_DIR/${peer_name}.conf"
+    fi
+
+    # Hot-reload without dropping other peers' connections.
+    # wg syncconf reads a stripped config (no PostUp/PostDown) and applies deltas live.
+    if ! sudo bash -c "wg syncconf wg0 <(wg-quick strip wg0)" 2>/dev/null; then
+        sudo systemctl restart wg-quick@wg0
+    fi
+
+    ok "Peer '${peer_name}' removed."
+}
+
 step_wireguard() {
     info "WireGuard routes ALL your traffic through this server."
     info "Unlike Tailscale (access server only), this is a full VPN."
@@ -823,14 +886,16 @@ step_wireguard() {
 
         echo -e "  ${BOLD}1)${NC} Add new peer"
         echo -e "  ${BOLD}2)${NC} Show peer config (to set up a device)"
-        echo -e "  ${BOLD}3)${NC} Reinstall (regenerate all keys — existing peers stop working)"
+        echo -e "  ${BOLD}3)${NC} Remove peer"
+        echo -e "  ${BOLD}4)${NC} Reinstall (regenerate all keys — existing peers stop working)"
         echo -e "  ${BOLD}0)${NC} Cancel"
         echo ""
-        read -p "  Choose [1/2/3/0]: " wg_action
+        read -p "  Choose [1/2/3/4/0]: " wg_action
 
         case $wg_action in
             0) return ;;
-            3) is_new_install=true ;;
+            3) _wg_remove_peer; return ;;
+            4) is_new_install=true ;;
             2)
                 # Show existing peer configs
                 echo ""
@@ -931,8 +996,10 @@ PersistentKeepalive = 25"
                     fi
                 done
 
-                # Reload WireGuard
-                sudo systemctl restart wg-quick@wg0
+                # Hot-reload (keeps existing peers connected)
+                if ! sudo bash -c "wg syncconf wg0 <(wg-quick strip wg0)" 2>/dev/null; then
+                    sudo systemctl restart wg-quick@wg0
+                fi
                 ok "WireGuard reloaded with new peers."
                 return
                 ;;

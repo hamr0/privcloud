@@ -798,7 +798,10 @@ Run `federver` → **11** again. It detects WireGuard is already installed and o
 
 1. **Add new peer** — generates keys, shows device-specific instructions (phone QR, Linux/Mac config)
 2. **Show peer config** — retrieve an existing peer's config (to set up a new device or re-paste)
-3. **Reinstall** — regenerates all keys (existing peers stop working)
+3. **Remove peer** — revoke a lost/retired device. Lists current peers, pick a number, confirms, deletes the `[Peer]` block from `wg0.conf` and the client `.conf` file, then hot-reloads without dropping other peers' connections.
+4. **Reinstall** — regenerates all keys (existing peers stop working)
+
+Adding and removing peers uses `wg syncconf` for a live reload, so other connected devices stay up.
 
 Configs saved in `/etc/wireguard/`. Check status: `sudo wg show`
 

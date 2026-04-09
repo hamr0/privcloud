@@ -938,11 +938,43 @@ Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 | Check status | `federver` → **s** | Anytime |
 | Update Immich | `privcloud update` | Monthly |
 | Update other containers | `docker compose pull && docker compose up -d` | Monthly |
-| Update Fedora | `sudo dnf upgrade` | Monthly |
+| Update Fedora userspace | `sudo dnf upgrade --exclude='kernel*'` | Monthly (or skip — security fixes auto-apply) |
+| Update kernel + reboot | see [Kernel updates](#kernel-updates) | Every 1–2 months, when you're home |
 | Check disk space | `df -h` | Monthly |
 | Check disk alerts | `cat /var/log/disk-check.log` | After alerts |
 | Check backup logs | `cat /var/log/immich-backup.log` | After issues |
 | Sync files | `federver` → **13** (from laptop) | As needed |
+
+### Kernel updates
+
+`dnf-automatic` (step 4) applies **userspace security fixes only** and explicitly excludes kernel packages. This is deliberate: a headless home server should never auto-reboot into an untested kernel while you're away. The trade-off is that you update the kernel by hand every month or two, when you're physically near the box (or at least able to walk to it if something goes wrong).
+
+**The workflow, when you're home:**
+
+```bash
+# 1. See if there's actually a new kernel waiting
+sudo dnf check-upgrade kernel
+
+# 2. Install it (and any related kernel packages)
+sudo dnf upgrade kernel kernel-core kernel-modules kernel-modules-core
+
+# 3. Reboot into the new kernel
+sudo systemctl reboot
+
+# 4. After it comes back, verify
+uname -r                    # should show the new version
+privcloud status            # containers back up?
+federver                    # → s, for full status
+```
+
+**If the new kernel misbehaves** (kernel panic, hardware doesn't work, networking broken, anything weird): reboot and pick the previous kernel from the GRUB menu. Fedora keeps the last 3 kernels installed by default, so you always have a working fallback one arrow-key away.
+
+```bash
+# To make the previous kernel the default permanently:
+sudo grubby --set-default /boot/vmlinuz-<previous-version>
+```
+
+**Why not just run `sudo dnf upgrade` like a normal desktop?** You can — it's fine when you're home. The only reason this guide splits it out is that the kernel is the one package where "apply update" and "finish update" are different events (reboot required), and an unattended reboot into a broken kernel is the main way a home server becomes unreachable while you're traveling. Keeping kernels on a manual, supervised cadence removes that failure mode entirely.
 
 ### SSH access
 

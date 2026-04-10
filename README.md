@@ -9,7 +9,7 @@
 
 **Your server. Your data. No cloud required.**
 
-Self-hosted home server with photo backup, media streaming, file management, and remote access.
+Self-hosted home server with photo backup, music streaming, file management, and remote access.
 
 ## Two modes
 
@@ -38,7 +38,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
 | Service | Port | What it does |
 |---------|------|-------------|
 | **Immich** | 2283 | Photo backup from phone, face detection, smart search |
-| **Jellyfin** | 8096 | Stream movies, music, media — personal Netflix |
+| **Navidrome** | 4533 | Music streaming — background playback, offline cache via Amperfy app |
 | **FileBrowser** | 8080 | Browse/download/upload files from any browser |
 | **Uptime Kuma** | 3001 | Monitoring dashboard, alerts if services go down |
 | **Watchtower** | — | Auto-updates all containers daily at 4am |
@@ -64,7 +64,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
 
   -- Services --
   6)  Configure firewall
-  7)  Deploy services                       ← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma
+  7)  Deploy services                       ← Immich, Navidrome, FileBrowser, Watchtower, Uptime Kuma
   8)  Setup backups + disk monitoring
   9)  Configure log rotation
 
@@ -135,7 +135,7 @@ Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
 | Backup | `privcloud backup` or `sudo /usr/local/bin/immich-backup.sh` |
 | Disk alerts | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
 | Backup to pass | `federver` → **15** (from laptop) |
-| Reset password | `federver` → **r** (FileBrowser, Immich, Jellyfin, Uptime Kuma) |
+| Reset password | `federver` → **r** (FileBrowser, Immich, Navidrome, Uptime Kuma) |
 | Shutdown | `federver` → **p** |
 
 ## Docs

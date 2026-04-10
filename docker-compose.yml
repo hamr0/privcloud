@@ -1,5 +1,5 @@
 # Privcloud — Home server stack
-# Immich (photo backup) + Jellyfin + FileBrowser + Watchtower + Uptime Kuma
+# Immich (photo backup) + Navidrome + FileBrowser + Watchtower + Uptime Kuma
 # Managed by: ./setup.sh and ./privcloud
 
 name: privcloud
@@ -67,17 +67,25 @@ services:
       timeout: 5s
       retries: 3
 
-  # ── Jellyfin (media streaming) ─────────────────────
-  jellyfin:
-    container_name: jellyfin
-    image: jellyfin/jellyfin:latest
+  # ── Navidrome (music streaming) ─────────────────────
+  navidrome:
+    container_name: navidrome
+    image: deluan/navidrome:latest
     volumes:
-      - jellyfin-config:/config
-      - jellyfin-cache:/cache
-      - ${MEDIA_LOCATION}:/media
+      - navidrome-data:/data
+      - ${MUSIC_LOCATION}:/music:ro
     ports:
-      - 8096:8096
+      - 4533:4533
+    environment:
+      ND_SCANSCHEDULE: 1h
+      ND_LOGLEVEL: info
+      ND_BASEURL: ""
     restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:4533/ping || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   # ── FileBrowser (web file manager) ─────────────────
   filebrowser:
@@ -114,7 +122,6 @@ services:
 
 volumes:
   model-cache:
-  jellyfin-config:
-  jellyfin-cache:
+  navidrome-data:
   filebrowser-db:
   uptime-kuma-data:

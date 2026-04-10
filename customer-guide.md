@@ -67,9 +67,9 @@ Just want photo backup? Run `privcloud` on any machine — laptop, desktop, what
 
 ### Full home server
 
-Dedicated always-on machine running Immich + media streaming + file management + monitoring + remote access. `federver` handles everything from a fresh Fedora install.
+Dedicated always-on machine running Immich + music streaming + file management + monitoring + remote access. `federver` handles everything from a fresh Fedora install.
 
-**Good for:** 24/7 photo backup, streaming media to TV/phone, accessing files from anywhere, replacing Google Drive/iCloud/Plex.
+**Good for:** 24/7 photo backup, streaming music to phone, accessing files from anywhere, replacing Google Drive/iCloud.
 **Needs:** a mini PC or similar, Fedora XFCE, a monitor + keyboard for initial setup (then headless).
 
 ---
@@ -106,7 +106,7 @@ Dedicated always-on machine running Immich + media streaming + file management +
 
   -- Services --
   6)  Configure firewall
-  7)  Deploy services                       ← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma
+  7)  Deploy services                       ← Immich, Navidrome, FileBrowser, Watchtower, Uptime Kuma
   8)  Setup backups + disk monitoring
   9)  Configure log rotation
 
@@ -405,7 +405,8 @@ iPhone videos (HEVC/H.265) may not play in browsers on Linux. Fix: Administratio
 | .env variable | Contents | Used by |
 |---------------|---------|---------|
 | `FILES_LOCATION` | Base data directory | FileBrowser root |
-| `MEDIA_LOCATION` | Movies, music, TV shows | Jellyfin |
+| `MEDIA_LOCATION` | Videos, files (FileBrowser) | FileBrowser |
+| `MUSIC_LOCATION` | Music library | Navidrome |
 | `UPLOAD_LOCATION` | Original photos, thumbnails, encoded videos | Immich |
 | `DB_DATA_LOCATION` | PostgreSQL database (faces, search, albums, accounts) | Immich |
 
@@ -413,39 +414,24 @@ iPhone videos (HEVC/H.265) may not play in browsers on Linux. Fix: Administratio
 
 ```
 data/                    <- FILES_LOCATION (FileBrowser root)
-├── media/               <- MEDIA_LOCATION (Jellyfin + FileBrowser)
+├── media/               <- MEDIA_LOCATION (FileBrowser)
+│   ├── My Music/        <- MUSIC_LOCATION (Navidrome)
 │   ├── movies/
-│   ├── shows/
-│   └── music/
+│   └── shows/
 ├── files/               <- your private files (FileBrowser only)
 └── immich/              <- UPLOAD_LOCATION + DB (Immich only, leave alone)
     ├── upload/
     └── postgres/
 ```
 
-### How FileBrowser and Jellyfin share media
+### How FileBrowser and Navidrome share media
 
 - **FileBrowser** mounts `FILES_LOCATION` as `/srv` — sees everything (media, files, immich)
-- **Jellyfin** mounts `MEDIA_LOCATION` as `/media` — sees media only
+- **Navidrome** mounts `MUSIC_LOCATION` as `/music` — sees your music library only
 
-Upload a movie via FileBrowser into `media/movies/`, it appears in Jellyfin immediately.
+Upload music via FileBrowser into `media/My Music/`, it appears in Navidrome automatically.
 
-**Adding a library in Jellyfin:**
-1. Dashboard > Libraries > Add Media Library
-2. Content type: Movies (or Music, Shows, etc.)
-3. Click the **+** next to "Folders"
-4. Navigate to `/media` (or a subfolder like `/media/movies`)
-5. Click OK
-
-**Recommended folder structure** (create in FileBrowser):
-```
-media/
-├── movies/
-├── shows/
-└── music/
-```
-
-Then add one Jellyfin library per folder (`/media/movies`, `/media/shows`, etc.).
+Videos are not streamed via a dedicated service. Download them from FileBrowser and play in VLC.
 
 ### Storage growth
 
@@ -573,7 +559,7 @@ Everything below is for the **full server** mode using `federver`.
 ### Minimum specs
 
 - **CPU:** Intel i3 6th gen+ or i5 4th gen+ (need 4+ threads for Immich ML)
-- **RAM:** 8GB minimum, 16GB recommended (Immich ML + Jellyfin transcoding)
+- **RAM:** 8GB minimum, 16GB recommended (Immich ML)
 - **Storage:** 128GB+ for OS + Docker, external drive for data
 - **Form factor:** Mini PC / USFF ideal (low power, quiet, small)
 
@@ -657,23 +643,22 @@ After step 9, configure each service in your browser. Run `federver` → **s** f
 3. In the app: enter server URL (`http://<server-ip>:2283`), log in, enable auto-upload
 4. If migrating: use `privcloud upload` or `privcloud fix-gp` for Google Takeout
 
-### Jellyfin (port 8096)
+### Navidrome (port 4533)
 
-1. Open in browser, create admin account via setup wizard
-2. Add media libraries pointing to `/media`
-3. Install Jellyfin app:
-   - **iPhone:** [App Store](https://apps.apple.com/app/jellyfin-mobile/id1480732557)
-   - **Android:** [Play Store](https://play.google.com/store/apps/details?id=org.jellyfin.mobile)
-   - **Smart TV:** search "Jellyfin" in your TV's app store
-   - **Laptop:** open `http://<server-ip>:8096` in browser (no install needed)
-4. Media files go in the data path's `media/` directory
+1. Open `http://<server-ip>:4533` in browser, create admin account
+2. Music is automatically scanned from the `MUSIC_LOCATION` folder
+3. Install **Amperfy** on iPhone (free, App Store) for mobile playback:
+   - Supports background playback and offline caching via Subsonic API
+   - Server URL: `http://<server-ip>:4533`
+   - Log in with your Navidrome credentials
+4. Upload music via FileBrowser into `media/My Music/` — Navidrome picks it up automatically
 
 ### FileBrowser (port 8080)
 
 1. Login: user `admin`. The password is randomly generated during deploy and saved to `~/.privcloud/filebrowser.pass` on the server. Retrieve it with `cat ~/.privcloud/filebrowser.pass`. It's also printed once at the end of step 7 (Deploy services).
 2. Change the password if you want (Settings → Profile) — then you can delete `~/.privcloud/filebrowser.pass`
 3. You'll see:
-   - `media/` — movies, music, shows (also visible to Jellyfin)
+   - `media/` — videos, music, files (music also visible to Navidrome)
    - `files/` — your private files, docs (create this folder)
    - `immich/` — photo backup data (leave alone, managed by Immich)
 
@@ -686,7 +671,7 @@ After step 9, configure each service in your browser. Run `federver` → **s** f
 | Name | Type | URL |
 |------|------|-----|
 | Immich | HTTP(s) | `http://<server-local-ip>:2283/api/server/ping` |
-| Jellyfin | HTTP(s) | `http://<server-local-ip>:8096` |
+| Navidrome | HTTP(s) | `http://<server-local-ip>:4533` |
 | FileBrowser | HTTP(s) | `http://<server-local-ip>:8080` |
 
 **Important:** Use the server's local IP (e.g. `192.168.178.180`), not `localhost`. Uptime Kuma runs inside Docker where `localhost` refers to the container itself, not the server.
@@ -735,7 +720,7 @@ Use the Tailscale IP instead of the local IP:
 
 ```
 http://<tailscale-ip>:2283   Immich
-http://<tailscale-ip>:8096   Jellyfin
+http://<tailscale-ip>:4533   Navidrome
 http://<tailscale-ip>:8080   FileBrowser
 http://<tailscale-ip>:3001   Uptime Kuma
 ssh ahassan@<tailscale-ip>   SSH
@@ -926,7 +911,7 @@ pass show privcloud/ssh/private_key        # SSH key
 | Name | Type | URL/Host |
 |------|------|----------|
 | Immich | HTTP(s) | `http://<server-ip>:2283/api/server/ping` |
-| Jellyfin | HTTP(s) | `http://<server-ip>:8096` |
+| Navidrome | HTTP(s) | `http://<server-ip>:4533` |
 | FileBrowser | HTTP(s) | `http://<server-ip>:8080` |
 | Server | Ping | `<server-ip>` |
 
@@ -1097,7 +1082,7 @@ If services aren't running: `cd ~/privcloud && docker compose up -d && privcloud
 1) Status                     <- drives, mounts, paths
 2) Mount USB drive
 3) Unmount USB drive
-4) Change media location      <- Jellyfin
+4) Change music location      <- Navidrome
 5) Change data location       <- FileBrowser root
 6) Change Immich location     <- Immich photos + database
 0) Cancel
@@ -1112,15 +1097,15 @@ If services aren't running: `cd ~/privcloud && docker compose up -d && privcloud
 
 The drive is added to `/etc/fstab` so it auto-mounts on reboot.
 
-### Changing media location
+### Changing music location
 
-If you want to move media to a USB drive:
+If you want to move music to a USB drive:
 
 1. Mount the USB: `federver` → **12** → **2**
-2. Move files: `rsync -avh --progress /old/media/path/ /mnt/data/media/`
-3. Change location: `federver` → **12** → **4** → enter `/mnt/data/media`
+2. Move files: `rsync -avh --progress /old/music/path/ /mnt/data/media/My\ Music/`
+3. Change location: `federver` → **12** → **4** → enter `/mnt/data/media/My Music`
 
-This updates `.env` and redeploys Jellyfin automatically.
+This updates `.env` and redeploys Navidrome automatically.
 
 ### Changing FileBrowser location
 
@@ -1153,5 +1138,5 @@ This updates `.env` and redeploys FileBrowser automatically.
 |---------|-------------|------------|
 | **FileBrowser** | Sets new admin password | No |
 | **Immich** | Clears admin password, re-enter on next login | No |
-| **Jellyfin** | Wipes config, restarts setup wizard | Libraries need re-adding |
+| **Navidrome** | Wipes data, re-register via web UI | Music library re-scanned automatically |
 | **Uptime Kuma** | Wipes data, starts fresh | Monitors need re-adding |

@@ -4,16 +4,21 @@
 
 ### Added
 - WireGuard **Remove peer** option in `setup.sh` → `11`. Lists current peers by name, pick a number, confirms, deletes the `[Peer]` block from `wg0.conf` and the client `.conf`, then hot-reloads. Closes the gap where revoking a lost device required a full reinstall.
-- Storage: separate **Change Immich location** option (`federver` → `12` → `6`). Immich paths are now independent from FileBrowser and Jellyfin — changing one never affects the others.
-- **Reset password** option (`federver` → `r`). Resets credentials for FileBrowser, Immich, Jellyfin, or Uptime Kuma. FileBrowser and Immich reset password only (data kept). Jellyfin and Uptime Kuma wipe config and restart the setup wizard.
+- Storage: separate **Change Immich location** option (`federver` → `12` → `6`). Immich paths are now independent from FileBrowser and Navidrome — changing one never affects the others.
+- **Reset password** option (`federver` → `r`). Resets credentials for FileBrowser, Immich, Navidrome, or Uptime Kuma. FileBrowser and Immich reset password only (data kept). Navidrome and Uptime Kuma wipe data and restart fresh.
+- New `MUSIC_LOCATION` env var for Navidrome music library path.
 
 ### Changed
+- Replaced Jellyfin with Navidrome for music streaming. Navidrome is lighter, supports background playback and offline caching via Subsonic-compatible apps (recommended: Amperfy on iOS).
 - WireGuard add/remove now hot-reload via `wg syncconf` instead of `systemctl restart wg-quick@wg0`. Other connected peers stay up during config changes (previously every peer dropped for a few seconds on every add). Falls back to restart if `wg syncconf` is unavailable.
-- Storage menu split into three path options: media (Jellyfin), data (FileBrowser), Immich. Previously "Change media location" controlled both Jellyfin and FileBrowser, and there was no separate Immich option.
-- USB drive detection now finds partitions on USB disks, not just the parent device. Fixes status/mount/unmount showing "none detected" when drives were plugged in.
+- Storage menu split into three path options: music (Navidrome), data (FileBrowser), Immich. Previously "Change media location" controlled both Jellyfin and FileBrowser, and there was no separate Immich option.
+
+### Removed
+- Jellyfin media server. Videos can be played by downloading from FileBrowser and opening in VLC.
 
 ### Fixed
 - Power management (`federver` → `p`) now runs shutdown/reboot over SSH on the server instead of locally. Previously would shut down the laptop if run from there.
+- USB drive detection now finds partitions on USB disks, not just the parent device. Fixes status/mount/unmount showing "none detected" when drives were plugged in.
 
 ### Security
 - FileBrowser admin password is now randomly generated per-deploy (16-char) and saved to `~/.privcloud/filebrowser.pass` (mode 0600). Removes the hardcoded `privcloud` credential that was published in README and customer-guide.
@@ -57,7 +62,7 @@
   - Firewall (local ports + Tailscale trusted)
   - Tailscale remote access with guided setup
   - USB drive mount (permanent via fstab)
-  - Service deployment (Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma)
+  - Service deployment (Immich, Navidrome, FileBrowser, Watchtower, Uptime Kuma)
   - WireGuard VPN (iptables NAT, auto key gen, QR codes, device-specific instructions, add/show peers)
   - Remote desktop via xrdp (disables local display, RDP from any device)
   - Daily Immich DB backup (cron at 3am)

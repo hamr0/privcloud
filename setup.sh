@@ -77,7 +77,7 @@ show_menu() {
     echo ""
     echo -e "  ${DIM}-- Services --${NC}"
     echo -e "  ${BOLD}6)${NC}  Configure firewall"
-    echo -e "  ${BOLD}7)${NC}  Deploy services                     ${DIM}← Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma${NC}"
+    echo -e "  ${BOLD}7)${NC}  Deploy services                     ${DIM}← Immich, Navidrome, FileBrowser, Watchtower, Uptime Kuma${NC}"
     echo -e "  ${BOLD}8)${NC}  Setup backups + disk monitoring"
     echo -e "  ${BOLD}9)${NC}  Configure log rotation"
     echo ""
@@ -211,7 +211,7 @@ step_autoupdates() {
 }
 
 step_docker() {
-    info "Docker runs all your services (Immich, Jellyfin, FileBrowser, etc)."
+    info "Docker runs all your services (Immich, Navidrome, FileBrowser, etc)."
     echo ""
     sudo dnf install -y dnf-plugins-core
     sudo dnf-3 config-manager --add-repo https://download.docker.com/linux/fedora/docker-ce.repo
@@ -233,7 +233,7 @@ step_firewall() {
 
     sudo firewall-cmd --permanent --add-service=ssh
     sudo firewall-cmd --permanent --add-port=2283/tcp   # Immich
-    sudo firewall-cmd --permanent --add-port=8096/tcp   # Jellyfin
+    sudo firewall-cmd --permanent --add-port=4533/tcp   # Navidrome
     sudo firewall-cmd --permanent --add-port=8080/tcp   # FileBrowser
     sudo firewall-cmd --permanent --add-port=3001/tcp   # Uptime Kuma
 
@@ -242,7 +242,7 @@ step_firewall() {
     sudo firewall-cmd --reload
     echo ""
     ok "Firewall configured:"
-    echo -e "    ${GREEN}Local network:${NC} SSH, Immich (2283), Jellyfin (8096), FileBrowser (8080), Uptime Kuma (3001)"
+    echo -e "    ${GREEN}Local network:${NC} SSH, Immich (2283), Navidrome (4533), FileBrowser (8080), Uptime Kuma (3001)"
     echo -e "    ${GREEN}Tailscale:${NC}     full access (remote)"
     echo -e "    ${RED}Everything else:${NC} blocked"
 }
@@ -293,7 +293,7 @@ step_tailscale() {
         echo -e "  2. Log in with the ${BOLD}same account${NC} you just used"
         echo -e "  3. Now you can access all services from anywhere:"
         echo -e "     Immich:       ${BLUE}http://$ts_ip:2283${NC}"
-        echo -e "     Jellyfin:     ${BLUE}http://$ts_ip:8096${NC}"
+        echo -e "     Navidrome:    ${BLUE}http://$ts_ip:4533${NC}"
         echo -e "     FileBrowser:  ${BLUE}http://$ts_ip:8080${NC}"
         echo -e "     Uptime Kuma:  ${BLUE}http://$ts_ip:3001${NC}"
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -309,7 +309,7 @@ step_storage() {
     echo -e "  ${BOLD}1)${NC} Status                     ${DIM}<- drives, mounts, paths${NC}"
     echo -e "  ${BOLD}2)${NC} Mount USB drive"
     echo -e "  ${BOLD}3)${NC} Unmount USB drive"
-    echo -e "  ${BOLD}4)${NC} Change media location      ${DIM}<- Jellyfin${NC}"
+    echo -e "  ${BOLD}4)${NC} Change music location      ${DIM}<- Navidrome${NC}"
     echo -e "  ${BOLD}5)${NC} Change data location       ${DIM}<- FileBrowser root${NC}"
     echo -e "  ${BOLD}6)${NC} Change Immich location     ${DIM}<- Immich photos + database${NC}"
     echo -e "  ${BOLD}0)${NC} Cancel"
@@ -320,7 +320,7 @@ step_storage() {
         1) _storage_status ;;
         2) _storage_mount ;;
         3) _storage_unmount ;;
-        4) _storage_change_media ;;
+        4) _storage_change_music ;;
         5) _storage_change_files ;;
         6) _storage_change_immich ;;
         0|*) return ;;
@@ -362,7 +362,7 @@ _storage_status() {
 
     echo -e "  ${BOLD}Current paths (.env)${NC}"
     echo -e "    Files:      ${FILES_LOCATION:-not set}  ${DIM}(FileBrowser)${NC}"
-    echo -e "    Media:      ${MEDIA_LOCATION:-not set}  ${DIM}(Jellyfin)${NC}"
+    echo -e "    Music:      ${MUSIC_LOCATION:-not set}  ${DIM}(Navidrome)${NC}"
     echo -e "    Immich:     ${UPLOAD_LOCATION:-not set}  ${DIM}(photos)${NC}"
     echo -e "    Database:   ${DB_DATA_LOCATION:-not set}  ${DIM}(Immich DB)${NC}"
     echo ""
@@ -517,14 +517,14 @@ _set_env() {
     fi
 }
 
-_storage_change_media() {
+_storage_change_music() {
     echo ""
     source "$SCRIPT_DIR/.env" 2>/dev/null
 
-    info "Current media location: ${MEDIA_LOCATION:-not set}"
-    info "Used by: Jellyfin (streaming)"
+    info "Current music location: ${MUSIC_LOCATION:-not set}"
+    info "Used by: Navidrome (music streaming)"
     echo ""
-    read -p "  New media path: " new_path
+    read -p "  New music path: " new_path
 
     if [[ -z "$new_path" ]]; then
         fail "Path is required."
@@ -544,15 +544,15 @@ _storage_change_media() {
         ok "Created $new_path"
     fi
 
-    _set_env "MEDIA_LOCATION" "$new_path" "$SCRIPT_DIR/.env"
-    ok "Updated .env: MEDIA_LOCATION=$new_path"
+    _set_env "MUSIC_LOCATION" "$new_path" "$SCRIPT_DIR/.env"
+    ok "Updated .env: MUSIC_LOCATION=$new_path"
 
     echo ""
-    info "Redeploying Jellyfin..."
+    info "Redeploying Navidrome..."
     cd "$SCRIPT_DIR"
-    sg docker -c "docker compose up -d --force-recreate jellyfin" 2>&1 | grep -v "^$"
+    sg docker -c "docker compose up -d --force-recreate navidrome" 2>&1 | grep -v "^$"
 
-    ok "Done. Jellyfin now uses: $new_path"
+    ok "Done. Navidrome now uses: $new_path"
 }
 
 _storage_change_files() {
@@ -648,7 +648,7 @@ _storage_change_immich() {
 }
 
 step_deploy() {
-    info "Deploys all services: Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma."
+    info "Deploys all services: Immich, Navidrome, FileBrowser, Watchtower, Uptime Kuma."
     echo ""
 
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -669,10 +669,11 @@ step_deploy() {
     _set_env "UPLOAD_LOCATION" "${base_path}/immich/upload" "$SCRIPT_DIR/.env"
     _set_env "DB_DATA_LOCATION" "${base_path}/immich/postgres" "$SCRIPT_DIR/.env"
     _set_env "MEDIA_LOCATION" "${base_path}/media" "$SCRIPT_DIR/.env"
+    _set_env "MUSIC_LOCATION" "${base_path}/media/My Music" "$SCRIPT_DIR/.env"
     _set_env "FILES_LOCATION" "${base_path}" "$SCRIPT_DIR/.env"
 
     source "$SCRIPT_DIR/.env"
-    sudo mkdir -p "$UPLOAD_LOCATION" "$DB_DATA_LOCATION" "$MEDIA_LOCATION" 2>/dev/null || true
+    sudo mkdir -p "$UPLOAD_LOCATION" "$DB_DATA_LOCATION" "$MEDIA_LOCATION" "$MUSIC_LOCATION" 2>/dev/null || true
 
     cd "$SCRIPT_DIR"
     sg docker -c "docker compose up -d"
@@ -683,7 +684,7 @@ step_deploy() {
     echo ""
     echo -e "  ${BOLD}Access from your browser:${NC}"
     echo -e "    Immich:       ${BLUE}http://$IP:2283${NC}"
-    echo -e "    Jellyfin:     ${BLUE}http://$IP:8096${NC}"
+    echo -e "    Navidrome:    ${BLUE}http://$IP:4533${NC}"
     echo -e "    FileBrowser:  ${BLUE}http://$IP:8080${NC}"
     echo -e "    Uptime Kuma:  ${BLUE}http://$IP:3001${NC}"
     echo ""
@@ -692,8 +693,10 @@ step_deploy() {
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "  ${YELLOW}SETUP EACH SERVICE${NC}"
     echo ""
-    echo -e "  ${BOLD}Jellyfin${NC} (port 8096)"
-    echo -e "    Create admin account, add media libraries from /media"
+    echo -e "  ${BOLD}Navidrome${NC} (port 4533)"
+    echo -e "    Open in browser, create admin account. Music is served from /music."
+    echo -e "    Download ${BOLD}Amperfy${NC} from the App Store for iPhone playback"
+    echo -e "    (background playback + offline cache via Subsonic API)."
     echo ""
     echo -e "  ${BOLD}FileBrowser${NC} (port 8080)"
     # Generate a random password, persist it across container recreations,
@@ -714,7 +717,7 @@ step_deploy() {
     echo -e "  ${BOLD}Uptime Kuma${NC} (port 3001)"
     echo -e "    Create admin account, then add monitors (use server IP, not localhost):"
     echo -e "    + New Monitor → HTTP → http://$IP:2283/api/server/ping (Immich)"
-    echo -e "    + New Monitor → HTTP → http://$IP:8096 (Jellyfin)"
+    echo -e "    + New Monitor → HTTP → http://$IP:4533 (Navidrome)"
     echo -e "    + New Monitor → HTTP → http://$IP:8080 (FileBrowser)"
     echo -e "    Optional: set up Telegram/email alerts in Settings → Notifications"
     echo ""
@@ -1536,7 +1539,7 @@ step_status() {
 
     echo -e "  ${BOLD}Service URLs (local network)${NC}"
     echo -e "    Immich:       ${BLUE}http://$IP:2283${NC}"
-    echo -e "    Jellyfin:     ${BLUE}http://$IP:8096${NC}"
+    echo -e "    Navidrome:    ${BLUE}http://$IP:4533${NC}"
     echo -e "    FileBrowser:  ${BLUE}http://$IP:8080${NC}"
     echo -e "    Uptime Kuma:  ${BLUE}http://$IP:3001${NC}"
 
@@ -1544,7 +1547,7 @@ step_status() {
         echo ""
         echo -e "  ${BOLD}Service URLs (remote via Tailscale)${NC}"
         echo -e "    Immich:       ${BLUE}http://$TAILSCALE_IP:2283${NC}"
-        echo -e "    Jellyfin:     ${BLUE}http://$TAILSCALE_IP:8096${NC}"
+        echo -e "    Navidrome:    ${BLUE}http://$TAILSCALE_IP:4533${NC}"
         echo -e "    FileBrowser:  ${BLUE}http://$TAILSCALE_IP:8080${NC}"
         echo -e "    Uptime Kuma:  ${BLUE}http://$TAILSCALE_IP:3001${NC}"
     fi
@@ -1553,7 +1556,7 @@ step_status() {
     echo -e "  ${BOLD}Data paths${NC}"
     if [[ -f "$SCRIPT_DIR/.env" ]]; then
         echo -e "    Files:       $(grep FILES_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)  ${DIM}(FileBrowser root)${NC}"
-        echo -e "    Media:       $(grep MEDIA_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)  ${DIM}(Jellyfin)${NC}"
+        echo -e "    Music:       $(grep MUSIC_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)  ${DIM}(Navidrome)${NC}"
     fi
     if [[ -f "$SCRIPT_DIR_STATUS/.env" ]]; then
         echo ""
@@ -1696,7 +1699,7 @@ FETCH
     info "Service URLs..."
     local urls="Local:
 Immich:       http://$IP:2283
-Jellyfin:     http://$IP:8096
+Navidrome:    http://$IP:4533
 FileBrowser:  http://$IP:8080
 Uptime Kuma:  http://$IP:3001"
 
@@ -1705,7 +1708,7 @@ Uptime Kuma:  http://$IP:3001"
 
 Remote (Tailscale):
 Immich:       http://$TS_IP:2283
-Jellyfin:     http://$TS_IP:8096
+Navidrome:    http://$TS_IP:4533
 FileBrowser:  http://$TS_IP:8080
 Uptime Kuma:  http://$TS_IP:3001"
     fi
@@ -1783,7 +1786,7 @@ step_reset_password() {
 
     echo -e "  ${BOLD}1)${NC} FileBrowser     ${DIM}(port 8080)${NC}"
     echo -e "  ${BOLD}2)${NC} Immich          ${DIM}(port 2283)${NC}"
-    echo -e "  ${BOLD}3)${NC} Jellyfin        ${DIM}(port 8096)${NC}"
+    echo -e "  ${BOLD}3)${NC} Navidrome       ${DIM}(port 4533)${NC}"
     echo -e "  ${BOLD}4)${NC} Uptime Kuma     ${DIM}(port 3001)${NC}"
     echo -e "  ${BOLD}0)${NC} Cancel"
     echo ""
@@ -1826,19 +1829,19 @@ step_reset_password() {
             ;;
         3)
             echo ""
-            warn "This will wipe Jellyfin config and restart the setup wizard."
-            warn "You will need to re-add your media libraries."
+            warn "This will wipe Navidrome data and restart fresh."
+            warn "You will need to re-register via the web UI."
             read -p "  Continue? [y/N] " -n 1 -r
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 return
             fi
             cd "$SCRIPT_DIR"
-            sg docker -c "docker compose down jellyfin" > /dev/null 2>&1
-            sg docker -c "docker volume rm privcloud_jellyfin-config" > /dev/null 2>&1
-            sg docker -c "docker compose up -d jellyfin" > /dev/null 2>&1
-            ok "Jellyfin reset. Open to run setup wizard:"
-            echo -e "    ${BLUE}http://$IP:8096${NC}"
+            sg docker -c "docker compose down navidrome" > /dev/null 2>&1
+            sg docker -c "docker volume rm privcloud_navidrome-data" > /dev/null 2>&1
+            sg docker -c "docker compose up -d navidrome" > /dev/null 2>&1
+            ok "Navidrome reset. Open to create a new account:"
+            echo -e "    ${BLUE}http://$IP:4533${NC}"
             ;;
         4)
             echo ""

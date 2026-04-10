@@ -1544,7 +1544,7 @@ step_power() {
             echo ""
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 ok "Shutting down..."
-                sudo shutdown now
+                ssh -t "$SERVER_USER@$SERVER_IP" "sudo shutdown now"
             else
                 info "Cancelled."
             fi
@@ -1556,7 +1556,7 @@ step_power() {
             echo ""
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 ok "Restarting..."
-                sudo reboot
+                ssh -t "$SERVER_USER@$SERVER_IP" "sudo reboot"
             else
                 info "Cancelled."
             fi

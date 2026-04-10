@@ -340,7 +340,13 @@ _storage_status() {
 
     # USB drives
     local usb_drives
-    usb_drives=$(lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL,TRAN -n 2>/dev/null | grep "usb")
+    local usb_disks
+    usb_disks=$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}')
+    usb_drives=""
+    for d in $usb_disks; do
+        usb_drives+="$(lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL "/dev/$d" -n 2>/dev/null)"$'\n'
+    done
+    usb_drives=$(echo "$usb_drives" | sed '/^$/d')
     if [[ -n "$usb_drives" ]]; then
         echo -e "  ${BOLD}USB drives${NC}"
         echo "$usb_drives" | while IFS= read -r line; do
@@ -372,7 +378,13 @@ _storage_mount() {
 
     # Show only USB drives
     local usb_parts
-    usb_parts=$(lsblk -rno NAME,SIZE,FSTYPE,LABEL,TRAN 2>/dev/null | awk '$5=="usb" && $3!=""')
+    local usb_disks
+    usb_disks=$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}')
+    usb_parts=""
+    for d in $usb_disks; do
+        usb_parts+="$(lsblk -rno NAME,SIZE,FSTYPE,LABEL "/dev/$d" 2>/dev/null | awk '$3!=""')"$'\n'
+    done
+    usb_parts=$(echo "$usb_parts" | sed '/^$/d')
 
     if [[ -z "$usb_parts" ]]; then
         fail "No USB drives detected. Is one plugged in?"
@@ -438,7 +450,13 @@ _storage_unmount() {
 
     # Find USB-mounted partitions
     local usb_mounts
-    usb_mounts=$(lsblk -rno NAME,MOUNTPOINT,SIZE,TRAN 2>/dev/null | awk '$4=="usb" && $2!=""')
+    local usb_disks
+    usb_disks=$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}')
+    usb_mounts=""
+    for d in $usb_disks; do
+        usb_mounts+="$(lsblk -rno NAME,MOUNTPOINT,SIZE "/dev/$d" 2>/dev/null | awk '$2!=""')"$'\n'
+    done
+    usb_mounts=$(echo "$usb_mounts" | sed '/^$/d')
 
     if [[ -z "$usb_mounts" ]]; then
         fail "No mounted USB drives found."

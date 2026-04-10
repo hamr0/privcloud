@@ -4,9 +4,15 @@
 
 ### Added
 - WireGuard **Remove peer** option in `setup.sh` → `11`. Lists current peers by name, pick a number, confirms, deletes the `[Peer]` block from `wg0.conf` and the client `.conf`, then hot-reloads. Closes the gap where revoking a lost device required a full reinstall.
+- Storage: separate **Change Immich location** option (`federver` → `12` → `6`). Immich paths are now independent from FileBrowser and Jellyfin — changing one never affects the others.
 
 ### Changed
 - WireGuard add/remove now hot-reload via `wg syncconf` instead of `systemctl restart wg-quick@wg0`. Other connected peers stay up during config changes (previously every peer dropped for a few seconds on every add). Falls back to restart if `wg syncconf` is unavailable.
+- Storage menu split into three path options: media (Jellyfin), data (FileBrowser), Immich. Previously "Change media location" controlled both Jellyfin and FileBrowser, and there was no separate Immich option.
+- USB drive detection now finds partitions on USB disks, not just the parent device. Fixes status/mount/unmount showing "none detected" when drives were plugged in.
+
+### Fixed
+- Power management (`federver` → `p`) now runs shutdown/reboot over SSH on the server instead of locally. Previously would shut down the laptop if run from there.
 
 ### Security
 - FileBrowser admin password is now randomly generated per-deploy (16-char) and saved to `~/.privcloud/filebrowser.pass` (mode 0600). Removes the hardcoded `privcloud` credential that was published in README and customer-guide.

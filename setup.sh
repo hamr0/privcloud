@@ -309,8 +309,9 @@ step_storage() {
     echo -e "  ${BOLD}1)${NC} Status                     ${DIM}<- drives, mounts, paths${NC}"
     echo -e "  ${BOLD}2)${NC} Mount USB drive"
     echo -e "  ${BOLD}3)${NC} Unmount USB drive"
-    echo -e "  ${BOLD}4)${NC} Change media location      ${DIM}<- Jellyfin + FileBrowser${NC}"
-    echo -e "  ${BOLD}5)${NC} Change data location       ${DIM}<- Immich photos + database${NC}"
+    echo -e "  ${BOLD}4)${NC} Change media location      ${DIM}<- Jellyfin${NC}"
+    echo -e "  ${BOLD}5)${NC} Change data location       ${DIM}<- FileBrowser root${NC}"
+    echo -e "  ${BOLD}6)${NC} Change Immich location     ${DIM}<- Immich photos + database${NC}"
     echo -e "  ${BOLD}0)${NC} Cancel"
     echo ""
     read -p "  Choose: " storage_choice
@@ -320,7 +321,8 @@ step_storage() {
         2) _storage_mount ;;
         3) _storage_unmount ;;
         4) _storage_change_media ;;
-        5) _storage_change_data ;;
+        5) _storage_change_files ;;
+        6) _storage_change_immich ;;
         0|*) return ;;
     esac
 }
@@ -359,12 +361,10 @@ _storage_status() {
     echo ""
 
     echo -e "  ${BOLD}Current paths (.env)${NC}"
-    echo -e "    Files:      ${FILES_LOCATION:-not set}  ${DIM}(FileBrowser root)${NC}"
+    echo -e "    Files:      ${FILES_LOCATION:-not set}  ${DIM}(FileBrowser)${NC}"
     echo -e "    Media:      ${MEDIA_LOCATION:-not set}  ${DIM}(Jellyfin)${NC}"
-    echo ""
-    echo -e "    ${BOLD}Immich${NC}"
-    echo -e "    Photos:     ${UPLOAD_LOCATION:-not set}"
-    echo -e "    Database:   ${DB_DATA_LOCATION:-not set}"
+    echo -e "    Immich:     ${UPLOAD_LOCATION:-not set}  ${DIM}(photos)${NC}"
+    echo -e "    Database:   ${DB_DATA_LOCATION:-not set}  ${DIM}(Immich DB)${NC}"
     echo ""
 
     echo -e "  ${BOLD}Disk usage${NC}"
@@ -522,7 +522,7 @@ _storage_change_media() {
     source "$SCRIPT_DIR/.env" 2>/dev/null
 
     info "Current media location: ${MEDIA_LOCATION:-not set}"
-    info "Used by: Jellyfin (streaming) + FileBrowser (upload/manage)"
+    info "Used by: Jellyfin (streaming)"
     echo ""
     read -p "  New media path: " new_path
 
@@ -548,14 +548,52 @@ _storage_change_media() {
     ok "Updated .env: MEDIA_LOCATION=$new_path"
 
     echo ""
-    info "Redeploying Jellyfin + FileBrowser..."
+    info "Redeploying Jellyfin..."
     cd "$SCRIPT_DIR"
-    sg docker -c "docker compose up -d --force-recreate jellyfin filebrowser" 2>&1 | grep -v "^$"
+    sg docker -c "docker compose up -d --force-recreate jellyfin" 2>&1 | grep -v "^$"
 
-    ok "Done. Jellyfin and FileBrowser now use: $new_path"
+    ok "Done. Jellyfin now uses: $new_path"
 }
 
-_storage_change_data() {
+_storage_change_files() {
+    echo ""
+    source "$SCRIPT_DIR/.env" 2>/dev/null
+
+    info "Current files location: ${FILES_LOCATION:-not set}"
+    info "Used by: FileBrowser (upload/manage)"
+    echo ""
+    read -p "  New files path: " new_path
+
+    if [[ -z "$new_path" ]]; then
+        fail "Path is required."
+        return 1
+    fi
+
+    new_path="${new_path/#\~/$HOME}"
+
+    if [[ ! -d "$new_path" ]]; then
+        read -p "  '$new_path' doesn't exist. Create it? [Y/n] " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Nn]$ ]]; then
+            return
+        fi
+        sudo mkdir -p "$new_path"
+        sudo chown "$USER:$USER" "$new_path"
+        ok "Created $new_path"
+    fi
+
+    _set_env "FILES_LOCATION" "$new_path" "$SCRIPT_DIR/.env"
+    ok "Updated .env: FILES_LOCATION=$new_path"
+
+    echo ""
+    info "Redeploying FileBrowser..."
+    cd "$SCRIPT_DIR"
+    sg docker -c "docker compose up -d --force-recreate filebrowser" 2>&1 | grep -v "^$"
+
+    ok "Done. FileBrowser now uses: $new_path"
+}
+
+_storage_change_immich() {
     echo ""
     source "$SCRIPT_DIR/.env" 2>/dev/null
 
@@ -566,7 +604,7 @@ _storage_change_data() {
     warn "Changing this does NOT move existing data."
     warn "Move files manually first, then update the path here."
     echo ""
-    read -p "  New base data path (e.g. /mnt/data/immich): " new_base
+    read -p "  New Immich path (e.g. /mnt/data/immich): " new_base
 
     if [[ -z "$new_base" ]]; then
         fail "Path is required."

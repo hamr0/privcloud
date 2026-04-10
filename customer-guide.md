@@ -404,8 +404,8 @@ iPhone videos (HEVC/H.265) may not play in browsers on Linux. Fix: Administratio
 
 | .env variable | Contents | Used by |
 |---------------|---------|---------|
-| `FILES_LOCATION` | Base data directory (everything below) | FileBrowser root |
-| `MEDIA_LOCATION` | Movies, music, TV shows | Jellyfin + FileBrowser |
+| `FILES_LOCATION` | Base data directory | FileBrowser root |
+| `MEDIA_LOCATION` | Movies, music, TV shows | Jellyfin |
 | `UPLOAD_LOCATION` | Original photos, thumbnails, encoded videos | Immich |
 | `DB_DATA_LOCATION` | PostgreSQL database (faces, search, albums, accounts) | Immich |
 
@@ -1097,8 +1097,9 @@ If services aren't running: `cd ~/privcloud && docker compose up -d && privcloud
 1) Status                     <- drives, mounts, paths
 2) Mount USB drive
 3) Unmount USB drive
-4) Change media location      <- Jellyfin + FileBrowser
-5) Change data location       <- Immich photos + database
+4) Change media location      <- Jellyfin
+5) Change data location       <- FileBrowser root
+6) Change Immich location     <- Immich photos + database
 0) Cancel
 ```
 
@@ -1119,13 +1120,20 @@ If you want to move media to a USB drive:
 2. Move files: `rsync -avh --progress /old/media/path/ /mnt/data/media/`
 3. Change location: `federver` → **12** → **4** → enter `/mnt/data/media`
 
-This updates `.env` and redeploys Jellyfin + FileBrowser automatically.
+This updates `.env` and redeploys Jellyfin automatically.
+
+### Changing FileBrowser location
+
+1. Move files if needed: `rsync -avh --progress /old/data/ /new/data/`
+2. Change location: `federver` → **12** → **5** → enter new path
+
+This updates `.env` and redeploys FileBrowser automatically.
 
 ### Changing Immich data location
 
 1. Stop Immich: `privcloud stop`
-2. Move files: `rsync -avh --progress /old/immich/ /mnt/data/immich/`
-3. Change location: `federver` → **12** → **5** → enter `/mnt/data/immich`
+2. Move files: `sudo rsync -ah --progress /old/immich/ /new/immich/`
+3. Change location: `federver` → **12** → **6** → enter `/new/immich`
 4. Verify: `privcloud status`
 
 **Important:** the Postgres database password is baked in when first created. If you copy the database directory, keep the same `DB_PASSWORD` in `.env`. Changing it will cause `password authentication failed`.

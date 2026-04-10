@@ -71,7 +71,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
   -- Extras (optional, run anytime) --
   10) Install Tailscale                     ← remote access VPN
   11) Install WireGuard                     ← full VPN, route all traffic
-  12) Manage storage                        ← USB drives, media/data paths
+  12) Manage storage                        ← USB drives, media/data/Immich paths
   13) Remote desktop                        ← access XFCE desktop via RDP
 
   -- Immich photo management --

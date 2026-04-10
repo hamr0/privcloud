@@ -1144,3 +1144,14 @@ This updates `.env` and redeploys FileBrowser automatically.
 2. `federver` → **12** → **3**
 3. Select the USB to unmount
 4. Safe to unplug after confirmation
+
+## Resetting passwords
+
+`federver` → **r** lets you reset credentials for any service:
+
+| Service | What happens | Data lost? |
+|---------|-------------|------------|
+| **FileBrowser** | Sets new admin password | No |
+| **Immich** | Clears admin password, re-enter on next login | No |
+| **Jellyfin** | Wipes config, restarts setup wizard | Libraries need re-adding |
+| **Uptime Kuma** | Wipes data, starts fresh | Monitors need re-adding |

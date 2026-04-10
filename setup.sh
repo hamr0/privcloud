@@ -94,7 +94,7 @@ show_menu() {
     echo -e "  ${BOLD}14)${NC} Sync files                          ${DIM}← copy/backup files between laptop & server${NC}"
     echo -e "  ${BOLD}15)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
     echo ""
-    echo -e "  ${BOLD}s)${NC}  Status        ${BOLD}p)${NC}  Power        ${BOLD}a)${NC}  Run all (3-9)        ${BOLD}0)${NC}  Exit"
+    echo -e "  ${BOLD}s)${NC}  Status     ${BOLD}p)${NC}  Power     ${BOLD}r)${NC}  Reset password     ${BOLD}a)${NC}  Run all (3-9)     ${BOLD}0)${NC}  Exit"
     echo ""
 }
 
@@ -1776,6 +1776,90 @@ run_all() {
     step_logrotation
 }
 
+step_reset_password() {
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local IP
+    IP=$(hostname -I | awk '{print $1}')
+
+    echo -e "  ${BOLD}1)${NC} FileBrowser     ${DIM}(port 8080)${NC}"
+    echo -e "  ${BOLD}2)${NC} Immich          ${DIM}(port 2283)${NC}"
+    echo -e "  ${BOLD}3)${NC} Jellyfin        ${DIM}(port 8096)${NC}"
+    echo -e "  ${BOLD}4)${NC} Uptime Kuma     ${DIM}(port 3001)${NC}"
+    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Which service? " reset_choice
+
+    case $reset_choice in
+        1)
+            echo ""
+            warn "This will reset the FileBrowser admin password."
+            read -p "  New password: " new_pass
+            if [[ -z "$new_pass" ]]; then
+                fail "Password is required."
+                return 1
+            fi
+            sg docker -c "docker stop filebrowser" > /dev/null 2>&1
+            sg docker -c "docker run --rm -v privcloud_filebrowser-db:/database filebrowser/filebrowser:latest users update admin --password '$new_pass' --database /database/filebrowser.db" > /dev/null 2>&1
+            sg docker -c "docker start filebrowser" > /dev/null 2>&1
+
+            local fb_pass_file="$HOME/.privcloud/filebrowser.pass"
+            mkdir -p "$(dirname "$fb_pass_file")"
+            printf '%s\n' "$new_pass" > "$fb_pass_file"
+            chmod 600 "$fb_pass_file"
+
+            ok "Password reset. Login: admin / $new_pass"
+            echo -e "    ${BLUE}http://$IP:8080${NC}"
+            ;;
+        2)
+            echo ""
+            warn "This will clear the Immich admin password."
+            warn "Your photos and database are kept."
+            read -p "  Continue? [y/N] " -n 1 -r
+            echo ""
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                return
+            fi
+            cd "$SCRIPT_DIR"
+            sg docker -c "docker exec immich_postgres psql -U postgres -d immich -c \"UPDATE users SET password = '' WHERE is_admin = true;\"" > /dev/null 2>&1
+            ok "Admin password cleared. Open Immich to set a new one:"
+            echo -e "    ${BLUE}http://$IP:2283${NC}"
+            ;;
+        3)
+            echo ""
+            warn "This will wipe Jellyfin config and restart the setup wizard."
+            warn "You will need to re-add your media libraries."
+            read -p "  Continue? [y/N] " -n 1 -r
+            echo ""
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                return
+            fi
+            cd "$SCRIPT_DIR"
+            sg docker -c "docker compose down jellyfin" > /dev/null 2>&1
+            sg docker -c "docker volume rm privcloud_jellyfin-config" > /dev/null 2>&1
+            sg docker -c "docker compose up -d jellyfin" > /dev/null 2>&1
+            ok "Jellyfin reset. Open to run setup wizard:"
+            echo -e "    ${BLUE}http://$IP:8096${NC}"
+            ;;
+        4)
+            echo ""
+            warn "This will wipe Uptime Kuma data and restart fresh."
+            warn "You will need to re-add all monitors."
+            read -p "  Continue? [y/N] " -n 1 -r
+            echo ""
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                return
+            fi
+            cd "$SCRIPT_DIR"
+            sg docker -c "docker compose down uptime-kuma" > /dev/null 2>&1
+            sg docker -c "docker volume rm privcloud_uptime-kuma-data" > /dev/null 2>&1
+            sg docker -c "docker compose up -d uptime-kuma" > /dev/null 2>&1
+            ok "Uptime Kuma reset. Open to create new account:"
+            echo -e "    ${BLUE}http://$IP:3001${NC}"
+            ;;
+        0|*) return ;;
+    esac
+}
+
 # ── Main loop ────────────────────────────────────────
 while true; do
     show_menu
@@ -1798,6 +1882,7 @@ while true; do
         15) run_step "[15] Save to pass" step_save_to_pass ;;
         s)  run_step "[s] Status" step_status ;;
         p)  run_step "[p] Power management" step_power ;;
+        r)  run_step "[r] Reset password" step_reset_password ;;
         a)  run_step "Run all (3-9)" run_all ;;
         0)  echo "Bye."; exit 0 ;;
         *)  echo -e "  ${RED}Invalid choice.${NC}" ;;

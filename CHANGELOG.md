@@ -5,6 +5,7 @@
 ### Added
 - WireGuard **Remove peer** option in `setup.sh` → `11`. Lists current peers by name, pick a number, confirms, deletes the `[Peer]` block from `wg0.conf` and the client `.conf`, then hot-reloads. Closes the gap where revoking a lost device required a full reinstall.
 - Storage: separate **Change Immich location** option (`federver` → `12` → `6`). Immich paths are now independent from FileBrowser and Jellyfin — changing one never affects the others.
+- **Reset password** option (`federver` → `r`). Resets credentials for FileBrowser, Immich, Jellyfin, or Uptime Kuma. FileBrowser and Immich reset password only (data kept). Jellyfin and Uptime Kuma wipe config and restart the setup wizard.
 
 ### Changed
 - WireGuard add/remove now hot-reload via `wg syncconf` instead of `systemctl restart wg-quick@wg0`. Other connected peers stay up during config changes (previously every peer dropped for a few seconds on every add). Falls back to restart if `wg syncconf` is unavailable.

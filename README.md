@@ -81,7 +81,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
   14) Sync files                          ← copy/backup files between laptop & server
   15) Save to pass                        ← from laptop, backup everything to pass
 
-  s)  Status        p)  Power        a)  Run all (3-9)        0)  Exit
+  s)  Status     p)  Power     r)  Reset password     a)  Run all (3-9)     0)  Exit
 ```
 
 ### `privcloud` — Immich photo manager
@@ -135,6 +135,7 @@ Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
 | Backup | `privcloud backup` or `sudo /usr/local/bin/immich-backup.sh` |
 | Disk alerts | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
 | Backup to pass | `federver` → **15** (from laptop) |
+| Reset password | `federver` → **r** (FileBrowser, Immich, Jellyfin, Uptime Kuma) |
 | Shutdown | `federver` → **p** |
 
 ## Docs

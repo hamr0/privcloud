@@ -1403,7 +1403,8 @@ step_sync() {
                 local_path="$choice"
             fi
 
-            if [[ -n "$local_path" && -d "$local_path" ]]; then
+            local_path="${local_path%/}"
+            if [[ -n "$local_path" && -e "$local_path" ]]; then
                 break
             fi
 
@@ -1489,7 +1490,7 @@ step_sync() {
             [[ $REPLY =~ ^[Nn]$ ]] && info "Cancelled." && return
 
             ssh "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$server_path' && sudo chown -R $SERVER_USER:$SERVER_USER '$server_path'"
-            sudo rsync -avh --progress "$local_path/" "$SERVER_USER@$SERVER_IP:$server_path/"
+            rsync -avh --progress --rsync-path="sudo rsync" "$local_path/" "$SERVER_USER@$SERVER_IP:$server_path/"
             ;;
 
         2)
@@ -1512,7 +1513,7 @@ step_sync() {
             [[ $REPLY =~ ^[Nn]$ ]] && info "Cancelled." && return
 
             sudo mkdir -p "$local_path"
-            sudo rsync -avh --progress "$SERVER_USER@$SERVER_IP:$server_path/" "$local_path/"
+            rsync -avh --progress --rsync-path="sudo rsync" "$SERVER_USER@$SERVER_IP:$server_path/" "$local_path/"
             ;;
 
         *)

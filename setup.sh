@@ -1360,7 +1360,7 @@ step_sync() {
 
     _list_local_sources() {
         echo ""
-        echo -e "  ${BOLD}Local paths:${NC}"
+        echo -e "  ${BOLD}Laptop paths:${NC}"
         echo ""
         local i=1
         sources=()

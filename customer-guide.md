@@ -611,7 +611,7 @@ federver
 
 **Step 1 (with monitor):** Pick option 1. Enables SSH, sets hostname, auto-login. Note the IP. Unplug the monitor.
 
-**Step 2 (from laptop, not SSH):** Run `federver` → 2. Copies SSH key, disables password login. Back up the key in `pass`.
+**Step 2 (from laptop, not SSH):** Clone privcloud on the laptop too (`git clone https://github.com/hamr0/privcloud.git`). Run `federver` → 2. Copies SSH key, disables password login. Back up the key in `pass`. Several features (file sync, backups, password reset) run from the laptop and SSH into the server — both machines need the repo.
 
 **Steps 3-11 (over SSH):** SSH into the server, run `federver`, go through each step:
 

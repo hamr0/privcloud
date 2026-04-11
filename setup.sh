@@ -64,9 +64,15 @@ run_step() {
 show_menu() {
     clear
     echo ""
+    if [[ "$(hostname)" == "federver" ]]; then
+        local location="server"
+    else
+        local location="laptop"
+    fi
     echo -e "${BOLD}========================================"
     echo -e "  Federver — Fedora XFCE Server Manager"
-    echo -e "========================================${NC}"
+    echo -e "  Running from: ${YELLOW}${location}${NC}"
+    echo -e "${BOLD}========================================${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Initial setup (run once, in order) --${NC}"
     echo -e "  ${BOLD}1)${NC}  Enable SSH + auto-login + hostname  ${YELLOW}← with monitor${NC}"

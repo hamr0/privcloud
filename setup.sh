@@ -1491,6 +1491,22 @@ step_sync() {
         done
     }
 
+    _pick_copy_mode() {
+        local src_path="$1"
+        local is_dir="$2"
+        local src_name=$(basename "$src_path")
+        copy_mode="contents"
+        if [[ "$is_dir" == "true" ]]; then
+            echo ""
+            echo -e "  ${BOLD}Copy mode for ${src_name}/:${NC}"
+            echo -e "    ${BOLD}1)${NC} Copy folder     (creates ${src_name}/ inside destination)"
+            echo -e "    ${BOLD}2)${NC} Copy contents   (files go directly into destination)"
+            echo ""
+            read -p "  Mode [1/2]: " mode
+            [[ "$mode" == "2" ]] && copy_mode="contents" || copy_mode="folder"
+        fi
+    }
+
     case $direction in
         1)
             echo ""
@@ -1500,20 +1516,29 @@ step_sync() {
             echo -e "  ${BOLD}-- Destination (server) --${NC}"
             _pick_server_path false
 
+            [[ -d "$local_path" ]] && local is_dir="true" || local is_dir="false"
+            _pick_copy_mode "$local_path" "$is_dir"
+            local rsync_src="$local_path/"
+            local dest_display="$server_path"
+            if [[ "$copy_mode" == "folder" ]]; then
+                rsync_src="$local_path"
+                dest_display="$server_path/$(basename "$local_path")"
+            fi
+
             src_size=$(du -sh "$local_path" 2>/dev/null | awk '{print $1}')
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↑ Upload: laptop → server${NC}"
             echo -e "  From: $local_path ($src_size)"
-            echo -e "  To:   $SERVER_USER@$SERVER_IP:$server_path"
+            echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo ""
             read -p "  Start sync? [Y/n] " -n 1 -r
             echo ""
             [[ $REPLY =~ ^[Nn]$ ]] && info "Cancelled." && return
 
-            ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$server_path' && sudo chown $SERVER_USER:$SERVER_USER '$server_path'"
-            rsync -avh --progress "$local_path/" "$SERVER_USER@$SERVER_IP:$server_path/" || { fail "Sync failed."; return 1; }
+            ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$dest_display' && sudo chown $SERVER_USER:$SERVER_USER '$dest_display'"
+            rsync -avh --progress "$rsync_src" "$SERVER_USER@$SERVER_IP:$server_path/" || { fail "Sync failed."; return 1; }
             ;;
 
         2)
@@ -1524,19 +1549,29 @@ step_sync() {
             echo -e "  ${BOLD}-- Destination (laptop) --${NC}"
             _pick_local_path false
 
+            local is_dir="false"
+            ssh "$SERVER_USER@$SERVER_IP" "test -d '$server_path'" 2>/dev/null && is_dir="true"
+            _pick_copy_mode "$server_path" "$is_dir"
+            local rsync_src="$server_path/"
+            local dest_display="$local_path"
+            if [[ "$copy_mode" == "folder" ]]; then
+                rsync_src="$server_path"
+                dest_display="$local_path/$(basename "$server_path")"
+            fi
+
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↓ Download: server → laptop${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$server_path"
-            echo -e "  To:   $local_path"
+            echo -e "  To:   $dest_display"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo ""
             read -p "  Start sync? [Y/n] " -n 1 -r
             echo ""
             [[ $REPLY =~ ^[Nn]$ ]] && info "Cancelled." && return
 
-            sudo mkdir -p "$local_path"
-            rsync -avh --progress "$SERVER_USER@$SERVER_IP:$server_path/" "$local_path/" || { fail "Sync failed."; return 1; }
+            sudo mkdir -p "$dest_display"
+            rsync -avh --progress "$SERVER_USER@$SERVER_IP:$rsync_src" "$local_path/" || { fail "Sync failed."; return 1; }
             ;;
 
     esac

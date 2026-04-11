@@ -28,10 +28,10 @@ Back up phone photos locally on any machine. Start when you need it, stop when d
 
 ```bash
 git clone https://github.com/hamr0/privcloud.git && cd privcloud
-federver      # pick 1, then SSH in and run the rest
+federver      # pick 1 with monitor, then run the rest from anywhere
 ```
 
-One script sets up everything from a fresh Fedora XFCE install. See [customer guide](customer-guide.md) for full walkthrough.
+One script sets up everything from a fresh Fedora XFCE install. Run from either machine — server commands auto-route via SSH. See [customer guide](customer-guide.md) for full walkthrough.
 
 ## Services
 

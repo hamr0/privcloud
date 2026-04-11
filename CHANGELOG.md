@@ -9,7 +9,10 @@
 - New `MUSIC_LOCATION` env var for Navidrome music library path.
 
 ### Changed
-- Menu header now shows **Running from: laptop** or **Running from: server** based on hostname. No more guessing which machine you're on.
+- **Location-aware routing.** Every menu option now runs on the right machine automatically. Server commands (3–13, r, a) SSH into the server when run from the laptop. Laptop commands (2, 14, 15, p) warn if run from the server. Status works from both. No more "wrong machine" mistakes.
+- Menu header shows **Running from: laptop** or **Running from: server** based on hostname.
+- Status fetches server data via SSH when run from the laptop — shows real hostname, IPs, data paths, containers, and disk instead of laptop info.
+- Tailscale URLs now use `federver` hostname (MagicDNS) instead of raw IPs everywhere — status, deploy, remote desktop, docs.
 - Navidrome music volume no longer mounted read-only — allows playlist management via `.m3u8` files.
 - File sync (`federver` → `14`) redesigned: accepts files and directories, strips quotes and trailing slashes, copy folder vs contents mode, delete option for laptop or server, cancel at every step, 3-attempt retry on invalid input. Uses `ssh -t` + `chown` for server permissions instead of `sudo rsync`.
 - Replaced Jellyfin with Navidrome for music streaming. Navidrome is lighter, supports background playback and offline caching via Subsonic-compatible apps (recommended: Amperfy on iOS).

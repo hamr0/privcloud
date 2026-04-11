@@ -1414,14 +1414,19 @@ step_sync() {
 
     _pick_local_path() {
         local validate="$1"
+        local show_presets="${2:-true}"
         local attempts=0
         while (( attempts < 3 )); do
-            _list_local_sources
-            read -p "  Choose [number or path]: " choice
-
-            if [[ "$choice" =~ ^[0-9]+$ ]]; then
-                local_path="${sources[$choice]}"
+            if [[ "$show_presets" == "true" ]]; then
+                _list_local_sources
+                read -p "  Choose [number or path]: " choice
+                if [[ "$choice" =~ ^[0-9]+$ ]]; then
+                    local_path="${sources[$choice]}"
+                else
+                    local_path="$choice"
+                fi
             else
+                read -p "  Absolute path: " choice
                 local_path="$choice"
             fi
 
@@ -1451,22 +1456,29 @@ step_sync() {
 
     _pick_server_path() {
         local validate="$1"
-        echo ""
-        echo -e "  ${BOLD}Server paths:${NC}"
-        echo "    1) /home/ahassan/data  (internal drive)"
-        echo "    2) /mnt/data           (USB drive)"
-        echo ""
-        info "Or type a path directly (e.g. /mnt/data/media/My Music)"
-        echo ""
+        local show_presets="${2:-true}"
+        if [[ "$show_presets" == "true" ]]; then
+            echo ""
+            echo -e "  ${BOLD}Server paths:${NC}"
+            echo "    1) /home/ahassan/data  (internal drive)"
+            echo "    2) /mnt/data           (USB drive)"
+            echo ""
+            info "Or type a path directly (e.g. /mnt/data/media/My Music)"
+            echo ""
+        fi
         local attempts=0
         while (( attempts < 3 )); do
-            read -p "  Choose [number or path]: " choice
-
-            case $choice in
-                1) server_path="/home/ahassan/data" ;;
-                2) server_path="/mnt/data" ;;
-                *) server_path="$choice" ;;
-            esac
+            if [[ "$show_presets" == "true" ]]; then
+                read -p "  Choose [number or path]: " choice
+                case $choice in
+                    1) server_path="/home/ahassan/data" ;;
+                    2) server_path="/mnt/data" ;;
+                    *) server_path="$choice" ;;
+                esac
+            else
+                read -p "  Absolute path: " choice
+                server_path="$choice"
+            fi
 
             server_path="${server_path//\'/}"
             server_path="${server_path//\"/}"
@@ -1586,7 +1598,7 @@ step_sync() {
             case $del_where in
                 1)
                     echo ""
-                    _pick_local_path true
+                    _pick_local_path true false
                     local del_path="$local_path"
                     if [[ "$del_path" == "/" ]]; then fail "Invalid path."; return 1; fi
                     echo ""
@@ -1598,7 +1610,7 @@ step_sync() {
                     ;;
                 2)
                     echo ""
-                    _pick_server_path true
+                    _pick_server_path true false
                     local del_path="$server_path"
                     if [[ "$del_path" == "/" ]]; then fail "Invalid path."; return 1; fi
                     echo ""

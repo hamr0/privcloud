@@ -1508,8 +1508,8 @@ step_sync() {
             echo ""
             [[ $REPLY =~ ^[Nn]$ ]] && info "Cancelled." && return
 
-            ssh "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$server_path'"
-            rsync -avh --progress --rsync-path="sudo rsync" "$local_path/" "$SERVER_USER@$SERVER_IP:$server_path/"
+            ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$server_path' && sudo chown $SERVER_USER:$SERVER_USER '$server_path'"
+            rsync -avh --progress "$local_path/" "$SERVER_USER@$SERVER_IP:$server_path/" || { fail "Sync failed."; return 1; }
             ;;
 
         2)
@@ -1532,7 +1532,7 @@ step_sync() {
             [[ $REPLY =~ ^[Nn]$ ]] && info "Cancelled." && return
 
             sudo mkdir -p "$local_path"
-            rsync -avh --progress --rsync-path="sudo rsync" "$SERVER_USER@$SERVER_IP:$server_path/" "$local_path/"
+            rsync -avh --progress "$SERVER_USER@$SERVER_IP:$server_path/" "$local_path/" || { fail "Sync failed."; return 1; }
             ;;
 
     esac

@@ -1424,6 +1424,8 @@ step_sync() {
                 local_path="$choice"
             fi
 
+            local_path="${local_path//\'/}"
+            local_path="${local_path//\"/}"
             local_path="${local_path%/}"
             if [[ -z "$local_path" ]]; then
                 ((attempts++))
@@ -1465,6 +1467,8 @@ step_sync() {
                 *) server_path="$choice" ;;
             esac
 
+            server_path="${server_path//\'/}"
+            server_path="${server_path//\"/}"
             server_path="${server_path%/}"
             if [[ -z "$server_path" ]]; then
                 ((attempts++))

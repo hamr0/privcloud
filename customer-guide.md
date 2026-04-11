@@ -95,6 +95,7 @@ Dedicated always-on machine running Immich + music streaming + file management +
 ```
 ========================================
   Federver — Fedora XFCE Server Manager
+  Running from: server
 ========================================
 
   -- Initial setup (run once, in order) --
@@ -120,7 +121,7 @@ Dedicated always-on machine running Immich + music streaming + file management +
       Run: privcloud [start|stop|status|update|backup]
 
   -- Tools (from laptop, exit SSH first) --
-  14) Sync files                          ← copy/backup files between laptop & server
+  14) Sync files                          ← upload, download, or delete files
 
   s)  Status        p)  Power        a)  Run all (3-9)        0)  Exit
 ```

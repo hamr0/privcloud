@@ -53,6 +53,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
 ```
 ========================================
   Federver — Fedora XFCE Server Manager
+  Running from: laptop
 ========================================
 
   -- Initial setup (run once, in order) --
@@ -78,7 +79,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
       Run: privcloud [start|stop|status|update|backup]
 
   -- Tools (from laptop, exit SSH first) --
-  14) Sync files                          ← copy/backup files between laptop & server
+  14) Sync files                          ← upload, download, or delete files
   15) Save to pass                        ← from laptop, backup everything to pass
 
   s)  Status     p)  Power     r)  Reset password     a)  Run all (3-9)     0)  Exit
@@ -99,7 +100,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
   0) exit
 ```
 
-Both commands work from anywhere on the server. First run `federver` → step 1 to register the commands.
+Both commands work from anywhere on the server. Clone the repo on **both laptop and server** — several features (file sync, backups, password reset) run from the laptop and SSH into the server. First run `federver` → step 1 to register the commands.
 
 ### `fedvpn` — WireGuard VPN client (runs on laptop)
 

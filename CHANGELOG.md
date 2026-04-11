@@ -9,6 +9,9 @@
 - New `MUSIC_LOCATION` env var for Navidrome music library path.
 
 ### Changed
+- Menu header now shows **Running from: laptop** or **Running from: server** based on hostname. No more guessing which machine you're on.
+- Navidrome music volume no longer mounted read-only — allows playlist management via `.m3u8` files.
+- File sync (`federver` → `14`) redesigned: accepts files and directories, strips quotes and trailing slashes, copy folder vs contents mode, delete option for laptop or server, cancel at every step, 3-attempt retry on invalid input. Uses `ssh -t` + `chown` for server permissions instead of `sudo rsync`.
 - Replaced Jellyfin with Navidrome for music streaming. Navidrome is lighter, supports background playback and offline caching via Subsonic-compatible apps (recommended: Amperfy on iOS).
 - WireGuard add/remove now hot-reload via `wg syncconf` instead of `systemctl restart wg-quick@wg0`. Other connected peers stay up during config changes (previously every peer dropped for a few seconds on every add). Falls back to restart if `wg syncconf` is unavailable.
 - Storage menu split into three path options: music (Navidrome), data (FileBrowser), Immich. Previously "Change media location" controlled both Jellyfin and FileBrowser, and there was no separate Immich option.

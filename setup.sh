@@ -297,11 +297,13 @@ step_tailscale() {
         echo -e "  1. Install the Tailscale app on your phone and/or laptop"
         echo -e "     ${BLUE}https://tailscale.com/download${NC}"
         echo -e "  2. Log in with the ${BOLD}same account${NC} you just used"
+        local ts_host=$(hostname)
         echo -e "  3. Now you can access all services from anywhere:"
-        echo -e "     Immich:       ${BLUE}http://$ts_ip:2283${NC}"
-        echo -e "     Navidrome:    ${BLUE}http://$ts_ip:4533${NC}"
-        echo -e "     FileBrowser:  ${BLUE}http://$ts_ip:8080${NC}"
-        echo -e "     Uptime Kuma:  ${BLUE}http://$ts_ip:3001${NC}"
+        echo -e "     Immich:       ${BLUE}http://$ts_host:2283${NC}"
+        echo -e "     Navidrome:    ${BLUE}http://$ts_host:4533${NC}"
+        echo -e "     FileBrowser:  ${BLUE}http://$ts_host:8080${NC}"
+        echo -e "     Uptime Kuma:  ${BLUE}http://$ts_host:3001${NC}"
+        echo -e "     ${DIM}(MagicDNS resolves '$ts_host' automatically — or use IP: $ts_ip)${NC}"
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         read -p "  Press Enter when done..." -r
     else
@@ -772,7 +774,7 @@ XRDPEOF
     echo -e "  ${BOLD}From your laptop (Fedora/Linux):${NC}"
     echo -e "    Install Remmina: ${BOLD}sudo dnf install remmina${NC}"
     echo -e "    Open Remmina → New → Protocol: RDP"
-    echo -e "    Server: ${BOLD}$IP${NC} (local) or ${BOLD}$ts_ip${NC} (Tailscale)"
+    echo -e "    Server: ${BOLD}$IP${NC} (local) or ${BOLD}$(hostname)${NC} (Tailscale)"
     echo -e "    Username: ${BOLD}$USER${NC}"
     echo -e "    Password: your server password"
     echo ""
@@ -782,7 +784,7 @@ XRDPEOF
     echo ""
     echo -e "  ${BOLD}From iPhone/iPad:${NC}"
     echo -e "    Install 'RD Client' from App Store"
-    echo -e "    Add PC → server: ${BOLD}$ts_ip${NC} (via Tailscale)"
+    echo -e "    Add PC → server: ${BOLD}$(hostname)${NC} (via Tailscale)"
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
@@ -1656,12 +1658,14 @@ step_status() {
     echo -e "    Uptime Kuma:  ${BLUE}http://$IP:3001${NC}"
 
     if [[ "$TAILSCALE_IP" != "not connected" ]]; then
+        local TS_HOST=$(hostname)
         echo ""
-        echo -e "  ${BOLD}Service URLs (remote via Tailscale)${NC}"
-        echo -e "    Immich:       ${BLUE}http://$TAILSCALE_IP:2283${NC}"
-        echo -e "    Navidrome:    ${BLUE}http://$TAILSCALE_IP:4533${NC}"
-        echo -e "    FileBrowser:  ${BLUE}http://$TAILSCALE_IP:8080${NC}"
-        echo -e "    Uptime Kuma:  ${BLUE}http://$TAILSCALE_IP:3001${NC}"
+        echo -e "  ${BOLD}Service URLs (remote via Tailscale — use from any device with Tailscale)${NC}"
+        echo -e "    Immich:       ${BLUE}http://$TS_HOST:2283${NC}"
+        echo -e "    Navidrome:    ${BLUE}http://$TS_HOST:4533${NC}"
+        echo -e "    FileBrowser:  ${BLUE}http://$TS_HOST:8080${NC}"
+        echo -e "    Uptime Kuma:  ${BLUE}http://$TS_HOST:3001${NC}"
+        echo -e "    ${DIM}(or use Tailscale IP: $TAILSCALE_IP)${NC}"
     fi
 
     echo ""

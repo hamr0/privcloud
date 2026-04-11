@@ -42,7 +42,7 @@ One script sets up everything from a fresh Fedora XFCE install. See [customer gu
 | **FileBrowser** | 8080 | Browse/download/upload files from any browser |
 | **Uptime Kuma** | 3001 | Monitoring dashboard, alerts if services go down |
 | **Watchtower** | — | Auto-updates all containers daily at 4am |
-| **Tailscale** | — | Remote access from anywhere, no port forwarding |
+| **Tailscale** | — | Remote access from anywhere — MagicDNS lets you use `federver` as hostname |
 | **WireGuard** | 51820 | Full VPN — route all traffic through server |
 | **Remote Desktop** | 3389 | Full XFCE desktop via RDP from any device |
 
@@ -122,7 +122,7 @@ Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
 |------|---------|
 | Server status | `federver` → **s** |
 | Immich management | `privcloud` |
-| Upload media/files | FileBrowser → `http://<ip>:8080` (user `admin`, password: `cat ~/.privcloud/filebrowser.pass`) |
+| Upload media/files | FileBrowser → `http://federver:8080` (user `admin`, password: `cat ~/.privcloud/filebrowser.pass`) |
 | Manage storage | `federver` → **12** (mount USB, change paths) |
 | VPN connect/disconnect | `fedvpn start` / `fedvpn stop` (laptop) |
 | Show WireGuard peer config | `federver` → **11** → **2** (server) |

@@ -717,15 +717,17 @@ sudo tailscale up
 
 ### Access from anywhere
 
-Use the Tailscale IP instead of the local IP:
+MagicDNS is enabled by default — use `federver` as the hostname instead of an IP:
 
 ```
-http://<tailscale-ip>:2283   Immich
-http://<tailscale-ip>:4533   Navidrome
-http://<tailscale-ip>:8080   FileBrowser
-http://<tailscale-ip>:3001   Uptime Kuma
-ssh ahassan@<tailscale-ip>   SSH
+http://federver:2283   Immich
+http://federver:4533   Navidrome
+http://federver:8080   FileBrowser
+http://federver:3001   Uptime Kuma
+ssh ahassan@federver   SSH
 ```
+
+Works from any device with Tailscale installed and logged into the same account. If `federver` doesn't resolve, use the Tailscale IP (`100.x.x.x`) from the Machines tab at [login.tailscale.com](https://login.tailscale.com).
 
 Free for up to 100 devices.
 
@@ -735,7 +737,7 @@ Each device that needs remote access needs Tailscale installed and logged into t
 
 1. They download Tailscale on their phone
 2. Log in with your Tailscale account
-3. They can now access all services via the Tailscale IP
+3. They can now access all services via `http://federver:<port>`
 
 Tailscale only routes traffic to your server — it does NOT route all their internet through a VPN. Normal browsing, apps, everything else goes through their regular connection.
 
@@ -836,7 +838,7 @@ Open Remmina → New → Protocol: RDP → Server: `<server-ip>` → Username + 
 Install "Microsoft Remote Desktop" from App Store. Add PC with server IP.
 
 **From iPhone/iPad:**
-Install "RD Client" from App Store. Add PC with Tailscale IP.
+Install "RD Client" from App Store. Add PC with `federver` (via Tailscale).
 
 ### Troubleshooting
 
@@ -972,7 +974,7 @@ sudo grubby --set-default /boot/vmlinuz-<previous-version>
 ssh ahassan@<hostname>
 
 # From anywhere (via Tailscale)
-ssh ahassan@<tailscale-ip>
+ssh ahassan@federver
 ```
 
 ---

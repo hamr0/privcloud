@@ -61,6 +61,30 @@ run_step() {
     read -p "  Press Enter to continue..." -r
 }
 
+# ── Location-aware routing ─────────────────────────
+_is_server() { [[ "$(hostname)" == "federver" ]]; }
+
+_on_server() {
+    local step="$1"
+    if _is_server; then
+        "$step"
+    else
+        info "This step runs on the server. Connecting via SSH..."
+        echo ""
+        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && ./setup.sh --run $step"
+    fi
+}
+
+_on_laptop() {
+    local step="$1"
+    if _is_server; then
+        fail "This step must be run from your laptop, not the server."
+        return 1
+    else
+        "$step"
+    fi
+}
+
 show_menu() {
     clear
     echo ""
@@ -2005,30 +2029,36 @@ step_reset_password() {
     esac
 }
 
+# ── CLI argument handling (used by SSH routing) ─────
+if [[ "${1:-}" == "--run" && -n "${2:-}" ]]; then
+    "$2"
+    exit $?
+fi
+
 # ── Main loop ────────────────────────────────────────
 while true; do
     show_menu
     read -p "  Choose: " choice
     case $choice in
-        1)  run_step "[1] Enable SSH + auto-login + hostname" step_ssh ;;
-        2)  run_step "[2] SSH key auth" step_sshkey ;;
-        3)  run_step "[3] System update" step_update ;;
-        4)  run_step "[4] Auto-updates" step_autoupdates ;;
-        5)  run_step "[5] Install Docker" step_docker ;;
-        6)  run_step "[6] Configure firewall" step_firewall ;;
-        7)  run_step "[7] Deploy services" step_deploy ;;
-        8)  run_step "[8] Setup backups + disk monitoring" step_backup ;;
-        9)  run_step "[9] Log rotation" step_logrotation ;;
-        10) run_step "[10] Install Tailscale" step_tailscale ;;
-        11) run_step "[11] Install WireGuard" step_wireguard ;;
-        12) run_step "[12] Manage storage" step_storage ;;
-        13) run_step "[13] Remote desktop" step_remotedesktop ;;
-        14) run_step "[14] Sync files" step_sync ;;
-        15) run_step "[15] Save to pass" step_save_to_pass ;;
+        1)  run_step "[1] Enable SSH + auto-login + hostname" step_ssh ;;  # must be on server with monitor
+        2)  run_step "[2] SSH key auth" "_on_laptop step_sshkey" ;;
+        3)  run_step "[3] System update" "_on_server step_update" ;;
+        4)  run_step "[4] Auto-updates" "_on_server step_autoupdates" ;;
+        5)  run_step "[5] Install Docker" "_on_server step_docker" ;;
+        6)  run_step "[6] Configure firewall" "_on_server step_firewall" ;;
+        7)  run_step "[7] Deploy services" "_on_server step_deploy" ;;
+        8)  run_step "[8] Setup backups + disk monitoring" "_on_server step_backup" ;;
+        9)  run_step "[9] Log rotation" "_on_server step_logrotation" ;;
+        10) run_step "[10] Install Tailscale" "_on_server step_tailscale" ;;
+        11) run_step "[11] Install WireGuard" "_on_server step_wireguard" ;;
+        12) run_step "[12] Manage storage" "_on_server step_storage" ;;
+        13) run_step "[13] Remote desktop" "_on_server step_remotedesktop" ;;
+        14) run_step "[14] Sync files" "_on_laptop step_sync" ;;
+        15) run_step "[15] Save to pass" "_on_laptop step_save_to_pass" ;;
         s)  run_step "[s] Status" step_status ;;
-        p)  run_step "[p] Power management" step_power ;;
-        r)  run_step "[r] Reset password" step_reset_password ;;
-        a)  run_step "Run all (3-9)" run_all ;;
+        p)  run_step "[p] Power management" "_on_laptop step_power" ;;
+        r)  run_step "[r] Reset password" "_on_server step_reset_password" ;;
+        a)  run_step "Run all (3-9)" "_on_server run_all" ;;
         0)  echo "Bye."; exit 0 ;;
         *)  echo -e "  ${RED}Invalid choice.${NC}" ;;
     esac

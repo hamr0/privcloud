@@ -1583,26 +1583,12 @@ step_sync() {
             echo ""
             read -p "  Where [1/2]: " del_where
 
-            echo ""
-            read -p "  Absolute path to delete: " del_path
-            del_path="${del_path//\'/}"
-            del_path="${del_path//\"/}"
-            del_path="${del_path%/}"
-
-            if [[ -z "$del_path" || "$del_path" == "/" ]]; then
-                fail "Invalid path."
-                return 1
-            fi
-
             case $del_where in
                 1)
-                    if [[ ! -e "$del_path" ]]; then
-                        fail "'$del_path' does not exist."
-                        return 1
-                    fi
                     echo ""
-                    echo -e "  ${BOLD}Contents of $del_path:${NC}"
-                    if [[ -d "$del_path" ]]; then ls "$del_path"; else echo "  $(basename "$del_path")"; fi
+                    _pick_local_path true
+                    local del_path="$local_path"
+                    if [[ "$del_path" == "/" ]]; then fail "Invalid path."; return 1; fi
                     echo ""
                     echo -e "  ${RED}This will permanently delete: $del_path${NC}"
                     read -p "  Are you sure? [y/N] " -n 1 -r
@@ -1611,13 +1597,10 @@ step_sync() {
                     sudo rm -rf "$del_path" || { fail "Delete failed."; return 1; }
                     ;;
                 2)
-                    if ! ssh "$SERVER_USER@$SERVER_IP" "test -e '$del_path'" 2>/dev/null; then
-                        fail "'$del_path' does not exist on server."
-                        return 1
-                    fi
                     echo ""
-                    echo -e "  ${BOLD}Contents of server:$del_path:${NC}"
-                    ssh "$SERVER_USER@$SERVER_IP" "if [ -d '$del_path' ]; then ls '$del_path'; else basename '$del_path'; fi"
+                    _pick_server_path true
+                    local del_path="$server_path"
+                    if [[ "$del_path" == "/" ]]; then fail "Invalid path."; return 1; fi
                     echo ""
                     echo -e "  ${RED}This will permanently delete: $SERVER_USER@$SERVER_IP:$del_path${NC}"
                     read -p "  Are you sure? [y/N] " -n 1 -r

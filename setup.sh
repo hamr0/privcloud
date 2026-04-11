@@ -2040,7 +2040,7 @@ while true; do
     show_menu
     read -p "  Choose: " choice
     case $choice in
-        1)  run_step "[1] Enable SSH + auto-login + hostname" step_ssh ;;  # must be on server with monitor
+        1)  run_step "[1] Enable SSH + auto-login + hostname" step_ssh ;;  # must be on server with monitor and keyboard
         2)  run_step "[2] SSH key auth" "_on_laptop step_sshkey" ;;
         3)  run_step "[3] System update" "_on_server step_update" ;;
         4)  run_step "[4] Auto-updates" "_on_server step_autoupdates" ;;

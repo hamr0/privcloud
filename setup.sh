@@ -1359,10 +1359,24 @@ step_sync() {
     info "Transfer files between this laptop and the server."
     info "Run this from your LAPTOP, not over SSH."
     echo ""
-    echo -e "  ${BOLD}1)${NC} Upload:   laptop → server"
-    echo -e "  ${BOLD}2)${NC} Download: server → laptop"
-    echo ""
-    read -p "  Direction [1/2]: " direction
+    local dir_attempts=0
+    while (( dir_attempts < 3 )); do
+        echo -e "  ${BOLD}1)${NC} Upload:   laptop → server"
+        echo -e "  ${BOLD}2)${NC} Download: server → laptop"
+        echo -e "  ${BOLD}0)${NC} Cancel"
+        echo ""
+        read -p "  Direction [1/2/0]: " direction
+        [[ "$direction" == "0" ]] && return
+        [[ "$direction" == "1" || "$direction" == "2" ]] && break
+        ((dir_attempts++))
+        if (( dir_attempts < 3 )); then
+            fail "Invalid choice. Try again. ($((3-dir_attempts)) attempts left)"
+            echo ""
+        else
+            fail "3 invalid attempts. Aborting."
+            return 1
+        fi
+    done
 
     _list_local_sources() {
         echo ""
@@ -1398,6 +1412,7 @@ step_sync() {
     }
 
     _pick_local_path() {
+        local validate="$1"
         local attempts=0
         while (( attempts < 3 )); do
             _list_local_sources
@@ -1410,36 +1425,35 @@ step_sync() {
             fi
 
             local_path="${local_path%/}"
-            if [[ -n "$local_path" && -e "$local_path" ]]; then
+            if [[ -z "$local_path" ]]; then
+                ((attempts++))
+                (( attempts < 3 )) && fail "Empty path. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
+                continue
+            fi
+
+            if [[ "$validate" == "true" ]]; then
+                if [[ -e "$local_path" ]]; then
+                    echo ""
+                    echo -e "  ${BOLD}Contents of $local_path:${NC}"
+                    if [[ -d "$local_path" ]]; then ls "$local_path"; else echo "  $(basename "$local_path")"; fi
+                    break
+                fi
+                ((attempts++))
+                (( attempts < 3 )) && fail "'$local_path' does not exist. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
+            else
                 break
             fi
-
-            ((attempts++))
-            if (( attempts < 3 )); then
-                fail "'$local_path' does not exist. Try again. ($((3-attempts)) attempts left)"
-            else
-                fail "3 invalid attempts. Aborting."
-                return 1
-            fi
         done
-
-        echo ""
-        echo -e "  ${BOLD}Contents of $local_path:${NC}"
-        ls "$local_path"
-        echo ""
-        read -p "  Subfolder (or Enter for all): " subfolder
-        if [[ -n "$subfolder" ]]; then
-            local_path="$local_path/$subfolder"
-        fi
     }
 
     _pick_server_path() {
+        local validate="$1"
         echo ""
         echo -e "  ${BOLD}Server paths:${NC}"
         echo "    1) /home/ahassan/data  (internal drive)"
         echo "    2) /mnt/data           (USB drive)"
         echo ""
-        info "Or type a path directly (e.g. /home/ahassan/media)"
+        info "Or type a path directly (e.g. /mnt/data/media/My Music)"
         echo ""
         local attempts=0
         while (( attempts < 3 )); do
@@ -1451,37 +1465,36 @@ step_sync() {
                 *) server_path="$choice" ;;
             esac
 
-            if ssh "$SERVER_USER@$SERVER_IP" "test -d '$server_path'" 2>/dev/null; then
+            server_path="${server_path%/}"
+            if [[ -z "$server_path" ]]; then
+                ((attempts++))
+                (( attempts < 3 )) && fail "Empty path. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
+                continue
+            fi
+
+            if [[ "$validate" == "true" ]]; then
+                if ssh "$SERVER_USER@$SERVER_IP" "test -e '$server_path'" 2>/dev/null; then
+                    echo ""
+                    echo -e "  ${BOLD}Contents of server:$server_path:${NC}"
+                    ssh "$SERVER_USER@$SERVER_IP" "if [ -d '$server_path' ]; then ls '$server_path'; else basename '$server_path'; fi"
+                    break
+                fi
+                ((attempts++))
+                (( attempts < 3 )) && fail "'$server_path' does not exist on server. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
+            else
                 break
             fi
-
-            ((attempts++))
-            if (( attempts < 3 )); then
-                fail "'$server_path' does not exist on server. Try again. ($((3-attempts)) attempts left)"
-            else
-                fail "3 invalid attempts. Aborting."
-                return 1
-            fi
         done
-
-        echo ""
-        echo -e "  ${BOLD}Contents of server:$server_path:${NC}"
-        ssh "$SERVER_USER@$SERVER_IP" "ls '$server_path' 2>/dev/null || echo '  (empty or does not exist)'"
-        echo ""
-        read -p "  Subfolder (or Enter for all): " subfolder
-        if [[ -n "$subfolder" ]]; then
-            server_path="$server_path/$subfolder"
-        fi
     }
 
     case $direction in
         1)
             echo ""
             echo -e "  ${BOLD}-- Source (laptop) --${NC}"
-            _pick_local_path
+            _pick_local_path true
             echo ""
             echo -e "  ${BOLD}-- Destination (server) --${NC}"
-            _pick_server_path
+            _pick_server_path false
 
             src_size=$(du -sh "$local_path" 2>/dev/null | awk '{print $1}')
             echo ""
@@ -1495,17 +1508,17 @@ step_sync() {
             echo ""
             [[ $REPLY =~ ^[Nn]$ ]] && info "Cancelled." && return
 
-            ssh "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$server_path' && sudo chown -R $SERVER_USER:$SERVER_USER '$server_path'"
+            ssh "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$server_path'"
             rsync -avh --progress --rsync-path="sudo rsync" "$local_path/" "$SERVER_USER@$SERVER_IP:$server_path/"
             ;;
 
         2)
             echo ""
             echo -e "  ${BOLD}-- Source (server) --${NC}"
-            _pick_server_path
+            _pick_server_path true
             echo ""
             echo -e "  ${BOLD}-- Destination (laptop) --${NC}"
-            _pick_local_path
+            _pick_local_path false
 
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1522,10 +1535,6 @@ step_sync() {
             rsync -avh --progress --rsync-path="sudo rsync" "$SERVER_USER@$SERVER_IP:$server_path/" "$local_path/"
             ;;
 
-        *)
-            fail "Invalid choice."
-            return
-            ;;
     esac
 
     echo ""

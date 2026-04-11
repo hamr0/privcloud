@@ -1671,18 +1671,32 @@ step_status() {
 
     if [[ "$remote" == "true" ]]; then
         local server_info
-        server_info=$(ssh "$SERVER_USER@$SERVER_IP" "
-            echo \"HOSTNAME=\$(hostname)\"
-            echo \"IP=\$(hostname -I | awk '{print \$1}')\"
-            echo \"TS_IP=\$(tailscale ip -4 2>/dev/null || echo 'not connected')\"
-            echo \"FILES=\$(grep FILES_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)\"
-            echo \"MUSIC=\$(grep MUSIC_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)\"
-            echo \"UPLOAD=\$(grep UPLOAD_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)\"
-            echo \"DB=\$(grep DB_DATA_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)\"
-            echo \"CONTAINERS=\$(docker ps --format '{{.Names}}|{{.Status}}' 2>/dev/null)\"
-            echo \"DISK=\$(df -h / /home 2>/dev/null | tail -n +2)\"
-        " 2>/dev/null) || { fail "Cannot reach server at $SERVER_IP."; return 1; }
-        eval "$server_info"
+        server_info=$(ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_STATUS'
+            echo "@@HOSTNAME@@$(hostname)"
+            echo "@@IP@@$(hostname -I | awk '{print $1}')"
+            echo "@@TS_IP@@$(tailscale ip -4 2>/dev/null || echo 'not connected')"
+            echo "@@FILES@@$(grep FILES_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
+            echo "@@MUSIC@@$(grep MUSIC_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
+            echo "@@UPLOAD@@$(grep UPLOAD_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
+            echo "@@DB@@$(grep DB_DATA_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
+            echo "@@CONTAINERS_START@@"
+            docker ps --format '{{.Names}}|{{.Status}}' 2>/dev/null
+            echo "@@CONTAINERS_END@@"
+            echo "@@DISK_START@@"
+            df -h / /home 2>/dev/null | tail -n +2
+            echo "@@DISK_END@@"
+REMOTE_STATUS
+        ) || { fail "Cannot reach server at $SERVER_IP."; return 1; }
+
+        HOSTNAME=$(echo "$server_info" | grep '@@HOSTNAME@@' | sed 's/@@HOSTNAME@@//')
+        IP=$(echo "$server_info" | grep '@@IP@@' | sed 's/@@IP@@//')
+        TS_IP=$(echo "$server_info" | grep '@@TS_IP@@' | sed 's/@@TS_IP@@//')
+        FILES=$(echo "$server_info" | grep '@@FILES@@' | sed 's/@@FILES@@//')
+        MUSIC=$(echo "$server_info" | grep '@@MUSIC@@' | sed 's/@@MUSIC@@//')
+        UPLOAD=$(echo "$server_info" | grep '@@UPLOAD@@' | sed 's/@@UPLOAD@@//')
+        DB=$(echo "$server_info" | grep '@@DB@@' | sed 's/@@DB@@//')
+        CONTAINERS=$(echo "$server_info" | sed -n '/@@CONTAINERS_START@@/,/@@CONTAINERS_END@@/p' | grep -v '@@CONTAINERS')
+        DISK=$(echo "$server_info" | sed -n '/@@DISK_START@@/,/@@DISK_END@@/p' | grep -v '@@DISK')
     else
         HOSTNAME=$(hostname)
         IP=$(hostname -I | awk '{print $1}')

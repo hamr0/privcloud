@@ -1640,15 +1640,42 @@ step_sync() {
 }
 
 step_status() {
-    IP=$(hostname -I | awk '{print $1}')
-    TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || echo "not connected")
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    SCRIPT_DIR_STATUS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local remote=false
+    if [[ "$(hostname)" != "federver" ]]; then
+        remote=true
+    fi
+
+    if [[ "$remote" == "true" ]]; then
+        local server_info
+        server_info=$(ssh "$SERVER_USER@$SERVER_IP" "
+            echo \"HOSTNAME=\$(hostname)\"
+            echo \"IP=\$(hostname -I | awk '{print \$1}')\"
+            echo \"TS_IP=\$(tailscale ip -4 2>/dev/null || echo 'not connected')\"
+            echo \"FILES=\$(grep FILES_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)\"
+            echo \"MUSIC=\$(grep MUSIC_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)\"
+            echo \"UPLOAD=\$(grep UPLOAD_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)\"
+            echo \"DB=\$(grep DB_DATA_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)\"
+            echo \"CONTAINERS=\$(docker ps --format '{{.Names}}|{{.Status}}' 2>/dev/null)\"
+            echo \"DISK=\$(df -h / /home 2>/dev/null | tail -n +2)\"
+        " 2>/dev/null) || { fail "Cannot reach server at $SERVER_IP."; return 1; }
+        eval "$server_info"
+    else
+        HOSTNAME=$(hostname)
+        IP=$(hostname -I | awk '{print $1}')
+        TS_IP=$(tailscale ip -4 2>/dev/null || echo "not connected")
+        local SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        FILES=$(grep FILES_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
+        MUSIC=$(grep MUSIC_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
+        UPLOAD=$(grep UPLOAD_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
+        DB=$(grep DB_DATA_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
+        CONTAINERS=$(docker ps --format '{{.Names}}|{{.Status}}' 2>/dev/null)
+        DISK=$(df -h / /home 2>/dev/null | tail -n +2)
+    fi
 
     echo -e "  ${BOLD}Server${NC}"
-    echo -e "    Hostname:   $(hostname)"
+    echo -e "    Hostname:   $HOSTNAME"
     echo -e "    Local IP:   $IP"
-    echo -e "    Tailscale:  $TAILSCALE_IP"
+    echo -e "    Tailscale:  $TS_IP"
     echo ""
 
     echo -e "  ${BOLD}Service URLs (local network)${NC}"
@@ -1657,47 +1684,46 @@ step_status() {
     echo -e "    FileBrowser:  ${BLUE}http://$IP:8080${NC}"
     echo -e "    Uptime Kuma:  ${BLUE}http://$IP:3001${NC}"
 
-    if [[ "$TAILSCALE_IP" != "not connected" ]]; then
-        local TS_HOST=$(hostname)
+    if [[ "$TS_IP" != "not connected" ]]; then
         echo ""
         echo -e "  ${BOLD}Service URLs (remote via Tailscale — use from any device with Tailscale)${NC}"
-        echo -e "    Immich:       ${BLUE}http://$TS_HOST:2283${NC}"
-        echo -e "    Navidrome:    ${BLUE}http://$TS_HOST:4533${NC}"
-        echo -e "    FileBrowser:  ${BLUE}http://$TS_HOST:8080${NC}"
-        echo -e "    Uptime Kuma:  ${BLUE}http://$TS_HOST:3001${NC}"
-        echo -e "    ${DIM}(or use Tailscale IP: $TAILSCALE_IP)${NC}"
+        echo -e "    Immich:       ${BLUE}http://federver:2283${NC}"
+        echo -e "    Navidrome:    ${BLUE}http://federver:4533${NC}"
+        echo -e "    FileBrowser:  ${BLUE}http://federver:8080${NC}"
+        echo -e "    Uptime Kuma:  ${BLUE}http://federver:3001${NC}"
+        echo -e "    ${DIM}(or use Tailscale IP: $TS_IP)${NC}"
     fi
 
     echo ""
     echo -e "  ${BOLD}Data paths${NC}"
-    if [[ -f "$SCRIPT_DIR/.env" ]]; then
-        echo -e "    Files:       $(grep FILES_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)  ${DIM}(FileBrowser root)${NC}"
-        echo -e "    Music:       $(grep MUSIC_LOCATION "$SCRIPT_DIR/.env" | cut -d= -f2)  ${DIM}(Navidrome)${NC}"
-    fi
-    if [[ -f "$SCRIPT_DIR_STATUS/.env" ]]; then
+    [[ -n "$FILES" ]] && echo -e "    Files:       $FILES  ${DIM}(FileBrowser root)${NC}"
+    [[ -n "$MUSIC" ]] && echo -e "    Music:       $MUSIC  ${DIM}(Navidrome)${NC}"
+    if [[ -n "$UPLOAD" || -n "$DB" ]]; then
         echo ""
         echo -e "    ${BOLD}Immich${NC}"
-        echo -e "    Photos:      $(grep UPLOAD_LOCATION "$SCRIPT_DIR_STATUS/.env" | cut -d= -f2)"
-        echo -e "    Database:    $(grep DB_DATA_LOCATION "$SCRIPT_DIR_STATUS/.env" | cut -d= -f2)"
+        [[ -n "$UPLOAD" ]] && echo -e "    Photos:      $UPLOAD"
+        [[ -n "$DB" ]] && echo -e "    Database:    $DB"
     fi
 
     echo ""
     echo -e "  ${BOLD}Containers${NC}"
-    docker ps --format "table {{.Names}}\t{{.Status}}" 2>/dev/null | while IFS= read -r line; do
-        if echo "$line" | grep -qi "healthy"; then
-            ok "$line"
-        elif echo "$line" | grep -qi "exit\|restart\|unhealthy"; then
-            fail "$line"
-        elif echo "$line" | grep -q "NAMES"; then
-            echo "    $line"
-        else
-            warn "$line"
-        fi
-    done
+    if [[ -n "$CONTAINERS" ]]; then
+        echo "$CONTAINERS" | while IFS='|' read -r name status; do
+            if echo "$status" | grep -qi "healthy"; then
+                ok "$name  $status"
+            elif echo "$status" | grep -qi "exit\|restart\|unhealthy"; then
+                fail "$name  $status"
+            else
+                warn "$name  $status"
+            fi
+        done
+    else
+        echo -e "    ${DIM}No containers running${NC}"
+    fi
 
     echo ""
     echo -e "  ${BOLD}Disk${NC}"
-    df -h / /home 2>/dev/null | awk 'NR==1{printf "    %-20s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5} NR>1{printf "    %-20s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5}'
+    echo "$DISK" | awk '{printf "    %-20s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5}'
 
     echo ""
     echo -e "  ${BOLD}Management${NC}"

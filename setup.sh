@@ -1181,10 +1181,14 @@ _syncthing_install() {
     sudo firewall-cmd --reload > /dev/null
     ok "Firewall: 8384/tcp, 22000/tcp+udp, 21027/udp open."
 
-    sudo mkdir -p /opt/syncthing/config /opt/syncthing/data
+    sudo mkdir -p /opt/syncthing
+    sudo chown -R "$(id -u):$(id -g)" /opt/syncthing 2>/dev/null || true
 
-    # STGUIADDRESS forces the web UI onto all interfaces — default is
-    # 127.0.0.1:8384 which is useless with --network=host.
+    # One bind mount at /var/syncthing (the container's state dir). Config
+    # lands at /opt/syncthing/config/config.xml, synced data under
+    # /opt/syncthing/Sync/... — both visible on the host. Don't split into
+    # two mounts: /var/syncthing/config inside /var/syncthing is a nested
+    # bind-mount conflict and makes the container crash-loop.
     info "Starting Syncthing container..."
     sudo docker run -d \
         --name syncthing \
@@ -1193,8 +1197,7 @@ _syncthing_install() {
         -e PUID=$(id -u) \
         -e PGID=$(id -g) \
         -e STGUIADDRESS=0.0.0.0:8384 \
-        -v /opt/syncthing/config:/var/syncthing/config \
-        -v /opt/syncthing/data:/var/syncthing \
+        -v /opt/syncthing:/var/syncthing \
         syncthing/syncthing:latest > /dev/null
     sleep 3
     if [[ "$DRY_RUN" != "1" ]] && ! _syncthing_is_running; then
@@ -1267,15 +1270,21 @@ _syncthing_install_laptop() {
     # Device ID. `syncthing --device-id` prints a warning to STDOUT (not
     # stderr) when the cert isn't there yet, which pollutes the output if
     # we read it too early. So: poll for the cert file first, then read
-    # the ID, then validate that it looks like a real ID (52 alphanumeric
-    # chars in 7-char groups separated by hyphens).
-    local cert=~/.local/state/syncthing/cert.pem
-    local attempt laptop_id=""
+    # the ID, then validate it looks like a real Device ID (7-char groups
+    # separated by hyphens). Check every common config location because
+    # different Syncthing versions use XDG_STATE_HOME vs XDG_CONFIG_HOME.
+    local attempt laptop_id="" cert
     for attempt in $(seq 1 20); do
-        if [[ -f "$cert" ]]; then
-            laptop_id=$(syncthing --device-id 2>/dev/null | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){6}$' || echo "")
-            [[ -n "$laptop_id" ]] && break
-        fi
+        for cert in \
+            ~/.local/state/syncthing/cert.pem \
+            ~/.config/syncthing/cert.pem \
+            ~/.local/share/syncthing/cert.pem
+        do
+            if [[ -f "$cert" ]]; then
+                laptop_id=$(syncthing --device-id 2>/dev/null | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){6}$' || echo "")
+                [[ -n "$laptop_id" ]] && break 2
+            fi
+        done
         sleep 1
     done
 

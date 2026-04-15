@@ -1108,20 +1108,40 @@ step_deploy() {
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
+# Read a single KEY from .env without sourcing the file. `source` trips
+# on unquoted values with spaces (e.g. MUSIC_LOCATION=/mnt/data/media/My Music),
+# so we parse one line at a time, strip any surrounding quotes, and
+# preserve spaces verbatim.
+_env_get() {
+    local key="$1" file="$2"
+    [[ ! -f "$file" ]] && return 0
+    local line value
+    line=$(grep -E "^${key}=" "$file" 2>/dev/null | head -1)
+    [[ -z "$line" ]] && return 0
+    value="${line#${key}=}"
+    # Strip optional surrounding quotes (single or double)
+    value="${value%\"}"; value="${value#\"}"
+    value="${value%\'}"; value="${value#\'}"
+    echo "$value"
+}
+
 # Populate a `mounts` array (in the caller's scope) with -v bind-mount
 # flags for the three semantic sync paths: data / media / immich.
 # Reads .env for FILES_LOCATION, MEDIA_LOCATION, UPLOAD_LOCATION, falling
 # back to the stock privcloud layout if the var isn't set.
 _syncthing_build_mounts() {
-    local SCRIPT_DIR
+    local SCRIPT_DIR env_file
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    [[ -f "$SCRIPT_DIR/.env" ]] && source "$SCRIPT_DIR/.env"
+    env_file="$SCRIPT_DIR/.env"
 
-    local data_path="${FILES_LOCATION:-/mnt/data/data}"
-    local media_path="${MEDIA_LOCATION:-/mnt/data/media}"
-    local immich_path
-    if [[ -n "${UPLOAD_LOCATION:-}" ]]; then
-        immich_path=$(dirname "$UPLOAD_LOCATION")
+    local data_path media_path immich_path upload
+    data_path=$(_env_get FILES_LOCATION "$env_file")
+    media_path=$(_env_get MEDIA_LOCATION "$env_file")
+    upload=$(_env_get UPLOAD_LOCATION "$env_file")
+    [[ -z "$data_path"  ]] && data_path="/mnt/data/data"
+    [[ -z "$media_path" ]] && media_path="/mnt/data/media"
+    if [[ -n "$upload" ]]; then
+        immich_path=$(dirname "$upload")
     else
         immich_path="/home/$USER/data/immich"
     fi
@@ -1139,22 +1159,26 @@ _syncthing_build_mounts() {
 }
 
 _syncthing_show_paths() {
-    local SCRIPT_DIR
+    local SCRIPT_DIR env_file
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    [[ -f "$SCRIPT_DIR/.env" ]] && source "$SCRIPT_DIR/.env"
+    env_file="$SCRIPT_DIR/.env"
     echo ""
     echo -e "  ${BOLD}Paths currently bind-mounted into the Syncthing container${NC}"
     sudo docker inspect -f '{{range .Mounts}}    {{.Source}} → {{.Destination}}{{println}}{{end}}' syncthing 2>/dev/null
     echo ""
     echo -e "  ${BOLD}Expected from .env (data / media / immich)${NC}"
-    echo -e "    data:    ${FILES_LOCATION:-/mnt/data/data}"
-    echo -e "    media:   ${MEDIA_LOCATION:-/mnt/data/media}"
-    local im="${UPLOAD_LOCATION:-}"
-    if [[ -n "$im" ]]; then
-        echo -e "    immich:  $(dirname "$im")"
+    local data_path media_path upload immich_path
+    data_path=$(_env_get FILES_LOCATION "$env_file");   data_path="${data_path:-/mnt/data/data}"
+    media_path=$(_env_get MEDIA_LOCATION "$env_file"); media_path="${media_path:-/mnt/data/media}"
+    upload=$(_env_get UPLOAD_LOCATION "$env_file")
+    if [[ -n "$upload" ]]; then
+        immich_path=$(dirname "$upload")
     else
-        echo -e "    immich:  /home/$USER/data/immich"
+        immich_path="/home/$USER/data/immich"
     fi
+    echo -e "    data:    $data_path"
+    echo -e "    media:   $media_path"
+    echo -e "    immich:  $immich_path"
     echo ""
     info "If the .env paths differ from what's mounted, pick 'Reapply paths"
     info "from .env' to recreate the container with the new mounts."
@@ -1267,11 +1291,11 @@ _syncthing_install() {
 
     # Open firewall: 8384 web UI, 22000/tcp+udp sync, 21027/udp LAN discovery
     info "Opening firewall ports (8384 web UI, 22000 sync, 21027 discovery)..."
-    sudo firewall-cmd --permanent --add-port=8384/tcp > /dev/null
-    sudo firewall-cmd --permanent --add-port=22000/tcp > /dev/null
-    sudo firewall-cmd --permanent --add-port=22000/udp > /dev/null
-    sudo firewall-cmd --permanent --add-port=21027/udp > /dev/null
-    sudo firewall-cmd --reload > /dev/null
+    sudo firewall-cmd --permanent --add-port=8384/tcp  > /dev/null 2>&1
+    sudo firewall-cmd --permanent --add-port=22000/tcp > /dev/null 2>&1
+    sudo firewall-cmd --permanent --add-port=22000/udp > /dev/null 2>&1
+    sudo firewall-cmd --permanent --add-port=21027/udp > /dev/null 2>&1
+    sudo firewall-cmd --reload > /dev/null 2>&1
     ok "Firewall: 8384/tcp, 22000/tcp+udp, 21027/udp open."
 
     sudo mkdir -p /opt/syncthing
@@ -2729,10 +2753,13 @@ REMOTE_STATUS
             local suffix=""
             [[ -n "$cpu" ]] && suffix="$suffix  ${DIM}cpu ${cpu}${NC}"
             [[ -n "$mem" ]] && suffix="$suffix  ${DIM}mem ${mem}${NC}"
-            if echo "$status" | grep -qi "healthy"; then
-                echo -e "    ${GREEN}✓${NC} $(printf '%-24s' "$name")  $status$suffix"
-            elif echo "$status" | grep -qi "exit\|restart\|unhealthy"; then
+            # Containers without a HEALTHCHECK just report "Up X" — treat
+            # those as OK (not warn). Only warn when the state is genuinely
+            # ambiguous (Created, Paused, etc).
+            if echo "$status" | grep -qi "unhealthy\|exit\|restart"; then
                 echo -e "    ${RED}✗${NC} $(printf '%-24s' "$name")  $status$suffix"
+            elif echo "$status" | grep -qi "healthy\|^Up "; then
+                echo -e "    ${GREEN}✓${NC} $(printf '%-24s' "$name")  $status$suffix"
             else
                 echo -e "    ${YELLOW}!!${NC} $(printf '%-24s' "$name")  $status$suffix"
             fi

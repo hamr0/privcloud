@@ -1732,15 +1732,19 @@ BACKUPEOF
     echo ""
 
     # ── Uptime Kuma push URL ──
+    local IP
+    IP=$(hostname -I | awk '{print $1}')
     echo ""
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "  ${YELLOW}ACTION NEEDED — Uptime Kuma disk alert${NC}"
     echo ""
-    echo -e "  1. Open Uptime Kuma in your browser (port 3001)"
-    echo -e "  2. Add New Monitor → Type: ${BOLD}Push${NC}"
-    echo -e "  3. Name: ${BOLD}Disk Space${NC}"
-    echo -e "  4. Heartbeat Interval: ${BOLD}3600${NC}"
-    echo -e "  5. Copy the ${BOLD}Push URL${NC} it shows you"
+    echo -e "  1. Open ${BLUE}http://$IP:3001${NC}"
+    echo -e "  2. Add New Monitor → Monitor Type: ${BOLD}Push${NC}"
+    echo -e "  3. Friendly Name: ${BOLD}Disk Space${NC}"
+    echo -e "  4. Heartbeat Interval: ${BOLD}360${NC}  ${DIM}(seconds — matches the 5-min cron)${NC}"
+    echo -e "  5. Heartbeat Retry Interval: ${BOLD}60${NC}"
+    echo -e "  6. Max Retries: ${BOLD}2${NC}"
+    echo -e "  7. Click ${BOLD}Save${NC}, then copy the ${BOLD}Push URL${NC} from the monitor page"
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     read -p "  Paste the Push URL here (or Enter to skip): " push_url
@@ -1791,12 +1795,18 @@ DISKEOF
 
     sudo chmod +x /usr/local/bin/disk-check.sh
 
-    # Run hourly
-    if ! sudo crontab -l 2>/dev/null | grep -q "disk-check"; then
-        (sudo crontab -l 2>/dev/null; echo "0 * * * * /usr/local/bin/disk-check.sh") | sudo crontab -
+    # Install (or migrate) the cron job — every 5 minutes. Drops any existing
+    # disk-check line so re-running step 8 upgrades old hourly installs.
+    (sudo crontab -l 2>/dev/null | grep -v 'disk-check'; echo "*/5 * * * * /usr/local/bin/disk-check.sh") | sudo crontab -
+
+    # Fire it once immediately so the Kuma monitor turns green straight away
+    # instead of waiting up to 5 minutes for the first cron tick.
+    if [[ -n "$push_url" ]]; then
+        info "Sending first heartbeat to Kuma..."
+        sudo /usr/local/bin/disk-check.sh && ok "Heartbeat sent — Kuma monitor should be green."
     fi
 
-    ok "Disk space check runs hourly (alerts above 85%)."
+    ok "Disk space check runs every 5 minutes (alerts above 85%)."
     info "Check log: cat /var/log/disk-check.log"
 }
 

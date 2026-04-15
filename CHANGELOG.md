@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **Disk-check monitor (`federver` → 8)** made smoother to set up. Cron cadence dropped from hourly to every 5 minutes so Kuma sees a pulse well before the interval expires. The step now also fires the disk-check script once immediately after installing it, so the Kuma monitor turns green right away instead of waiting for the first cron tick. The wizard tells you the exact values to paste into Kuma's monitor form (Heartbeat Interval 360, Retry Interval 60, Max Retries 2) so a fresh setup no longer needs a "why is this red?" debugging round. Re-running step 8 drops any existing disk-check cron line before re-adding it, so old hourly installs migrate cleanly.
 - **Storage status display (`federver` → 13 → 1)** reorganised around the `data / media / immich` mental model. Previously listed four cryptic rows (Files / Music / Immich / Database) and showed red `not set` when a path was unset in `.env` — even though the container might be running fine off a Docker volume. Now it falls back to `docker inspect` and reports the actual mount source — a real host path when bind-mounted, `(Docker volume: <name>)` or `(Docker anonymous volume)` when not. No more alarming "not set" rows on a working system.
 
 ### Added

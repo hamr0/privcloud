@@ -1110,10 +1110,13 @@ step_deploy() {
 
 _syncthing_device_id() {
     # First-run Syncthing needs a few seconds to generate its cert and
-    # become ready for `docker exec`. Poll for up to 15 seconds.
+    # become ready for `docker exec`. Poll for up to 20 seconds, and
+    # validate the output looks like a real Device ID (the command can
+    # print warnings to stdout when the cert file doesn't exist yet).
     local attempt id
-    for attempt in $(seq 1 15); do
-        id=$(sudo docker exec syncthing syncthing --device-id 2>/dev/null || echo "")
+    for attempt in $(seq 1 20); do
+        id=$(sudo docker exec syncthing syncthing --device-id 2>/dev/null \
+             | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){6}$' || echo "")
         if [[ -n "$id" ]]; then
             echo "$id"
             return 0
@@ -1260,11 +1263,19 @@ _syncthing_install_laptop() {
         systemctl --user enable --now syncthing 2>/dev/null && ok "Service enabled + started."
     fi
 
-    # Give it a moment to generate its identity before asking for the ID
+    # Wait for Syncthing to generate its cert file before asking for the
+    # Device ID. `syncthing --device-id` prints a warning to STDOUT (not
+    # stderr) when the cert isn't there yet, which pollutes the output if
+    # we read it too early. So: poll for the cert file first, then read
+    # the ID, then validate that it looks like a real ID (52 alphanumeric
+    # chars in 7-char groups separated by hyphens).
+    local cert=~/.local/state/syncthing/cert.pem
     local attempt laptop_id=""
-    for attempt in $(seq 1 10); do
-        laptop_id=$(syncthing --device-id 2>/dev/null || echo "")
-        [[ -n "$laptop_id" ]] && break
+    for attempt in $(seq 1 20); do
+        if [[ -f "$cert" ]]; then
+            laptop_id=$(syncthing --device-id 2>/dev/null | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){6}$' || echo "")
+            [[ -n "$laptop_id" ]] && break
+        fi
         sleep 1
     done
 
@@ -1272,7 +1283,7 @@ _syncthing_install_laptop() {
     if [[ -n "$laptop_id" ]]; then
         echo -e "  ${BOLD}Laptop Device ID:${NC} ${BOLD}$laptop_id${NC}"
     else
-        warn "Laptop Device ID not ready yet — check systemctl --user status syncthing"
+        warn "Laptop Device ID not ready yet — check with: ${BOLD}syncthing --device-id${NC}"
     fi
     echo ""
 }

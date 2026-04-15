@@ -2074,13 +2074,21 @@ step_status() {
             echo "@@HOSTNAME@@$(hostname)"
             echo "@@IP@@$(hostname -I | awk '{print $1}')"
             echo "@@TS_IP@@$(tailscale ip -4 2>/dev/null || echo 'not connected')"
+            echo "@@UPTIME@@$(uptime -p 2>/dev/null | sed 's/^up //')"
+            echo "@@LOAD@@$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null)"
             echo "@@FILES@@$(grep FILES_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
             echo "@@MUSIC@@$(grep MUSIC_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
             echo "@@UPLOAD@@$(grep UPLOAD_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
             echo "@@DB@@$(grep DB_DATA_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
+            echo "@@MEM_START@@"
+            free -h 2>/dev/null | awk '/^Mem:/{print "mem|"$2"|"$3"|"$7} /^Swap:/{print "swap|"$2"|"$3}'
+            echo "@@MEM_END@@"
             echo "@@CONTAINERS_START@@"
             docker ps --format '{{.Names}}|{{.Status}}' 2>/dev/null
             echo "@@CONTAINERS_END@@"
+            echo "@@DSTATS_START@@"
+            docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null
+            echo "@@DSTATS_END@@"
             echo "@@DISK_START@@"
             df -h / /home 2>/dev/null | tail -n +2
             echo "@@DISK_END@@"
@@ -2090,22 +2098,30 @@ REMOTE_STATUS
         HOSTNAME=$(echo "$server_info" | grep '@@HOSTNAME@@' | sed 's/@@HOSTNAME@@//')
         IP=$(echo "$server_info" | grep '@@IP@@' | sed 's/@@IP@@//')
         TS_IP=$(echo "$server_info" | grep '@@TS_IP@@' | sed 's/@@TS_IP@@//')
+        UPTIME=$(echo "$server_info" | grep '@@UPTIME@@' | sed 's/@@UPTIME@@//')
+        LOAD=$(echo "$server_info" | grep '@@LOAD@@' | sed 's/@@LOAD@@//')
         FILES=$(echo "$server_info" | grep '@@FILES@@' | sed 's/@@FILES@@//')
         MUSIC=$(echo "$server_info" | grep '@@MUSIC@@' | sed 's/@@MUSIC@@//')
         UPLOAD=$(echo "$server_info" | grep '@@UPLOAD@@' | sed 's/@@UPLOAD@@//')
         DB=$(echo "$server_info" | grep '@@DB@@' | sed 's/@@DB@@//')
+        MEM=$(echo "$server_info" | sed -n '/@@MEM_START@@/,/@@MEM_END@@/p' | grep -v '@@MEM')
         CONTAINERS=$(echo "$server_info" | sed -n '/@@CONTAINERS_START@@/,/@@CONTAINERS_END@@/p' | grep -v '@@CONTAINERS')
+        DSTATS=$(echo "$server_info" | sed -n '/@@DSTATS_START@@/,/@@DSTATS_END@@/p' | grep -v '@@DSTATS')
         DISK=$(echo "$server_info" | sed -n '/@@DISK_START@@/,/@@DISK_END@@/p' | grep -v '@@DISK')
     else
         HOSTNAME=$(hostname)
         IP=$(hostname -I | awk '{print $1}')
         TS_IP=$(tailscale ip -4 2>/dev/null || echo "not connected")
+        UPTIME=$(uptime -p 2>/dev/null | sed 's/^up //')
+        LOAD=$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null)
         local SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         FILES=$(grep FILES_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
         MUSIC=$(grep MUSIC_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
         UPLOAD=$(grep UPLOAD_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
         DB=$(grep DB_DATA_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
+        MEM=$(free -h 2>/dev/null | awk '/^Mem:/{print "mem|"$2"|"$3"|"$7} /^Swap:/{print "swap|"$2"|"$3}')
         CONTAINERS=$(docker ps --format '{{.Names}}|{{.Status}}' 2>/dev/null)
+        DSTATS=$(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null)
         DISK=$(df -h / /home 2>/dev/null | tail -n +2)
     fi
 
@@ -2113,21 +2129,73 @@ REMOTE_STATUS
     echo -e "    Hostname:   $HOSTNAME"
     echo -e "    Local IP:   $IP"
     echo -e "    Tailscale:  $TS_IP"
+    [[ -n "$UPTIME" ]] && echo -e "    Uptime:     $UPTIME"
+    [[ -n "$LOAD"   ]] && echo -e "    Load avg:   $LOAD  ${DIM}(1m, 5m, 15m)${NC}"
     echo ""
 
+    # Memory
+    local mem_total mem_used mem_avail swap_total swap_used
+    mem_total=$(echo "$MEM" | awk -F'|' '$1=="mem"{print $2}')
+    mem_used=$(echo  "$MEM" | awk -F'|' '$1=="mem"{print $3}')
+    mem_avail=$(echo "$MEM" | awk -F'|' '$1=="mem"{print $4}')
+    swap_total=$(echo "$MEM" | awk -F'|' '$1=="swap"{print $2}')
+    swap_used=$(echo  "$MEM" | awk -F'|' '$1=="swap"{print $3}')
+    if [[ -n "$mem_total" ]]; then
+        echo -e "  ${BOLD}Memory${NC}"
+        echo -e "    RAM:        $mem_used used / $mem_total total  ${DIM}($mem_avail available)${NC}"
+        if [[ -n "$swap_total" && "$swap_used" != "0B" ]]; then
+            echo -e "    Swap:       $swap_used used / $swap_total total"
+        fi
+        echo ""
+    fi
+
+    echo -e "  ${BOLD}Disk${NC}"
+    echo "$DISK" | awk '{printf "    %-20s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5}'
+    echo ""
+
+    # Containers + per-container CPU/MEM from docker stats
+    echo -e "  ${BOLD}Containers${NC}"
+    if [[ -n "$CONTAINERS" ]]; then
+        echo "$CONTAINERS" | while IFS='|' read -r name status; do
+            local cpu="" mem=""
+            if [[ -n "$DSTATS" ]]; then
+                local line
+                line=$(echo "$DSTATS" | awk -F'|' -v n="$name" '$1==n{print $2"|"$3; exit}')
+                cpu=$(echo "$line" | cut -d'|' -f1)
+                # Show only "used" side of "X MiB / Y GiB"
+                mem=$(echo "$line" | cut -d'|' -f2 | awk '{print $1}')
+            fi
+            local suffix=""
+            [[ -n "$cpu" ]] && suffix="$suffix  ${DIM}cpu ${cpu}${NC}"
+            [[ -n "$mem" ]] && suffix="$suffix  ${DIM}mem ${mem}${NC}"
+            if echo "$status" | grep -qi "healthy"; then
+                echo -e "    ${GREEN}✓${NC} $(printf '%-24s' "$name")  $status$suffix"
+            elif echo "$status" | grep -qi "exit\|restart\|unhealthy"; then
+                echo -e "    ${RED}✗${NC} $(printf '%-24s' "$name")  $status$suffix"
+            else
+                echo -e "    ${YELLOW}!!${NC} $(printf '%-24s' "$name")  $status$suffix"
+            fi
+        done
+    else
+        echo -e "    ${DIM}No containers running${NC}"
+    fi
+
+    echo ""
     echo -e "  ${BOLD}Service URLs (local network)${NC}"
     echo -e "    Immich:       ${BLUE}http://$IP:2283${NC}"
     echo -e "    Navidrome:    ${BLUE}http://$IP:4533${NC}"
     echo -e "    FileBrowser:  ${BLUE}http://$IP:8080${NC}"
     echo -e "    Uptime Kuma:  ${BLUE}http://$IP:3001${NC}"
+    echo "$CONTAINERS" | grep -q '^adguard|' && echo -e "    AdGuard:      ${BLUE}http://$IP${NC}"
 
     if [[ "$TS_IP" != "not connected" ]]; then
         echo ""
-        echo -e "  ${BOLD}Service URLs (remote via Tailscale — use from any device with Tailscale)${NC}"
+        echo -e "  ${BOLD}Service URLs (remote via Tailscale)${NC}"
         echo -e "    Immich:       ${BLUE}http://federver:2283${NC}"
         echo -e "    Navidrome:    ${BLUE}http://federver:4533${NC}"
         echo -e "    FileBrowser:  ${BLUE}http://federver:8080${NC}"
         echo -e "    Uptime Kuma:  ${BLUE}http://federver:3001${NC}"
+        echo "$CONTAINERS" | grep -q '^adguard|' && echo -e "    AdGuard:      ${BLUE}http://federver${NC}"
         echo -e "    ${DIM}(or use Tailscale IP: $TS_IP)${NC}"
     fi
 
@@ -2136,37 +2204,9 @@ REMOTE_STATUS
     [[ -n "$FILES" ]] && echo -e "    Files:       $FILES  ${DIM}(FileBrowser root)${NC}"
     [[ -n "$MUSIC" ]] && echo -e "    Music:       $MUSIC  ${DIM}(Navidrome)${NC}"
     if [[ -n "$UPLOAD" || -n "$DB" ]]; then
-        echo ""
-        echo -e "    ${BOLD}Immich${NC}"
-        [[ -n "$UPLOAD" ]] && echo -e "    Photos:      $UPLOAD"
-        [[ -n "$DB" ]] && echo -e "    Database:    $DB"
+        [[ -n "$UPLOAD" ]] && echo -e "    Photos:      $UPLOAD  ${DIM}(Immich)${NC}"
+        [[ -n "$DB" ]] && echo -e "    Database:    $DB  ${DIM}(Immich DB)${NC}"
     fi
-
-    echo ""
-    echo -e "  ${BOLD}Containers${NC}"
-    if [[ -n "$CONTAINERS" ]]; then
-        echo "$CONTAINERS" | while IFS='|' read -r name status; do
-            if echo "$status" | grep -qi "healthy"; then
-                ok "$name  $status"
-            elif echo "$status" | grep -qi "exit\|restart\|unhealthy"; then
-                fail "$name  $status"
-            else
-                warn "$name  $status"
-            fi
-        done
-    else
-        echo -e "    ${DIM}No containers running${NC}"
-    fi
-
-    echo ""
-    echo -e "  ${BOLD}Disk${NC}"
-    echo "$DISK" | awk '{printf "    %-20s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5}'
-
-    echo ""
-    echo -e "  ${BOLD}Management${NC}"
-    echo -e "    Immich:   ${BOLD}privcloud${NC} [start|stop|status|update|backup]"
-    echo -e "    Server:   ${BOLD}federver${NC}"
-    echo -e "    Services: ${BOLD}docker compose [up -d|down|pull]${NC}"
 }
 
 step_power() {

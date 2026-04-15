@@ -1189,11 +1189,19 @@ _syncthing_install() {
     sudo mkdir -p /opt/syncthing
     sudo chown -R "$(id -u):$(id -g)" /opt/syncthing 2>/dev/null || true
 
-    # One bind mount at /var/syncthing (the container's state dir). Config
-    # lands at /opt/syncthing/config/config.xml, synced data under
-    # /opt/syncthing/Sync/... — both visible on the host. Don't split into
-    # two mounts: /var/syncthing/config inside /var/syncthing is a nested
-    # bind-mount conflict and makes the container crash-loop.
+    # Build the mount list. /var/syncthing is the container state dir
+    # (config, cert, key). We also bind-mount every data directory from
+    # the host that the user might want to sync, so the UI's "Add Folder"
+    # dialog can actually browse to them — otherwise the container is
+    # isolated and you can only sync things under /var/syncthing.
+    local mounts=(-v /opt/syncthing:/var/syncthing)
+    local host_path
+    for host_path in /mnt/data /home/"$USER"/data; do
+        if [[ -d "$host_path" ]]; then
+            mounts+=(-v "${host_path}:${host_path}")
+        fi
+    done
+
     info "Starting Syncthing container..."
     sudo docker run -d \
         --name syncthing \
@@ -1202,7 +1210,7 @@ _syncthing_install() {
         -e PUID=$(id -u) \
         -e PGID=$(id -g) \
         -e STGUIADDRESS=0.0.0.0:8384 \
-        -v /opt/syncthing:/var/syncthing \
+        "${mounts[@]}" \
         syncthing/syncthing:latest > /dev/null
     sleep 3
     if [[ "$DRY_RUN" != "1" ]] && ! _syncthing_is_running; then

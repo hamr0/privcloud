@@ -19,6 +19,13 @@
 #   4. After step 5 (Docker), log out and SSH back in before continuing.
 #
 #   You can re-run any step safely — they're idempotent.
+#
+#   Dry run (test the flow without executing anything):
+#      ./setup.sh --dry-run
+#   Prints what each step *would* run (sudo/sg/curl/rsync/tailscale up/down)
+#   without actually changing system state. Read-only queries (hostname,
+#   tailscale ip, docker ps) still execute so display logic works. From the
+#   laptop, --dry-run propagates across the SSH hop to the server.
 
 set -e
 
@@ -38,6 +45,33 @@ ok()   { echo -e "  ${GREEN}✓${NC} $1"; }
 fail() { echo -e "  ${RED}✗${NC} $1"; }
 info() { echo -e "  ${DIM}$1${NC}"; }
 warn() { echo -e "  ${YELLOW}!!${NC} $1"; }
+
+# ── Dry-run mode ─────────────────────────────────────
+# Invoked as `./setup.sh --dry-run`. Shims the main state-changing entry
+# points (sudo, sg, curl, ssh, tailscale up/down) with echo-only stubs, so
+# you can walk the menu and see which commands would run without actually
+# executing them. Read-only queries (hostname, awk, docker ps, tailscale ip)
+# still work, so display logic is exercised normally.
+DRY_RUN=0
+if [[ "${1:-}" == "--dry-run" ]]; then
+    DRY_RUN=1
+    shift
+fi
+
+if [[ "$DRY_RUN" == "1" ]]; then
+    _dry() { echo -e "    ${YELLOW}[dry-run]${NC} ${DIM}$*${NC}" >&2; return 0; }
+    sudo()  { _dry "sudo $*"; }
+    sg()    { _dry "sg $*"; }
+    curl()  { _dry "curl $*"; }
+    rsync() { _dry "rsync $*"; }
+    # tailscale: leave read-only queries (`ip`, `status`) alone, stub state changes.
+    tailscale() {
+        case "${1:-}" in
+            ip|status) command tailscale "$@" 2>/dev/null || echo "" ;;
+            *)         _dry "tailscale $*" ;;
+        esac
+    }
+fi
 
 # Run a step with clear screen and success/fail banner
 run_step() {
@@ -71,7 +105,9 @@ _on_server() {
     else
         info "This step runs on the server. Connecting via SSH..."
         echo ""
-        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && ./setup.sh --run $step"
+        local dry=""
+        [[ "$DRY_RUN" == "1" ]] && dry="--dry-run "
+        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && ./setup.sh ${dry}--run $step"
     fi
 }
 
@@ -96,6 +132,9 @@ show_menu() {
     echo -e "${BOLD}========================================"
     echo -e "  Federver — Fedora XFCE Server Manager"
     echo -e "  Running from: ${YELLOW}${location}${NC}"
+    if [[ "$DRY_RUN" == "1" ]]; then
+        echo -e "  ${YELLOW}DRY RUN${NC} ${DIM}— no commands will be executed${NC}"
+    fi
     echo -e "${BOLD}========================================${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Initial setup (run once, in order) --${NC}"
@@ -774,15 +813,30 @@ _services_status() {
     fi
     sg docker -c "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'" 2>/dev/null | sed 's/^/    /'
     echo ""
-    local IP
+    local IP HOST TS_IP has_adguard=0
     IP=$(hostname -I | awk '{print $1}')
-    echo -e "  ${BOLD}Service URLs${NC}"
+    HOST=$(hostname)
+    TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
+    if sg docker -c "docker ps --format '{{.Names}}'" 2>/dev/null | grep -q '^adguard$'; then
+        has_adguard=1
+    fi
+
+    echo -e "  ${BOLD}Service URLs (local network)${NC}"
     echo -e "    Immich:       ${BLUE}http://$IP:2283${NC}"
     echo -e "    Navidrome:    ${BLUE}http://$IP:4533${NC}"
     echo -e "    FileBrowser:  ${BLUE}http://$IP:8080${NC}"
     echo -e "    Uptime Kuma:  ${BLUE}http://$IP:3001${NC}"
-    if sg docker -c "docker ps --format '{{.Names}}'" 2>/dev/null | grep -q '^adguard$'; then
-        echo -e "    AdGuard:      ${BLUE}http://$IP${NC}"
+    [[ "$has_adguard" == 1 ]] && echo -e "    AdGuard:      ${BLUE}http://$IP${NC}"
+
+    if [[ -n "$TS_IP" ]]; then
+        echo ""
+        echo -e "  ${BOLD}Service URLs (remote via Tailscale)${NC}"
+        echo -e "    Immich:       ${BLUE}http://$HOST:2283${NC}"
+        echo -e "    Navidrome:    ${BLUE}http://$HOST:4533${NC}"
+        echo -e "    FileBrowser:  ${BLUE}http://$HOST:8080${NC}"
+        echo -e "    Uptime Kuma:  ${BLUE}http://$HOST:3001${NC}"
+        [[ "$has_adguard" == 1 ]] && echo -e "    AdGuard:      ${BLUE}http://$HOST${NC}"
+        echo -e "    ${DIM}(MagicDNS resolves '$HOST' on any Tailscale device — or use IP $TS_IP)${NC}"
     fi
 }
 

@@ -104,6 +104,8 @@ One script sets up everything from a fresh Fedora XFCE install. Run from either 
 
 Both commands work from anywhere on the server. Clone the repo on **both laptop and server** — several features (file sync, backups, password reset) run from the laptop and SSH into the server. First run `federver` → step 1 to register the commands.
 
+**Dry run mode:** `./setup.sh --dry-run` walks the menu and prints each state-changing command instead of executing it. Safe way to review the flow of any option without touching the system. Propagates across the laptop→server SSH hop.
+
 ### `fedvpn` — WireGuard VPN client (runs on laptop)
 
 ```

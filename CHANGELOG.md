@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- **`./setup.sh --dry-run`** mode. Walks the full menu and prints each state-changing command (`sudo ...`, `sg docker ...`, `curl ...`, `rsync ...`, `tailscale up|down`) instead of executing it. Read-only queries (hostname, `tailscale ip`, `docker ps`) still run so the display logic works. The dry-run flag propagates across the `_on_server` SSH hop, so running `./setup.sh --dry-run` from the laptop still gives you a safe walkthrough of any server-side option. Menu header shows a "DRY RUN" banner whenever active.
+- **`federver` → 7 → 1 (Services status)** now also shows the Tailscale / MagicDNS URL list alongside the LAN URL list when Tailscale is up. Fixes the missing `http://federver:PORT` addresses that used to only appear in the top-level Status screen.
 - **Immich `i` letter shortcut** in the `federver` main menu. Opens the `privcloud` CLI directly (via SSH when run from the laptop). Replaces the static "Run: privcloud ..." note that previously sat under the Immich section — now it's an actual menu action like `s`, `p`, `r`.
 - **`federver` → 6 (Manage firewall)** gains list/status/add/remove/defaults submenu. Previously a single "configure firewall" action that re-applied a hard-coded set. Now you can open/close arbitrary ports or services without editing the script.
 - **`federver` → 7 (Manage services)** gains status/start/stop/restart/logs/redeploy submenu covering every Docker container (Immich + Navidrome + FileBrowser + Uptime Kuma + Watchtower + AdGuard). Deploy is option 6 in the submenu, still the fresh-install flow.

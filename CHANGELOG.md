@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- **Immich `i` letter shortcut** in the `federver` main menu. Opens the `privcloud` CLI directly (via SSH when run from the laptop). Replaces the static "Run: privcloud ..." note that previously sat under the Immich section — now it's an actual menu action like `s`, `p`, `r`.
+- **`federver` → 6 (Manage firewall)** gains list/status/add/remove/defaults submenu. Previously a single "configure firewall" action that re-applied a hard-coded set. Now you can open/close arbitrary ports or services without editing the script.
+- **`federver` → 7 (Manage services)** gains status/start/stop/restart/logs/redeploy submenu covering every Docker container (Immich + Navidrome + FileBrowser + Uptime Kuma + Watchtower + AdGuard). Deploy is option 6 in the submenu, still the fresh-install flow.
+- **`federver` → 10 (Manage Tailscale)** detects existing installs and opens a status/up/down/re-auth submenu. Fresh installs still run the original guided flow. Shows the current tailnet IP, MagicDNS hostname, and peer list.
+- **`save to pass`** now also saves `/opt/adguard/conf/AdGuardHome.yaml` under `privcloud/adguard/config`. Preserves the AdGuard admin user + bcrypt password hash, custom filter lists, and client settings across restores.
 - **Install AdGuard Home** option (`federver` → `12`). Network-wide DNS ad/tracker blocker as a standalone Docker container with `--network=host`, `--restart=unless-stopped`, and persistent volumes under `/opt/adguard`. Handles the systemd-resolved stub-listener conflict on port 53 automatically (drops `DNSStubListener=no` into a `resolved.conf.d` override), opens the firewall for 53/udp, 53/tcp, 80/tcp, walks the user through the manual setup wizard on port 3000, then closes 3000 once the admin UI moves to port 80. Detects Tailscale and prints exact click-by-click steps to set the tailnet global nameserver to federver's tailnet IP with "Override local DNS" on — the one routing path that reliably covers laptops + iPhones at home and roaming. (Ziggo Connect Box DHCP DNS overrides, manual per-device DNS on Linux, and iOS Wi-Fi DNS overrides were all evaluated and rejected — Ziggo firmware rejects LAN IPs, Linux leaks via IPv6 router advertisements, iOS bypasses via Private Relay.)
 - WireGuard **Remove peer** option in `setup.sh` → `11`. Lists current peers by name, pick a number, confirms, deletes the `[Peer]` block from `wg0.conf` and the client `.conf`, then hot-reloads. Closes the gap where revoking a lost device required a full reinstall.
 - Storage: separate **Change Immich location** option (`federver` → `13` → `6`). Immich paths are now independent from FileBrowser and Navidrome — changing one never affects the others.
@@ -10,6 +15,7 @@
 - New `MUSIC_LOCATION` env var for Navidrome music library path.
 
 ### Changed
+- **Menu: existing entries absorbed new capabilities instead of adding top-level options.** Rather than growing the main menu with separate "manage docker", "manage firewall", "manage tailscale" entries, each existing option now opens a submenu when re-run. Follows the same pattern `11 Install WireGuard` and `13 Manage storage` already used. Top menu stays the same size; functionality roughly triples.
 - **Location-aware routing.** Every menu option now runs on the right machine automatically. Server commands (3–14, r, a) SSH into the server when run from the laptop. Laptop commands (2, 15, 16, p) warn if run from the server. Status works from both. No more "wrong machine" mistakes.
 - Menu header shows **Running from: laptop** or **Running from: server** based on hostname.
 - Status fetches server data via SSH when run from the laptop — shows real hostname, IPs, data paths, containers, and disk instead of laptop info.

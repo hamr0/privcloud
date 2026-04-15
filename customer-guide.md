@@ -107,26 +107,26 @@ Dedicated always-on machine running Immich + music streaming + file management +
   5)  Install Docker                        ← log out & SSH back in after
 
   -- Services --
-  6)  Configure firewall
-  7)  Deploy services                       ← Immich, Navidrome, FileBrowser, Watchtower, Uptime Kuma
+  6)  Manage firewall                       ← status, add/remove ports, defaults
+  7)  Manage services                       ← deploy, status, start/stop/restart, logs
   8)  Setup backups + disk monitoring
   9)  Configure log rotation
 
   -- Extras (optional, run anytime) --
-  10) Install Tailscale                     ← remote access VPN
+  10) Manage Tailscale                      ← install, status, up/down
   11) Install WireGuard                     ← full VPN, route all traffic
   12) Install AdGuard Home                  ← DNS ad blocker, uses Tailscale
   13) Manage storage                        ← USB drives, media/data/Immich paths
   14) Remote desktop                        ← access XFCE desktop via RDP
 
   -- Immich photo management --
-      Run: privcloud [start|stop|status|update|backup]
+  i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools (from laptop, exit SSH first) --
   15) Sync files                          ← upload, download, or delete files
   16) Save to pass                        ← from laptop, backup everything to pass
 
-  s)  Status     p)  Power     r)  Reset password     a)  Run all (3-9)     0)  Exit
+  s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-9)   0)  Exit
 ```
 
 ### From Immich (the photo server)
@@ -617,16 +617,16 @@ federver
 
 **Step 2 (from laptop, not SSH):** Clone privcloud on the laptop too (`git clone https://github.com/hamr0/privcloud.git`). Run `federver` → 2. Copies SSH key, disables password login. Back up the key in `pass`. Several features (file sync, backups, password reset) run from the laptop and SSH into the server — both machines need the repo.
 
-**Steps 3-11:** Run `federver` from either machine — server commands auto-SSH to the server when run from the laptop. Go through each step:
+**Steps 3-9 + Extras:** Run `federver` from either machine — server commands auto-SSH to the server when run from the laptop. Go through each step:
 
 - **3-4:** System update + auto-updates (userspace security only — kernel is excluded so the server never auto-reboots into an untested kernel while you're away; update kernels manually with `sudo dnf upgrade kernel` + reboot when you're home)
 - **5:** Docker — **log out and SSH back in after this** (docker group)
-- **6:** Firewall — opens service ports locally, trusts Tailscale
-- **7:** Tailscale — create account at login.tailscale.com first, then approve the server. Install Tailscale on phone/laptop with same account.
-- **8:** Mount USB drive — plug in first, pick the partition (ignore nvme)
-- **9:** Deploy — asks for base data path, starts all services. Shows setup instructions for each service.
-- **10:** Backups — daily Immich DB dump at 3am
-- **11:** Log rotation — limits Docker logs to 10MB per container
+- **6:** Manage firewall → 4 (Apply defaults) — opens service ports locally, trusts Tailscale
+- **7:** Manage services → 6 (Deploy / redeploy) — asks for base data path, starts all services. Shows setup instructions for each service.
+- **8:** Backups — daily Immich DB dump at 3am
+- **9:** Log rotation — limits Docker logs to 10MB per container
+- **10:** Manage Tailscale → install — create account at login.tailscale.com first, then approve the server. Install Tailscale on phone/laptop with same account.
+- **13:** Manage storage → 2 (Mount USB drive) — plug in first, pick the partition (ignore nvme). Or skip: data lives on the internal drive.
 
 ### BIOS setup
 

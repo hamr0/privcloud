@@ -106,26 +106,26 @@ show_menu() {
     echo -e "  ${BOLD}5)${NC}  Install Docker                      ${YELLOW}← log out & SSH back in after${NC}"
     echo ""
     echo -e "  ${DIM}-- Services --${NC}"
-    echo -e "  ${BOLD}6)${NC}  Configure firewall"
-    echo -e "  ${BOLD}7)${NC}  Deploy services                     ${DIM}← Immich, Navidrome, FileBrowser, Watchtower, Uptime Kuma${NC}"
+    echo -e "  ${BOLD}6)${NC}  Manage firewall                     ${DIM}← status, add/remove ports, defaults${NC}"
+    echo -e "  ${BOLD}7)${NC}  Manage services                     ${DIM}← deploy, status, start/stop/restart, logs${NC}"
     echo -e "  ${BOLD}8)${NC}  Setup backups + disk monitoring"
     echo -e "  ${BOLD}9)${NC}  Configure log rotation"
     echo ""
     echo -e "  ${DIM}-- Extras (optional, run anytime) --${NC}"
-    echo -e "  ${BOLD}10)${NC} Install Tailscale                   ${DIM}← remote access VPN${NC}"
+    echo -e "  ${BOLD}10)${NC} Manage Tailscale                    ${DIM}← install, status, up/down${NC}"
     echo -e "  ${BOLD}11)${NC} Install WireGuard                   ${DIM}← full VPN, route all traffic${NC}"
     echo -e "  ${BOLD}12)${NC} Install AdGuard Home                ${DIM}← DNS ad blocker, uses Tailscale${NC}"
     echo -e "  ${BOLD}13)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
     echo -e "  ${BOLD}14)${NC} Remote desktop                      ${DIM}← access XFCE desktop via RDP${NC}"
     echo ""
     echo -e "  ${DIM}-- Immich photo management --${NC}"
-    echo -e "      ${DIM}Run: ${BOLD}privcloud${NC} ${DIM}[start|stop|status|update|backup]${NC}"
+    echo -e "  ${BOLD}i)${NC}  Immich (privcloud)                  ${DIM}← start/stop/status/update/backup${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Tools (from laptop, exit SSH first) --${NC}"
     echo -e "  ${BOLD}15)${NC} Sync files                          ${DIM}← upload, download, or delete files${NC}"
     echo -e "  ${BOLD}16)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
     echo ""
-    echo -e "  ${BOLD}s)${NC}  Status     ${BOLD}p)${NC}  Power     ${BOLD}r)${NC}  Reset password     ${BOLD}a)${NC}  Run all (3-9)     ${BOLD}0)${NC}  Exit"
+    echo -e "  ${BOLD}s)${NC}  Status     ${BOLD}i)${NC}  Immich     ${BOLD}p)${NC}  Power     ${BOLD}r)${NC}  Reset password     ${BOLD}a)${NC}  Run all (3-9)     ${BOLD}0)${NC}  Exit"
     echo ""
 }
 
@@ -257,39 +257,98 @@ step_docker() {
     echo -e "     ${BOLD}cd federver && ./setup.sh${NC}   (then pick step 6)"
 }
 
-step_firewall() {
-    info "Opens SSH + service ports on local network."
-    info "Tailscale trusted for remote access."
-    echo ""
-
-    sudo firewall-cmd --permanent --add-service=ssh
-    sudo firewall-cmd --permanent --add-port=2283/tcp   # Immich
-    sudo firewall-cmd --permanent --add-port=4533/tcp   # Navidrome
-    sudo firewall-cmd --permanent --add-port=8080/tcp   # FileBrowser
-    sudo firewall-cmd --permanent --add-port=3001/tcp   # Uptime Kuma
-
+_fw_defaults() {
+    info "Applying default firewall rules..."
+    sudo firewall-cmd --permanent --add-service=ssh > /dev/null
+    sudo firewall-cmd --permanent --add-port=2283/tcp > /dev/null   # Immich
+    sudo firewall-cmd --permanent --add-port=4533/tcp > /dev/null   # Navidrome
+    sudo firewall-cmd --permanent --add-port=8080/tcp > /dev/null   # FileBrowser
+    sudo firewall-cmd --permanent --add-port=3001/tcp > /dev/null   # Uptime Kuma
     sudo firewall-cmd --permanent --zone=trusted --add-interface=tailscale0 2>/dev/null || true
-
-    sudo firewall-cmd --reload
-    echo ""
-    ok "Firewall configured:"
-    echo -e "    ${GREEN}Local network:${NC} SSH, Immich (2283), Navidrome (4533), FileBrowser (8080), Uptime Kuma (3001)"
-    echo -e "    ${GREEN}Tailscale:${NC}     full access (remote)"
-    echo -e "    ${RED}Everything else:${NC} blocked"
+    sudo firewall-cmd --reload > /dev/null
+    ok "Defaults applied: SSH, Immich (2283), Navidrome (4533), FileBrowser (8080), Uptime Kuma (3001), Tailscale trusted."
 }
 
-step_tailscale() {
-    info "Tailscale lets you access this server from anywhere (phone, laptop)"
-    info "without port forwarding. Like a private VPN."
+_fw_status() {
     echo ""
+    echo -e "  ${BOLD}Firewall status${NC}"
+    echo ""
+    sudo firewall-cmd --list-all | sed 's/^/    /'
+}
 
-    # Install
+_fw_add() {
+    echo ""
+    read -p "  Port (e.g. 8443) or service (e.g. https): " what
+    [[ -z "$what" ]] && { fail "Nothing entered."; return 1; }
+    if [[ "$what" =~ ^[0-9]+(/tcp|/udp)?$ ]]; then
+        [[ "$what" != */* ]] && what="$what/tcp"
+        sudo firewall-cmd --permanent --add-port="$what" && sudo firewall-cmd --reload > /dev/null \
+            && ok "Opened port $what."
+    else
+        sudo firewall-cmd --permanent --add-service="$what" && sudo firewall-cmd --reload > /dev/null \
+            && ok "Added service $what."
+    fi
+}
+
+_fw_remove() {
+    _fw_status
+    echo ""
+    read -p "  Port (e.g. 8443/tcp) or service (e.g. https) to remove: " what
+    [[ -z "$what" ]] && { fail "Nothing entered."; return 1; }
+    if [[ "$what" =~ ^[0-9]+(/tcp|/udp)$ ]]; then
+        sudo firewall-cmd --permanent --remove-port="$what" && sudo firewall-cmd --reload > /dev/null \
+            && ok "Closed port $what."
+    else
+        sudo firewall-cmd --permanent --remove-service="$what" && sudo firewall-cmd --reload > /dev/null \
+            && ok "Removed service $what."
+    fi
+}
+
+step_firewall() {
+    echo -e "  ${BOLD}1)${NC} Status / list all"
+    echo -e "  ${BOLD}2)${NC} Add port or service"
+    echo -e "  ${BOLD}3)${NC} Remove port or service"
+    echo -e "  ${BOLD}4)${NC} Apply defaults                ${DIM}(SSH + service ports + trust Tailscale)${NC}"
+    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Choose: " fw_choice
+    case $fw_choice in
+        1) _fw_status ;;
+        2) _fw_add ;;
+        3) _fw_remove ;;
+        4) _fw_defaults ;;
+        0|*) return ;;
+    esac
+}
+
+_ts_status() {
+    echo ""
+    if ! command -v tailscale &>/dev/null; then
+        fail "Tailscale not installed."
+        return 1
+    fi
+    local ts_ip
+    ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+    echo -e "  ${BOLD}Tailscale status${NC}"
+    if [[ -n "$ts_ip" ]]; then
+        echo -e "    State:  ${GREEN}connected${NC}"
+        echo -e "    IP:     ${BOLD}$ts_ip${NC}"
+        echo -e "    Host:   ${BOLD}$(hostname)${NC} ${DIM}(MagicDNS)${NC}"
+    else
+        echo -e "    State:  ${RED}not connected${NC}"
+    fi
+    echo ""
+    tailscale status 2>/dev/null | sed 's/^/    /' || true
+}
+
+_ts_up()   { info "Connecting..."; sudo tailscale up && ok "Connected."; }
+_ts_down() { info "Disconnecting..."; sudo tailscale down && ok "Disconnected."; }
+
+_ts_install() {
     info "Installing Tailscale..."
     curl -fsSL https://tailscale.com/install.sh | sh
     sudo systemctl enable --now tailscaled
     ok "Tailscale installed."
-
-    # Guide: create account
     echo ""
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "  ${YELLOW}ACTION NEEDED${NC}"
@@ -302,7 +361,6 @@ step_tailscale() {
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     read -p "  Press Enter when ready..." -r
 
-    # Authenticate
     echo ""
     info "Authenticating this server with Tailscale..."
     info "A URL will appear below. Open it in your browser and approve."
@@ -310,7 +368,6 @@ step_tailscale() {
     sudo tailscale up
     echo ""
 
-    # Verify
     local ts_ip
     ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
     if [[ -n "$ts_ip" ]]; then
@@ -334,6 +391,33 @@ step_tailscale() {
     else
         fail "Tailscale not connected. Run 'sudo tailscale up' manually."
     fi
+}
+
+step_tailscale() {
+    if ! command -v tailscale &>/dev/null; then
+        info "Tailscale lets you access this server from anywhere (phone, laptop)"
+        info "without port forwarding. Like a private VPN."
+        echo ""
+        _ts_install
+        return
+    fi
+
+    _ts_status
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Refresh status"
+    echo -e "  ${BOLD}2)${NC} Connect              ${DIM}<- tailscale up${NC}"
+    echo -e "  ${BOLD}3)${NC} Disconnect           ${DIM}<- tailscale down${NC}"
+    echo -e "  ${BOLD}4)${NC} Re-authenticate      ${DIM}<- new login URL${NC}"
+    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Choose: " ts_choice
+    case $ts_choice in
+        1) _ts_status ;;
+        2) _ts_up ;;
+        3) _ts_down ;;
+        4) _ts_install ;;
+        0|*) return ;;
+    esac
 }
 
 step_storage() {
@@ -678,6 +762,88 @@ _storage_change_immich() {
     ok "Done. Immich now uses: $new_base"
     echo ""
     warn "If you moved existing data, verify with: privcloud status"
+}
+
+_services_status() {
+    echo ""
+    echo -e "  ${BOLD}Running containers${NC}"
+    echo ""
+    if ! command -v docker &>/dev/null; then
+        fail "Docker not installed."
+        return 1
+    fi
+    sg docker -c "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'" 2>/dev/null | sed 's/^/    /'
+    echo ""
+    local IP
+    IP=$(hostname -I | awk '{print $1}')
+    echo -e "  ${BOLD}Service URLs${NC}"
+    echo -e "    Immich:       ${BLUE}http://$IP:2283${NC}"
+    echo -e "    Navidrome:    ${BLUE}http://$IP:4533${NC}"
+    echo -e "    FileBrowser:  ${BLUE}http://$IP:8080${NC}"
+    echo -e "    Uptime Kuma:  ${BLUE}http://$IP:3001${NC}"
+    if sg docker -c "docker ps --format '{{.Names}}'" 2>/dev/null | grep -q '^adguard$'; then
+        echo -e "    AdGuard:      ${BLUE}http://$IP${NC}"
+    fi
+}
+
+_services_lifecycle() {
+    local action="$1"   # start | stop | restart
+    local SCRIPT_DIR
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    info "${action^} all privcloud services..."
+    cd "$SCRIPT_DIR"
+    case "$action" in
+        start)   sg docker -c "docker compose up -d" ;;
+        stop)    sg docker -c "docker compose stop" ;;
+        restart) sg docker -c "docker compose restart" ;;
+    esac
+    ok "${action^} complete."
+}
+
+_services_logs() {
+    echo ""
+    echo -e "  ${BOLD}Running containers:${NC}"
+    local names
+    names=$(sg docker -c "docker ps --format '{{.Names}}'" 2>/dev/null)
+    if [[ -z "$names" ]]; then
+        fail "No containers running."
+        return 1
+    fi
+    local idx=1
+    declare -a name_arr
+    while IFS= read -r n; do
+        echo -e "    ${BOLD}$idx)${NC} $n"
+        name_arr[$idx]="$n"
+        idx=$((idx + 1))
+    done <<< "$names"
+    echo ""
+    read -p "  Which container? " c
+    local name="${name_arr[$c]}"
+    [[ -z "$name" ]] && { fail "Invalid choice."; return 1; }
+    echo ""
+    info "Last 50 lines from $name (Ctrl+C to exit follow mode)..."
+    sg docker -c "docker logs --tail 50 -f '$name'" || true
+}
+
+step_services() {
+    echo -e "  ${BOLD}1)${NC} Status                     ${DIM}<- running containers + URLs${NC}"
+    echo -e "  ${BOLD}2)${NC} Start all"
+    echo -e "  ${BOLD}3)${NC} Stop all"
+    echo -e "  ${BOLD}4)${NC} Restart all"
+    echo -e "  ${BOLD}5)${NC} Logs for a container"
+    echo -e "  ${BOLD}6)${NC} Deploy / redeploy           ${DIM}<- first install or change data paths${NC}"
+    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Choose: " svc_choice
+    case $svc_choice in
+        1) _services_status ;;
+        2) _services_lifecycle start ;;
+        3) _services_lifecycle stop ;;
+        4) _services_lifecycle restart ;;
+        5) _services_logs ;;
+        6) step_deploy ;;
+        0|*) return ;;
+    esac
 }
 
 step_deploy() {
@@ -1248,6 +1414,20 @@ PersistentKeepalive = 25"
     echo -e "  ${BOLD}Phone:${NC}  WireGuard app → scan QR"
     echo -e "  ${BOLD}Linux:${NC}  ${BOLD}fedvpn${NC} → 1 (setup) → paste config → 2 (connect)"
     echo -e "  ${BOLD}Mac:${NC}    WireGuard app (brew or App Store) → import config"
+}
+
+step_immich() {
+    if _is_server; then
+        if command -v privcloud &>/dev/null; then
+            privcloud
+        else
+            SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+            "$SCRIPT_DIR/privcloud"
+        fi
+    else
+        info "Opening Immich manager on the server via SSH..."
+        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && ./privcloud"
+    fi
 }
 
 step_adguard() {
@@ -1960,6 +2140,8 @@ for f in $(sudo find /etc/wireguard -name '*.conf' ! -name 'wg0.conf' 2>/dev/nul
     sudo cat "$f"
     echo "END_PEER_FILE"
 done
+echo "---ADGUARD---"
+sudo cat /opt/adguard/conf/AdGuardHome.yaml 2>/dev/null || true
 echo "---END---"
 FETCH
 )
@@ -2038,7 +2220,7 @@ Uptime Kuma:  http://$TS_IP:3001"
     fi
 
     # WireGuard peer configs
-    local wg_peers=$(echo "$server_data" | sed -n '/^---WG_PEERS---$/,/^---END---$/p' | sed '1d;$d')
+    local wg_peers=$(echo "$server_data" | sed -n '/^---WG_PEERS---$/,/^---ADGUARD---$/p' | sed '1d;$d')
     if [[ -n "$wg_peers" ]]; then
         local current_peer=""
         local peer_conf=""
@@ -2061,6 +2243,14 @@ $line"
         done <<< "$wg_peers"
     fi
 
+    # AdGuard Home config (contains admin user + bcrypt password hash + filter config)
+    local adguard_data=$(echo "$server_data" | sed -n '/^---ADGUARD---$/,/^---END---$/p' | sed '1d;$d')
+    if [[ -n "$adguard_data" ]]; then
+        echo ""
+        info "AdGuard config..."
+        echo "$adguard_data" | pass insert -m -f privcloud/adguard/config 2>/dev/null && ok "privcloud/adguard/config"
+    fi
+
     echo ""
     ok "All saved to pass."
     echo ""
@@ -2075,7 +2265,7 @@ run_all() {
     step_update
     step_autoupdates
     step_docker
-    step_firewall
+    _fw_defaults
     step_deploy
     step_backup
     step_logrotation
@@ -2181,11 +2371,11 @@ while true; do
         3)  run_step "[3] System update" "_on_server step_update" ;;
         4)  run_step "[4] Auto-updates" "_on_server step_autoupdates" ;;
         5)  run_step "[5] Install Docker" "_on_server step_docker" ;;
-        6)  run_step "[6] Configure firewall" "_on_server step_firewall" ;;
-        7)  run_step "[7] Deploy services" "_on_server step_deploy" ;;
+        6)  run_step "[6] Manage firewall" "_on_server step_firewall" ;;
+        7)  run_step "[7] Manage services" "_on_server step_services" ;;
         8)  run_step "[8] Setup backups + disk monitoring" "_on_server step_backup" ;;
         9)  run_step "[9] Log rotation" "_on_server step_logrotation" ;;
-        10) run_step "[10] Install Tailscale" "_on_server step_tailscale" ;;
+        10) run_step "[10] Manage Tailscale" "_on_server step_tailscale" ;;
         11) run_step "[11] Install WireGuard" "_on_server step_wireguard" ;;
         12) run_step "[12] Install AdGuard Home" "_on_server step_adguard" ;;
         13) run_step "[13] Manage storage" "_on_server step_storage" ;;
@@ -2193,6 +2383,7 @@ while true; do
         15) run_step "[15] Sync files" "_on_laptop step_sync" ;;
         16) run_step "[16] Save to pass" "_on_laptop step_save_to_pass" ;;
         s)  run_step "[s] Status" step_status ;;
+        i)  run_step "[i] Immich (privcloud)" step_immich ;;
         p)  run_step "[p] Power management" "_on_laptop step_power" ;;
         r)  run_step "[r] Reset password" "_on_server step_reset_password" ;;
         a)  run_step "Run all (3-9)" "_on_server run_all" ;;

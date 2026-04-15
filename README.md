@@ -65,26 +65,26 @@ One script sets up everything from a fresh Fedora XFCE install. Run from either 
   5)  Install Docker                        ← log out & SSH back in after
 
   -- Services --
-  6)  Configure firewall
-  7)  Deploy services                       ← Immich, Navidrome, FileBrowser, Watchtower, Uptime Kuma
+  6)  Manage firewall                       ← status, add/remove ports, defaults
+  7)  Manage services                       ← deploy, status, start/stop/restart, logs
   8)  Setup backups + disk monitoring
   9)  Configure log rotation
 
   -- Extras (optional, run anytime) --
-  10) Install Tailscale                     ← remote access VPN
+  10) Manage Tailscale                      ← install, status, up/down
   11) Install WireGuard                     ← full VPN, route all traffic
   12) Install AdGuard Home                  ← DNS ad blocker, uses Tailscale
   13) Manage storage                        ← USB drives, media/data/Immich paths
   14) Remote desktop                        ← access XFCE desktop via RDP
 
   -- Immich photo management --
-      Run: privcloud [start|stop|status|update|backup]
+  i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools (from laptop, exit SSH first) --
   15) Sync files                          ← upload, download, or delete files
   16) Save to pass                        ← from laptop, backup everything to pass
 
-  s)  Status     p)  Power     r)  Reset password     a)  Run all (3-9)     0)  Exit
+  s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-9)   0)  Exit
 ```
 
 ### `privcloud` — Immich photo manager

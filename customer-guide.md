@@ -971,7 +971,7 @@ pass show privcloud/ssh/private_key        # SSH key
 |------|-----|-------|
 | Service health | Uptime Kuma monitors | `http://<server-ip>:3001` |
 | Server online | Ping monitor in Uptime Kuma | Type: Ping → server IP |
-| Disk space | Hourly cron + Kuma Push | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
+| Disk space | Every-5-min cron + Kuma Push | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
 | Backup status | Check log | `cat /var/log/immich-backup.log` |
 | Container errors | `privcloud status` | Shows recent errors per container |
 
@@ -986,7 +986,7 @@ pass show privcloud/ssh/private_key        # SSH key
 
 Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 
-**Disk space alert:** Step 11 in `federver` sets this up automatically. It asks you to create a Push monitor in Uptime Kuma, you paste the URL, and it configures a script that sends `status=up` every hour when disk is OK, or `status=down` when any mount exceeds 85%. Uptime Kuma then alerts you via Telegram/email if configured.
+**Disk space alert:** Step 8 in `federver` sets this up automatically. It walks you through creating a Push monitor in Uptime Kuma (Heartbeat Interval `360`, Retry Interval `60`, Max Retries `2`), you paste the URL back into the terminal, and it installs `/usr/local/bin/disk-check.sh` with a 5-minute cron. The script sends `status=up` when all mounts are under 85%, or `status=down` when any mount exceeds 85%. The first heartbeat is sent immediately at install time so the Kuma monitor goes green before you even leave the step. Uptime Kuma then alerts you via Telegram/email if configured.
 
 ### Periodic (manual)
 

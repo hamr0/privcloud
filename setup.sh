@@ -2089,6 +2089,7 @@ step_status() {
             echo "@@DSTATS_START@@"
             docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null
             echo "@@DSTATS_END@@"
+            echo "@@USB_DISKS@@$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}' | paste -sd'|' -)"
             echo "@@DISK_START@@"
             df -h / /home /mnt/data 2>/dev/null | tail -n +2 | awk '!seen[$1]++'
             echo "@@DISK_END@@"
@@ -2107,6 +2108,7 @@ REMOTE_STATUS
         MEM=$(echo "$server_info" | sed -n '/@@MEM_START@@/,/@@MEM_END@@/p' | grep -v '@@MEM')
         CONTAINERS=$(echo "$server_info" | sed -n '/@@CONTAINERS_START@@/,/@@CONTAINERS_END@@/p' | grep -v '@@CONTAINERS')
         DSTATS=$(echo "$server_info" | sed -n '/@@DSTATS_START@@/,/@@DSTATS_END@@/p' | grep -v '@@DSTATS')
+        USB_DISKS=$(echo "$server_info" | grep '@@USB_DISKS@@' | sed 's/@@USB_DISKS@@//')
         DISK=$(echo "$server_info" | sed -n '/@@DISK_START@@/,/@@DISK_END@@/p' | grep -v '@@DISK')
     else
         HOSTNAME=$(hostname)
@@ -2122,6 +2124,7 @@ REMOTE_STATUS
         MEM=$(free -h 2>/dev/null | awk '/^Mem:/{print "mem|"$2"|"$3"|"$7} /^Swap:/{print "swap|"$2"|"$3}')
         CONTAINERS=$(docker ps --format '{{.Names}}|{{.Status}}' 2>/dev/null)
         DSTATS=$(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null)
+        USB_DISKS=$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}' | paste -sd'|' -)
         DISK=$(df -h / /home /mnt/data 2>/dev/null | tail -n +2 | awk '!seen[$1]++')
     fi
 
@@ -2150,7 +2153,39 @@ REMOTE_STATUS
     fi
 
     echo -e "  ${BOLD}Disk${NC}"
-    echo "$DISK" | awk '{printf "    %-20s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,$6}'
+    # Split into internal vs usb. USB_DISKS is a |-joined list of base disk
+    # names (e.g. "sda|sdb"); a df row is USB if its device starts /dev/<name>
+    # where <name> is in that list.
+    local internal_rows=""
+    local usb_rows=""
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local dev
+        dev=$(echo "$line" | awk '{print $1}')
+        local is_usb=0
+        if [[ -n "$USB_DISKS" ]]; then
+            local d
+            IFS='|' read -ra _usb_arr <<< "$USB_DISKS"
+            for d in "${_usb_arr[@]}"; do
+                [[ -z "$d" ]] && continue
+                if [[ "$dev" == "/dev/${d}"* ]]; then is_usb=1; break; fi
+            done
+        fi
+        if [[ "$is_usb" == 1 ]]; then
+            usb_rows+="$line"$'\n'
+        else
+            internal_rows+="$line"$'\n'
+        fi
+    done <<< "$DISK"
+
+    if [[ -n "$internal_rows" ]]; then
+        echo -e "    ${DIM}Internal${NC}"
+        echo -n "$internal_rows" | awk '{printf "      %-20s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,$6}'
+    fi
+    if [[ -n "$usb_rows" ]]; then
+        echo -e "    ${DIM}USB${NC}"
+        echo -n "$usb_rows" | awk '{printf "      %-20s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,$6}'
+    fi
     echo ""
 
     # Containers + per-container CPU/MEM from docker stats

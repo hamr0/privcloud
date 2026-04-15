@@ -1682,7 +1682,7 @@ step_adguard() {
     else
         warn "Tailscale not installed — install it first (step 10)."
         echo -e "  AdGuard is running but no devices are pointed at it yet."
-        echo -e "  After installing Tailscale, re-run this step (14) for the DNS setup guide."
+        echo -e "  After installing Tailscale, re-run this step (12) for the DNS setup guide."
     fi
 
     echo ""

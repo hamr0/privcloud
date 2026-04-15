@@ -114,10 +114,10 @@ Dedicated always-on machine running Immich + music streaming + file management +
 
   -- Extras (optional, run anytime) --
   10) Manage Tailscale                      ← install, status, up/down
-  11) Install WireGuard                     ← full VPN, route all traffic
-  12) Install AdGuard Home                  ← DNS ad blocker, uses Tailscale
+  11) Manage WireGuard                      ← install, peers, QR, remove
+  12) Manage AdGuard                        ← install DNS ad blocker, uses Tailscale
   13) Manage storage                        ← USB drives, media/data/Immich paths
-  14) Remote desktop                        ← access XFCE desktop via RDP
+  14) Manage remote desktop                 ← install, access XFCE via RDP
 
   -- Immich photo management --
   i)  Immich (privcloud)                    ← start/stop/status/update/backup

@@ -1725,8 +1725,15 @@ ADGUARDEOF
     if [[ -n "$TS_IP" ]]; then
         _adguard_tailscale_guide "$TS_IP"
     else
-        warn "No Tailscale — you'll need to set DNS manually on each device."
-        echo -e "  Point each device's DNS to: ${BOLD}$IP${NC}"
+        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "  ${YELLOW}AdGuard is running, but no devices are pointed at it yet.${NC}"
+        echo ""
+        echo -e "  ${BOLD}Easiest path:${NC}"
+        echo -e "    1. Run ${BOLD}federver → 10${NC} to install Tailscale"
+        echo -e "    2. Re-run ${BOLD}federver → 12${NC} — this time it'll detect Tailscale"
+        echo -e "       and print the admin-console steps to route all your devices"
+        echo -e "       through AdGuard in one shot."
+        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     fi
 
     echo ""

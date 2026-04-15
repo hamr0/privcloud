@@ -1109,20 +1109,23 @@ step_deploy() {
 }
 
 _syncthing_device_id() {
-    # First-run Syncthing needs a few seconds to generate its cert and
-    # become ready for `docker exec`. Poll and validate the output matches
-    # the real Device ID format (8 groups of 7 uppercase alphanumeric chars
-    # separated by 7 hyphens). syncthing prints warnings to stdout when
-    # the cert isn't ready yet, so the grep silently drops anything that
-    # isn't a valid-shaped ID.
-    local attempt id
+    # Read the server's Device ID. Syncthing 1.x has `syncthing --device-id`,
+    # Syncthing 2.x restructured the CLI and that flag was removed, so we
+    # try several variants in order and extract the ID pattern from
+    # whichever one produces usable output. grep -oE matches the ID
+    # wherever it appears (yaml/json/plain), head -1 takes the first.
+    local attempt id cmd
     for attempt in $(seq 1 20); do
-        id=$(sudo docker exec syncthing syncthing --device-id 2>/dev/null \
-             | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$' | head -1 || echo "")
-        if [[ -n "$id" ]]; then
-            echo "$id"
-            return 0
-        fi
+        for cmd in \
+            'syncthing --device-id' \
+            'syncthing show device-id' \
+            'syncthing cli show system' \
+            'cat /var/syncthing/config/config.xml'
+        do
+            id=$(sudo docker exec syncthing sh -c "$cmd" 2>/dev/null \
+                 | grep -oE '[A-Z0-9]{7}(-[A-Z0-9]{7}){7}' | head -1 || echo "")
+            [[ -n "$id" ]] && { echo "$id"; return 0; }
+        done
         sleep 1
     done
     echo ""

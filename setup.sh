@@ -114,9 +114,9 @@ show_menu() {
     echo -e "  ${DIM}-- Extras (optional, run anytime) --${NC}"
     echo -e "  ${BOLD}10)${NC} Install Tailscale                   ${DIM}← remote access VPN${NC}"
     echo -e "  ${BOLD}11)${NC} Install WireGuard                   ${DIM}← full VPN, route all traffic${NC}"
-    echo -e "  ${BOLD}12)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
-    echo -e "  ${BOLD}13)${NC} Remote desktop                      ${DIM}← access XFCE desktop via RDP${NC}"
-    echo -e "  ${BOLD}14)${NC} Install AdGuard Home                ${DIM}← network-wide DNS ad blocker${NC}"
+    echo -e "  ${BOLD}12)${NC} Install AdGuard Home                ${DIM}← DNS ad blocker, uses Tailscale${NC}"
+    echo -e "  ${BOLD}13)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
+    echo -e "  ${BOLD}14)${NC} Remote desktop                      ${DIM}← access XFCE desktop via RDP${NC}"
     echo ""
     echo -e "  ${DIM}-- Immich photo management --${NC}"
     echo -e "      ${DIM}Run: ${BOLD}privcloud${NC} ${DIM}[start|stop|status|update|backup]${NC}"
@@ -2187,9 +2187,9 @@ while true; do
         9)  run_step "[9] Log rotation" "_on_server step_logrotation" ;;
         10) run_step "[10] Install Tailscale" "_on_server step_tailscale" ;;
         11) run_step "[11] Install WireGuard" "_on_server step_wireguard" ;;
-        12) run_step "[12] Manage storage" "_on_server step_storage" ;;
-        13) run_step "[13] Remote desktop" "_on_server step_remotedesktop" ;;
-        14) run_step "[14] Install AdGuard Home" "_on_server step_adguard" ;;
+        12) run_step "[12] Install AdGuard Home" "_on_server step_adguard" ;;
+        13) run_step "[13] Manage storage" "_on_server step_storage" ;;
+        14) run_step "[14] Remote desktop" "_on_server step_remotedesktop" ;;
         15) run_step "[15] Sync files" "_on_laptop step_sync" ;;
         16) run_step "[16] Save to pass" "_on_laptop step_save_to_pass" ;;
         s)  run_step "[s] Status" step_status ;;

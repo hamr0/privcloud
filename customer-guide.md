@@ -36,6 +36,7 @@ Your server. Your data. No cloud required.
 - [Service setup](#service-setup)
 - [Tailscale remote access](#tailscale-remote-access)
 - [WireGuard VPN](#wireguard-vpn)
+- [AdGuard Home DNS ad blocker](#adguard-home-dns-ad-blocker)
 - [Remote desktop](#remote-desktop)
 - [Save to pass](#save-to-pass)
 - [Server maintenance](#server-maintenance)
@@ -114,16 +115,18 @@ Dedicated always-on machine running Immich + music streaming + file management +
   -- Extras (optional, run anytime) --
   10) Install Tailscale                     ← remote access VPN
   11) Install WireGuard                     ← full VPN, route all traffic
-  12) Mount USB drive                       ← plug in drive first
-  13) Remote desktop                        ← access XFCE desktop via RDP
+  12) Install AdGuard Home                  ← DNS ad blocker, uses Tailscale
+  13) Manage storage                        ← USB drives, media/data/Immich paths
+  14) Remote desktop                        ← access XFCE desktop via RDP
 
   -- Immich photo management --
       Run: privcloud [start|stop|status|update|backup]
 
   -- Tools (from laptop, exit SSH first) --
-  14) Sync files                          ← upload, download, or delete files
+  15) Sync files                          ← upload, download, or delete files
+  16) Save to pass                        ← from laptop, backup everything to pass
 
-  s)  Status        p)  Power        a)  Run all (3-9)        0)  Exit
+  s)  Status     p)  Power     r)  Reset password     a)  Run all (3-9)     0)  Exit
 ```
 
 ### From Immich (the photo server)
@@ -818,6 +821,69 @@ fedvpn status    # show connection info
 
 ---
 
+## AdGuard Home DNS ad blocker
+
+Network-wide DNS ad and tracker blocker. Runs in Docker on the server, catches ads before they even download. One install, covers every Tailscale-connected device — phone, laptop, iPad — at home and roaming.
+
+### What it does (and doesn't)
+
+**Blocks at the DNS layer.** When an app or browser asks "what's the IP for `doubleclick.net`?", AdGuard answers "nothing there" and the ad request never leaves your device.
+
+**Good at:** third-party ads, tracker networks, telemetry, smart TV phone-home, app analytics, most open-web ad networks. Typical block rate: 15–30% of all DNS queries.
+
+**Bad at:** first-party ads on Reddit, YouTube, Facebook, Instagram, Buzzfeed, Twitter/X. These are served from the same domain as the content, so DNS can't tell ads apart from real requests. For those, use uBlock Origin in your desktop browser and apps like ReVanced / SmartTube on mobile.
+
+### Install
+
+`federver` → **12**.
+
+The step:
+
+1. Disables the systemd-resolved stub listener so AdGuard can bind port 53
+2. Opens firewall ports 53 (DNS) and 80 (admin UI)
+3. Starts the AdGuard container with persistent config under `/opt/adguard`
+4. Prompts you to run the setup wizard in a browser at `http://<server-ip>:3000`
+5. After the wizard, the admin UI moves to `http://federver` (port 80)
+6. If Tailscale is installed, prints the exact steps to route all tailnet devices through AdGuard
+
+### Setup wizard
+
+In the wizard:
+
+1. **Admin Web Interface** — All interfaces / port 3000 → Next
+2. **DNS Server** — All interfaces / port 53 → Next
+3. Create admin **username + password** — save these, you'll need them again
+4. Finish
+
+### Point devices at AdGuard (via Tailscale)
+
+This is the only path we recommend. Router-level DHCP DNS overrides are unreliable (many ISP routers reject LAN IPs), and per-device manual DNS leaks around IPv6 settings on Linux and Private Relay on iOS.
+
+1. Open [https://login.tailscale.com/admin/dns](https://login.tailscale.com/admin/dns)
+2. Under **Nameservers** → **Add nameserver** → **Custom**
+3. Enter the server's **tailnet IP** (shown at the end of the install step, or get it with `tailscale ip -4` on the server)
+4. Enable **Override local DNS**
+5. Save
+
+Every tailnet device now uses AdGuard automatically. Roaming too — works from a coffee shop the same way it works at home.
+
+### Dashboard
+
+[http://federver](http://federver) — log in with the admin credentials you set in the wizard.
+
+**Query Log** tab shows every DNS lookup in real time, with blocked entries highlighted red. Good sanity check that it's actually doing something. Browse a news site for a minute, then check — you'll see a stream of blocked tracker domains.
+
+**Dashboard** tab shows totals: queries per hour, block percentage, top blocked domains, top clients.
+
+### Troubleshooting
+
+- **Query log is empty** — your device isn't sending DNS through AdGuard. Check Tailscale admin console has **Override local DNS** on, and that the device is connected to the tailnet.
+- **Some sites look broken** — a filter list may be over-blocking. Click the blocked entry in Query Log → **Unblock** to whitelist that domain.
+- **Container is restarting** — something else is holding port 53. Run `sudo ss -tulpn | grep ':53 '` to find it. Usually systemd-resolved; the install step should have disabled it.
+- **Still seeing ads on Reddit/YouTube** — expected, these are first-party ads. DNS can't block them. Use uBlock / ReVanced / SmartTube.
+
+---
+
 ## Remote desktop
 
 Access the full XFCE desktop from any device. Step 10 in `federver` installs xrdp.
@@ -850,10 +916,10 @@ Install "RD Client" from App Store. Add PC with `federver` (via Tailscale).
 
 ## Save to pass
 
-Option **15** in `federver` backs up everything to the `pass` password manager. Run from your **laptop** (where pass is installed) — it SSHes into the server to fetch data.
+Option **16** in `federver` backs up everything to the `pass` password manager. Run from your **laptop** (where pass is installed) — it SSHes into the server to fetch data.
 
 ```bash
-federver    # pick 15
+federver    # pick 16
 ```
 
 Saves:
@@ -934,7 +1000,7 @@ Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 | Check disk space | `df -h` | Monthly |
 | Check disk alerts | `cat /var/log/disk-check.log` | After alerts |
 | Check backup logs | `cat /var/log/immich-backup.log` | After issues |
-| Sync files | `federver` → **13** (from laptop) | As needed |
+| Sync files | `federver` → **15** (from laptop) | As needed |
 
 ### Kernel updates
 
@@ -1079,7 +1145,7 @@ If services aren't running: `cd ~/privcloud && docker compose up -d && privcloud
 
 ## Managing storage
 
-`federver` → **12** opens the storage sub-menu:
+`federver` → **13** opens the storage sub-menu:
 
 ```
 1) Status                     <- drives, mounts, paths
@@ -1094,7 +1160,7 @@ If services aren't running: `cd ~/privcloud && docker compose up -d && privcloud
 ### Mounting a USB drive
 
 1. Plug in the USB drive
-2. `federver` → **12** → **2**
+2. `federver` → **13** → **2**
 3. Select the USB partition (auto-detected, internal drives filtered out)
 4. Choose mount point (default: `/mnt/data`)
 
@@ -1104,16 +1170,16 @@ The drive is added to `/etc/fstab` so it auto-mounts on reboot.
 
 If you want to move music to a USB drive:
 
-1. Mount the USB: `federver` → **12** → **2**
+1. Mount the USB: `federver` → **13** → **2**
 2. Move files: `rsync -avh --progress /old/music/path/ /mnt/data/media/My\ Music/`
-3. Change location: `federver` → **12** → **4** → enter `/mnt/data/media/My Music`
+3. Change location: `federver` → **13** → **4** → enter `/mnt/data/media/My Music`
 
 This updates `.env` and redeploys Navidrome automatically.
 
 ### Changing FileBrowser location
 
 1. Move files if needed: `rsync -avh --progress /old/data/ /new/data/`
-2. Change location: `federver` → **12** → **5** → enter new path
+2. Change location: `federver` → **13** → **5** → enter new path
 
 This updates `.env` and redeploys FileBrowser automatically.
 
@@ -1121,7 +1187,7 @@ This updates `.env` and redeploys FileBrowser automatically.
 
 1. Stop Immich: `privcloud stop`
 2. Move files: `sudo rsync -ah --progress /old/immich/ /new/immich/`
-3. Change location: `federver` → **12** → **6** → enter `/new/immich`
+3. Change location: `federver` → **13** → **6** → enter `/new/immich`
 4. Verify: `privcloud status`
 
 **Important:** the Postgres database password is baked in when first created. If you copy the database directory, keep the same `DB_PASSWORD` in `.env`. Changing it will cause `password authentication failed`.
@@ -1129,7 +1195,7 @@ This updates `.env` and redeploys FileBrowser automatically.
 ### Unmounting a USB drive
 
 1. Stop services using the drive first
-2. `federver` → **12** → **3**
+2. `federver` → **13** → **3**
 3. Select the USB to unmount
 4. Safe to unplug after confirmation
 

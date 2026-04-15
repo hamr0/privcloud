@@ -44,6 +44,7 @@ One script sets up everything from a fresh Fedora XFCE install. Run from either 
 | **Watchtower** | — | Auto-updates all containers daily at 4am |
 | **Tailscale** | — | Remote access from anywhere — MagicDNS lets you use `federver` as hostname |
 | **WireGuard** | 51820 | Full VPN — route all traffic through server |
+| **AdGuard Home** | 53, 80 | Network-wide DNS ad & tracker blocker — routed via Tailscale |
 | **Remote Desktop** | 3389 | Full XFCE desktop via RDP from any device |
 
 ## Commands
@@ -72,15 +73,16 @@ One script sets up everything from a fresh Fedora XFCE install. Run from either 
   -- Extras (optional, run anytime) --
   10) Install Tailscale                     ← remote access VPN
   11) Install WireGuard                     ← full VPN, route all traffic
-  12) Manage storage                        ← USB drives, media/data/Immich paths
-  13) Remote desktop                        ← access XFCE desktop via RDP
+  12) Install AdGuard Home                  ← DNS ad blocker, uses Tailscale
+  13) Manage storage                        ← USB drives, media/data/Immich paths
+  14) Remote desktop                        ← access XFCE desktop via RDP
 
   -- Immich photo management --
       Run: privcloud [start|stop|status|update|backup]
 
   -- Tools (from laptop, exit SSH first) --
-  14) Sync files                          ← upload, download, or delete files
-  15) Save to pass                        ← from laptop, backup everything to pass
+  15) Sync files                          ← upload, download, or delete files
+  16) Save to pass                        ← from laptop, backup everything to pass
 
   s)  Status     p)  Power     r)  Reset password     a)  Run all (3-9)     0)  Exit
 ```
@@ -123,10 +125,11 @@ Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
 | Server status | `federver` → **s** |
 | Immich management | `privcloud` |
 | Upload media/files | FileBrowser → `http://federver:8080` (user `admin`, password: `cat ~/.privcloud/filebrowser.pass`) |
-| Manage storage | `federver` → **12** (mount USB, change paths) |
+| Manage storage | `federver` → **13** (mount USB, change paths) |
 | VPN connect/disconnect | `fedvpn start` / `fedvpn stop` (laptop) |
 | Show WireGuard peer config | `federver` → **11** → **2** (server) |
 | Remove WireGuard peer | `federver` → **11** → **3** (server) |
+| AdGuard dashboard | `http://federver` (Query Log tab shows live blocking) |
 | Check containers | `docker ps` |
 | View logs | `docker logs <container>` |
 | Update Immich | `privcloud update` |
@@ -135,7 +138,7 @@ Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
 | Remote desktop | RDP client → server IP port 3389 |
 | Backup | `privcloud backup` or `sudo /usr/local/bin/immich-backup.sh` |
 | Disk alerts | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
-| Backup to pass | `federver` → **15** (from laptop) |
+| Backup to pass | `federver` → **16** (from laptop) |
 | Reset password | `federver` → **r** (FileBrowser, Immich, Navidrome, Uptime Kuma) |
 | Shutdown | `federver` → **p** |
 

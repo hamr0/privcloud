@@ -483,6 +483,35 @@ step_storage() {
     esac
 }
 
+# Returns the actual source of a container's mount target.
+# Shows a real host path when bind-mounted; labels Docker named/anonymous
+# volumes as such so the status screen never lies with "not set".
+_storage_mount_source() {
+    local container="$1"
+    local target="$2"
+    if ! sg docker -c "docker ps --format '{{.Names}}'" 2>/dev/null | grep -q "^${container}$"; then
+        echo ""
+        return
+    fi
+    local info
+    info=$(sg docker -c "docker inspect -f '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Name}}|{{.Destination}}{{println}}{{end}}' $container" 2>/dev/null \
+           | awk -F'|' -v t="$target" '$4==t {print $1"|"$2"|"$3; exit}')
+    [[ -z "$info" ]] && { echo ""; return; }
+    local type src name
+    type=$(echo "$info" | cut -d'|' -f1)
+    src=$(echo  "$info" | cut -d'|' -f2)
+    name=$(echo "$info" | cut -d'|' -f3)
+    case "$type" in
+        bind)   echo "$src" ;;
+        volume) if [[ "$name" =~ ^[0-9a-f]{32,}$ ]]; then
+                    echo "(Docker anonymous volume)"
+                else
+                    echo "(Docker volume: $name)"
+                fi ;;
+        *)      echo "(Docker $type)" ;;
+    esac
+}
+
 _storage_status() {
     echo ""
     source "$SCRIPT_DIR/.env" 2>/dev/null
@@ -516,11 +545,24 @@ _storage_status() {
     fi
     echo ""
 
-    echo -e "  ${BOLD}Current paths (.env)${NC}"
-    echo -e "    Files:      ${FILES_LOCATION:-not set}  ${DIM}(FileBrowser)${NC}"
-    echo -e "    Music:      ${MUSIC_LOCATION:-not set}  ${DIM}(Navidrome)${NC}"
-    echo -e "    Immich:     ${UPLOAD_LOCATION:-not set}  ${DIM}(photos)${NC}"
-    echo -e "    Database:   ${DB_DATA_LOCATION:-not set}  ${DIM}(Immich DB)${NC}"
+    # Mental model: data / media / immich. Show where each is actually
+    # backed from — .env path if set, Docker volume inspection if not.
+    local data_path="${FILES_LOCATION:-}"
+    local media_path="${MUSIC_LOCATION:-}"
+    local immich_path="${UPLOAD_LOCATION:-}"
+    local db_path="${DB_DATA_LOCATION:-}"
+
+    # Fall back to actual Docker mount source when .env is silent.
+    [[ -z "$data_path"   ]] && data_path=$(_storage_mount_source filebrowser /srv)
+    [[ -z "$media_path"  ]] && media_path=$(_storage_mount_source navidrome /music)
+    [[ -z "$immich_path" ]] && immich_path=$(_storage_mount_source immich_server /usr/src/app/upload)
+    [[ -z "$db_path"     ]] && db_path=$(_storage_mount_source immich_postgres /var/lib/postgresql/data)
+
+    echo -e "  ${BOLD}Storage paths${NC}   ${DIM}(data / media / immich)${NC}"
+    echo -e "    data:    ${data_path:-${RED}not set${NC}}   ${DIM}(FileBrowser)${NC}"
+    echo -e "    media:   ${media_path:-${RED}not set${NC}}   ${DIM}(Navidrome)${NC}"
+    echo -e "    immich:  ${immich_path:-${RED}not set${NC}}   ${DIM}(photos)${NC}"
+    echo -e "             ${db_path:-${RED}not set${NC}}   ${DIM}(Immich Postgres)${NC}"
     echo ""
 
     echo -e "  ${BOLD}Disk usage${NC}"

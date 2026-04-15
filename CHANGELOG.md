@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- **Storage status display (`federver` → 13 → 1)** reorganised around the `data / media / immich` mental model. Previously listed four cryptic rows (Files / Music / Immich / Database) and showed red `not set` when a path was unset in `.env` — even though the container might be running fine off a Docker volume. Now it falls back to `docker inspect` and reports the actual mount source — a real host path when bind-mounted, `(Docker volume: <name>)` or `(Docker anonymous volume)` when not. No more alarming "not set" rows on a working system.
+
 ### Added
 - **`./setup.sh --dry-run`** mode. Walks the full menu and prints each state-changing command (`sudo ...`, `sg docker ...`, `curl ...`, `rsync ...`, `tailscale up|down`) instead of executing it. Read-only queries (hostname, `tailscale ip`, `docker ps`) still run so the display logic works. The dry-run flag propagates across the `_on_server` SSH hop, so running `./setup.sh --dry-run` from the laptop still gives you a safe walkthrough of any server-side option. Menu header shows a "DRY RUN" banner whenever active.
 - **`federver` → 7 → 1 (Services status)** now also shows the Tailscale / MagicDNS URL list alongside the LAN URL list when Tailscale is up. Fixes the missing `http://federver:PORT` addresses that used to only appear in the top-level Status screen.

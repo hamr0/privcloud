@@ -1580,20 +1580,81 @@ step_adguard() {
         return 1
     fi
 
-    local IP
+    local IP TS_IP=""
     IP=$(hostname -I | awk '{print $1}')
 
-    # Idempotent: already running? (skip in dry-run so the flow is visible)
+    # ── Pre-check 1: Tailscale. AdGuard is only useful if something routes
+    # traffic through it. Tailscale with "Override local DNS" is the only
+    # rollout path we recommend (router DHCP-DNS and per-device manual DNS
+    # both have too many footguns — see the install-level docs). If it's
+    # missing, surface that BEFORE touching the system, not at the end.
+    if command -v tailscale &>/dev/null; then
+        TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
+    fi
+    if [[ -z "$TS_IP" && "$DRY_RUN" != "1" ]]; then
+        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "  ${YELLOW}Tailscale is not installed (or not connected).${NC}"
+        echo ""
+        echo -e "  AdGuard needs a way to route devices' DNS lookups to it."
+        echo -e "  The recommended path is ${BOLD}Tailscale global DNS${NC} — one setting,"
+        echo -e "  every tailnet device uses AdGuard automatically (at home + roaming)."
+        echo ""
+        echo -e "  Without Tailscale you'd have to manually set DNS on every device,"
+        echo -e "  which is fragile on Linux (IPv6 RA leaks) and iOS (Private Relay)."
+        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        echo -e "  ${BOLD}1)${NC} Cancel and install Tailscale first (step 10)  ${DIM}← recommended${NC}"
+        echo -e "  ${BOLD}2)${NC} Continue anyway (I'll set DNS manually per device)"
+        echo -e "  ${BOLD}0)${NC} Cancel"
+        echo ""
+        read -p "  Choose [1/2/0]: " ts_choice
+        case "$ts_choice" in
+            2) info "Continuing without Tailscale — manual per-device DNS on you." ;;
+            *) info "Cancelled. Run step 10 to install Tailscale, then come back."; return 0 ;;
+        esac
+        echo ""
+    fi
+
+    # ── Idempotent: already running? (skip in dry-run so the flow is visible)
     if [[ "$DRY_RUN" != "1" ]] && sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^adguard$'; then
         ok "AdGuard is already running."
         echo -e "  Dashboard: ${BLUE}http://$IP${NC}"
+        if [[ -n "$TS_IP" ]]; then
+            echo ""
+            _adguard_tailscale_guide "$TS_IP"
+        fi
         return 0
     fi
 
-    # Step 1: free port 53 from systemd-resolved stub listener. In dry-run,
-    # force the cleanup branch so the stub-disable commands are visible.
+    # ── Pre-check 2: systemd-resolved stub listener. Fedora ships with
+    # systemd-resolved binding 127.0.0.53:53 by default. AdGuard needs host
+    # port 53, so we have to turn that off. This touches system DNS config,
+    # so explain it and get an explicit OK before modifying anything.
     if [[ "$DRY_RUN" == "1" ]] || sudo ss -tulpn 2>/dev/null | grep -qE '127\.0\.0\.5[34].*:53'; then
-        info "Disabling systemd-resolved stub listener (needed so AdGuard can bind port 53)..."
+        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "  ${YELLOW}systemd-resolved is holding port 53.${NC}"
+        echo ""
+        echo -e "  Standard on Fedora. AdGuard needs port 53, so we'll disable"
+        echo -e "  systemd-resolved's stub listener. Concretely:"
+        echo ""
+        echo -e "    1. Create ${DIM}/etc/systemd/resolved.conf.d/disable-stub.conf${NC}"
+        echo -e "       with ${BOLD}DNSStubListener=no${NC}"
+        echo -e "    2. Point ${DIM}/etc/resolv.conf${NC} at ${DIM}/run/systemd/resolve/resolv.conf${NC}"
+        echo -e "    3. Restart ${DIM}systemd-resolved${NC}"
+        echo ""
+        echo -e "  Local name resolution keeps working — systemd-resolved still runs,"
+        echo -e "  just not on port 53. If you have a custom DNS setup on this host,"
+        echo -e "  cancel here and review ${DIM}/etc/systemd/resolved.conf${NC} first."
+        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+        read -p "  Disable the stub listener and continue? [Y/n] " -n 1 -r
+        echo ""
+        if [[ "$REPLY" =~ ^[Nn]$ ]]; then
+            info "Cancelled. No changes made."
+            return 0
+        fi
+
+        info "Disabling systemd-resolved stub listener..."
         sudo mkdir -p /etc/systemd/resolved.conf.d
         printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/disable-stub.conf > /dev/null
         sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
@@ -1605,21 +1666,91 @@ step_adguard() {
             return 1
         fi
         ok "Port 53 freed."
+        echo ""
     fi
 
-    # Step 2: open firewall (53 DNS, 80 admin UI, 3000 wizard)
-    info "Opening firewall ports..."
+    # ── Collect admin credentials up front so we can pre-seed the config and
+    # skip the port-3000 setup wizard entirely. The user follows defaults
+    # (listen on all interfaces, port 53, standard filter lists) — the only
+    # thing they actually need to customise is the admin login.
+    echo -e "  ${BOLD}AdGuard admin login${NC}"
+    info "You'll use these to open the dashboard later. Save them."
+    echo ""
+    local ag_user ag_pass ag_pass2
+    read -p "  Admin username [admin]: " ag_user
+    ag_user="${ag_user:-admin}"
+    while :; do
+        read -s -p "  Admin password: " ag_pass
+        echo ""
+        [[ -z "$ag_pass" ]] && { warn "Password cannot be empty."; continue; }
+        read -s -p "  Re-enter password: " ag_pass2
+        echo ""
+        [[ "$ag_pass" == "$ag_pass2" ]] && break
+        warn "Passwords didn't match. Try again."
+    done
+    echo ""
+
+    # htpasswd (from httpd-tools) gives us a bcrypt hash compatible with
+    # AdGuard's config format. Install it silently if missing.
+    if ! command -v htpasswd &>/dev/null; then
+        info "Installing httpd-tools (for bcrypt password hashing)..."
+        sudo dnf install -y httpd-tools > /dev/null 2>&1 || {
+            fail "Could not install httpd-tools. Cannot hash the admin password."
+            return 1
+        }
+    fi
+    local ag_hash
+    ag_hash=$(htpasswd -nbB "$ag_user" "$ag_pass" 2>/dev/null | cut -d: -f2)
+    if [[ -z "$ag_hash" ]]; then
+        fail "Failed to hash the admin password."
+        return 1
+    fi
+
+    # ── Open firewall ports: only 53 DNS and 80 admin UI. No 3000 any more —
+    # we're skipping the wizard entirely.
+    info "Opening firewall ports (53 DNS, 80 admin UI)..."
     sudo firewall-cmd --permanent --add-port=53/udp > /dev/null
     sudo firewall-cmd --permanent --add-port=53/tcp > /dev/null
     sudo firewall-cmd --permanent --add-port=80/tcp > /dev/null
-    sudo firewall-cmd --permanent --add-port=3000/tcp > /dev/null
     sudo firewall-cmd --reload > /dev/null
-    ok "Firewall: 53/udp, 53/tcp, 80/tcp, 3000/tcp open."
+    ok "Firewall: 53/udp, 53/tcp, 80/tcp open."
 
-    # Step 3: persistent volumes
+    # ── Pre-seed AdGuardHome.yaml with sensible defaults so AdGuard starts
+    # directly on port 80 with DNS listening on 53 — no setup wizard.
     sudo mkdir -p /opt/adguard/work /opt/adguard/conf
+    sudo tee /opt/adguard/conf/AdGuardHome.yaml > /dev/null <<ADGUARDEOF
+http:
+  address: 0.0.0.0:80
+users:
+  - name: ${ag_user}
+    password: ${ag_hash}
+dns:
+  bind_hosts:
+    - 0.0.0.0
+  port: 53
+  upstream_dns:
+    - https://dns.cloudflare.com/dns-query
+    - https://dns.quad9.net/dns-query
+  bootstrap_dns:
+    - 1.1.1.1
+    - 9.9.9.9
+  ratelimit: 0
+filters:
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
+    name: AdGuard DNS filter
+    id: 1
+  - enabled: true
+    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt
+    name: AdAway Default Blocklist
+    id: 2
+filtering:
+  protection_enabled: true
+  filtering_enabled: true
+schema_version: 20
+ADGUARDEOF
 
-    # Step 4: launch container
+    # ── Launch container
     info "Starting AdGuard Home container..."
     sudo docker run -d \
         --name adguard \
@@ -1636,59 +1767,39 @@ step_adguard() {
     fi
     ok "AdGuard running."
 
-    # Step 5: setup wizard (manual — AdGuard has no unattended install)
+    # ── Tailscale DNS guidance (only if Tailscale is present)
     echo ""
-    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${YELLOW}ACTION NEEDED: Run the setup wizard${NC}"
-    echo ""
-    echo -e "  1. Open ${BLUE}http://$IP:3000${NC} from your laptop browser"
-    echo -e "  2. Admin Web Interface: ${BOLD}All interfaces / port 3000${NC} → Next"
-    echo -e "  3. DNS Server:          ${BOLD}All interfaces / port 53${NC}   → Next"
-    echo -e "  4. Create admin ${BOLD}username + password${NC} ${RED}(save these!)${NC}"
-    echo -e "  5. Finish — the admin UI moves to port 80 after setup"
-    echo ""
-    echo -e "  After the wizard, dashboard is at: ${BLUE}http://$IP${NC}"
-    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    read -p "  Press Enter once the wizard is done..." -r
-
-    # Step 6: close the now-unused wizard port
-    info "Closing port 3000 (admin UI moved to port 80)..."
-    sudo firewall-cmd --permanent --remove-port=3000/tcp > /dev/null 2>&1 || true
-    sudo firewall-cmd --reload > /dev/null
-    ok "Port 3000 closed."
-
-    # Step 7: Route devices through AdGuard — Tailscale is the only path we
-    # recommend. Router DHCP-DNS overrides are unreliable (many ISP routers
-    # reject LAN IPs), and per-device manual DNS leaks around IPv6 RA on Linux
-    # and iCloud Private Relay on iOS. Tailscale's "Override local DNS" wins.
-    echo ""
-    local ts_ip=""
-    if command -v tailscale &>/dev/null; then
-        ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
-    fi
-    if [[ -n "$ts_ip" ]]; then
-        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-        echo -e "  ${YELLOW}ACTION NEEDED: Point Tailscale DNS at AdGuard${NC}"
-        echo ""
-        echo -e "  Every tailnet device (phones, laptops) will then use AdGuard"
-        echo -e "  automatically — at home and on the go, no per-device config."
-        echo ""
-        echo -e "  1. Open ${BLUE}https://login.tailscale.com/admin/dns${NC}"
-        echo -e "  2. Under ${BOLD}Nameservers${NC} → ${BOLD}Add nameserver${NC} → ${BOLD}Custom${NC}"
-        echo -e "  3. IP: ${BOLD}$ts_ip${NC}"
-        echo -e "  4. Enable ${BOLD}Override local DNS${NC}"
-        echo -e "  5. Save"
-        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    if [[ -n "$TS_IP" ]]; then
+        _adguard_tailscale_guide "$TS_IP"
     else
-        warn "Tailscale not installed — install it first (step 10)."
-        echo -e "  AdGuard is running but no devices are pointed at it yet."
-        echo -e "  After installing Tailscale, re-run this step (12) for the DNS setup guide."
+        warn "No Tailscale — you'll need to set DNS manually on each device."
+        echo -e "  Point each device's DNS to: ${BOLD}$IP${NC}"
     fi
 
     echo ""
     ok "AdGuard Home installed."
     echo -e "  Dashboard: ${BLUE}http://$IP${NC}"
+    echo -e "  Login:     ${BOLD}$ag_user${NC} / (the password you just set)"
     echo -e "  Query log: dashboard → ${BOLD}Query Log${NC} tab (red = blocked)"
+}
+
+# Shared between fresh-install and "already running" paths so the message
+# stays consistent.
+_adguard_tailscale_guide() {
+    local ts_ip="$1"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}ACTION NEEDED: Point Tailscale DNS at AdGuard${NC}"
+    echo ""
+    echo -e "  Every tailnet device (phones, laptops) will then use AdGuard"
+    echo -e "  automatically — at home and on the go, no per-device config."
+    echo ""
+    echo -e "  1. Open ${BLUE}https://login.tailscale.com/admin/dns${NC}"
+    echo -e "  2. Under the ${BOLD}DNS${NC} tab → ${BOLD}Nameservers${NC} → ${BOLD}Global nameservers${NC}"
+    echo -e "     → ${BOLD}Add nameserver${NC} → ${BOLD}Custom${NC}"
+    echo -e "  3. IP: ${BOLD}$ts_ip${NC}"
+    echo -e "  4. Save"
+    echo -e "  5. Toggle ${BOLD}Override local DNS${NC} ON"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
 step_backup() {

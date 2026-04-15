@@ -837,39 +837,33 @@ Network-wide DNS ad and tracker blocker. Runs in Docker on the server, catches a
 
 `federver` → **12**.
 
-The step:
+The step is fully self-contained — no setup wizard, no port-3000 detour. Flow:
 
-1. Disables the systemd-resolved stub listener so AdGuard can bind port 53
-2. Opens firewall ports 53 (DNS) and 80 (admin UI)
-3. Starts the AdGuard container with persistent config under `/opt/adguard`
-4. Prompts you to run the setup wizard in a browser at `http://<server-ip>:3000`
-5. After the wizard, the admin UI moves to `http://federver` (port 80)
-6. If Tailscale is installed, prints the exact steps to route all tailnet devices through AdGuard
+1. **Tailscale pre-check.** If Tailscale isn't installed, the step stops and offers to send you to step 10 first (recommended) or continue anyway for manual per-device DNS.
+2. **systemd-resolved cleanup.** Fedora binds port 53 to `systemd-resolved`'s stub listener by default. The step explains exactly what it's going to change (`DNSStubListener=no` drop-in, `resolv.conf` symlink, `systemd-resolved` restart) and asks `Disable the stub listener and continue? [Y/n]` before touching anything. Local name resolution keeps working afterward — just not on port 53.
+3. **Admin login.** Prompts you for an admin username (defaults to `admin`) and a password (entered twice, hidden). The password is hashed with bcrypt via `htpasswd`.
+4. **Firewall.** Opens 53/udp, 53/tcp, 80/tcp.
+5. **Pre-seeded config.** Writes `/opt/adguard/conf/AdGuardHome.yaml` with sensible defaults: DNS on 0.0.0.0:53, admin UI on 0.0.0.0:80, Cloudflare + Quad9 DoH upstreams, AdGuard DNS filter + AdAway blocklists enabled, your admin user with the bcrypt hash.
+6. **Container start.** Launches `adguard/adguardhome:latest` with `--network=host` and `--restart=unless-stopped`, volumes under `/opt/adguard/{work,conf}`.
+7. **Tailscale guidance.** Prints the click-by-click steps to point tailnet DNS at AdGuard (see next section).
 
-### Setup wizard
-
-In the wizard:
-
-1. **Admin Web Interface** — All interfaces / port 3000 → Next
-2. **DNS Server** — All interfaces / port 53 → Next
-3. Create admin **username + password** — save these, you'll need them again
-4. Finish
+Total user input: admin username + password (twice) + two Enter/Y confirmations. No browser wizard.
 
 ### Point devices at AdGuard (via Tailscale)
 
-This is the only path we recommend. Router-level DHCP DNS overrides are unreliable (many ISP routers reject LAN IPs), and per-device manual DNS leaks around IPv6 settings on Linux and Private Relay on iOS.
+The install step prints this block when Tailscale is detected. This is the only rollout path we recommend — router-level DHCP DNS overrides are unreliable (many ISP routers reject LAN IPs), and per-device manual DNS leaks around IPv6 settings on Linux and Private Relay on iOS.
 
 1. Open [https://login.tailscale.com/admin/dns](https://login.tailscale.com/admin/dns)
-2. Under **Nameservers** → **Add nameserver** → **Custom**
+2. Under the **DNS** tab → **Nameservers** → **Global nameservers** → **Add nameserver** → **Custom**
 3. Enter the server's **tailnet IP** (shown at the end of the install step, or get it with `tailscale ip -4` on the server)
-4. Enable **Override local DNS**
-5. Save
+4. **Save**
+5. Toggle **Override local DNS** ON
 
 Every tailnet device now uses AdGuard automatically. Roaming too — works from a coffee shop the same way it works at home.
 
 ### Dashboard
 
-[http://federver](http://federver) — log in with the admin credentials you set in the wizard.
+[http://federver](http://federver) — log in with the admin credentials you entered during the install step.
 
 **Query Log** tab shows every DNS lookup in real time, with blocked entries highlighted red. Good sanity check that it's actually doing something. Browse a news site for a minute, then check — you'll see a stream of blocked tracker domains.
 

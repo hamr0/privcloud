@@ -1540,22 +1540,23 @@ step_adguard() {
     local IP
     IP=$(hostname -I | awk '{print $1}')
 
-    # Idempotent: already running?
-    if sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^adguard$'; then
+    # Idempotent: already running? (skip in dry-run so the flow is visible)
+    if [[ "$DRY_RUN" != "1" ]] && sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^adguard$'; then
         ok "AdGuard is already running."
         echo -e "  Dashboard: ${BLUE}http://$IP${NC}"
         return 0
     fi
 
-    # Step 1: free port 53 from systemd-resolved stub listener
-    if sudo ss -tulpn 2>/dev/null | grep -qE '127\.0\.0\.5[34].*:53'; then
+    # Step 1: free port 53 from systemd-resolved stub listener. In dry-run,
+    # force the cleanup branch so the stub-disable commands are visible.
+    if [[ "$DRY_RUN" == "1" ]] || sudo ss -tulpn 2>/dev/null | grep -qE '127\.0\.0\.5[34].*:53'; then
         info "Disabling systemd-resolved stub listener (needed so AdGuard can bind port 53)..."
         sudo mkdir -p /etc/systemd/resolved.conf.d
         printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/disable-stub.conf > /dev/null
         sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
         sudo systemctl restart systemd-resolved
         sleep 1
-        if sudo ss -tulpn 2>/dev/null | grep -qE '(^|\s)[^:]*:53\s'; then
+        if [[ "$DRY_RUN" != "1" ]] && sudo ss -tulpn 2>/dev/null | grep -qE '(^|\s)[^:]*:53\s'; then
             fail "Port 53 still occupied after disabling the stub listener:"
             sudo ss -tulpn | grep ':53 ' || true
             return 1
@@ -1585,7 +1586,7 @@ step_adguard() {
         -v /opt/adguard/conf:/opt/adguardhome/conf \
         adguard/adguardhome:latest > /dev/null
     sleep 2
-    if ! sudo docker ps --format '{{.Names}}' | grep -q '^adguard$'; then
+    if [[ "$DRY_RUN" != "1" ]] && ! sudo docker ps --format '{{.Names}}' | grep -q '^adguard$'; then
         fail "AdGuard container failed to start."
         sudo docker logs --tail 20 adguard 2>&1 || true
         return 1

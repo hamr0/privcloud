@@ -116,13 +116,14 @@ show_menu() {
     echo -e "  ${BOLD}11)${NC} Install WireGuard                   ${DIM}← full VPN, route all traffic${NC}"
     echo -e "  ${BOLD}12)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
     echo -e "  ${BOLD}13)${NC} Remote desktop                      ${DIM}← access XFCE desktop via RDP${NC}"
+    echo -e "  ${BOLD}14)${NC} Install AdGuard Home                ${DIM}← network-wide DNS ad blocker${NC}"
     echo ""
     echo -e "  ${DIM}-- Immich photo management --${NC}"
     echo -e "      ${DIM}Run: ${BOLD}privcloud${NC} ${DIM}[start|stop|status|update|backup]${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Tools (from laptop, exit SSH first) --${NC}"
-    echo -e "  ${BOLD}14)${NC} Sync files                          ${DIM}← upload, download, or delete files${NC}"
-    echo -e "  ${BOLD}15)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
+    echo -e "  ${BOLD}15)${NC} Sync files                          ${DIM}← upload, download, or delete files${NC}"
+    echo -e "  ${BOLD}16)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
     echo ""
     echo -e "  ${BOLD}s)${NC}  Status     ${BOLD}p)${NC}  Power     ${BOLD}r)${NC}  Reset password     ${BOLD}a)${NC}  Run all (3-9)     ${BOLD}0)${NC}  Exit"
     echo ""
@@ -1249,6 +1250,127 @@ PersistentKeepalive = 25"
     echo -e "  ${BOLD}Mac:${NC}    WireGuard app (brew or App Store) → import config"
 }
 
+step_adguard() {
+    info "AdGuard Home is a network-wide DNS ad & tracker blocker."
+    info "Runs in Docker, blocks ads on every device that uses it as DNS."
+    echo ""
+
+    # Prereq: Docker
+    if ! command -v docker &>/dev/null; then
+        fail "Docker not installed. Run step 5 first."
+        return 1
+    fi
+
+    local IP
+    IP=$(hostname -I | awk '{print $1}')
+
+    # Idempotent: already running?
+    if sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^adguard$'; then
+        ok "AdGuard is already running."
+        echo -e "  Dashboard: ${BLUE}http://$IP${NC}"
+        return 0
+    fi
+
+    # Step 1: free port 53 from systemd-resolved stub listener
+    if sudo ss -tulpn 2>/dev/null | grep -qE '127\.0\.0\.5[34].*:53'; then
+        info "Disabling systemd-resolved stub listener (needed so AdGuard can bind port 53)..."
+        sudo mkdir -p /etc/systemd/resolved.conf.d
+        printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/disable-stub.conf > /dev/null
+        sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+        sudo systemctl restart systemd-resolved
+        sleep 1
+        if sudo ss -tulpn 2>/dev/null | grep -qE '(^|\s)[^:]*:53\s'; then
+            fail "Port 53 still occupied after disabling the stub listener:"
+            sudo ss -tulpn | grep ':53 ' || true
+            return 1
+        fi
+        ok "Port 53 freed."
+    fi
+
+    # Step 2: open firewall (53 DNS, 80 admin UI, 3000 wizard)
+    info "Opening firewall ports..."
+    sudo firewall-cmd --permanent --add-port=53/udp > /dev/null
+    sudo firewall-cmd --permanent --add-port=53/tcp > /dev/null
+    sudo firewall-cmd --permanent --add-port=80/tcp > /dev/null
+    sudo firewall-cmd --permanent --add-port=3000/tcp > /dev/null
+    sudo firewall-cmd --reload > /dev/null
+    ok "Firewall: 53/udp, 53/tcp, 80/tcp, 3000/tcp open."
+
+    # Step 3: persistent volumes
+    sudo mkdir -p /opt/adguard/work /opt/adguard/conf
+
+    # Step 4: launch container
+    info "Starting AdGuard Home container..."
+    sudo docker run -d \
+        --name adguard \
+        --network=host \
+        --restart=unless-stopped \
+        -v /opt/adguard/work:/opt/adguardhome/work \
+        -v /opt/adguard/conf:/opt/adguardhome/conf \
+        adguard/adguardhome:latest > /dev/null
+    sleep 2
+    if ! sudo docker ps --format '{{.Names}}' | grep -q '^adguard$'; then
+        fail "AdGuard container failed to start."
+        sudo docker logs --tail 20 adguard 2>&1 || true
+        return 1
+    fi
+    ok "AdGuard running."
+
+    # Step 5: setup wizard (manual — AdGuard has no unattended install)
+    echo ""
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}ACTION NEEDED: Run the setup wizard${NC}"
+    echo ""
+    echo -e "  1. Open ${BLUE}http://$IP:3000${NC} from your laptop browser"
+    echo -e "  2. Admin Web Interface: ${BOLD}All interfaces / port 3000${NC} → Next"
+    echo -e "  3. DNS Server:          ${BOLD}All interfaces / port 53${NC}   → Next"
+    echo -e "  4. Create admin ${BOLD}username + password${NC} ${RED}(save these!)${NC}"
+    echo -e "  5. Finish — the admin UI moves to port 80 after setup"
+    echo ""
+    echo -e "  After the wizard, dashboard is at: ${BLUE}http://$IP${NC}"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -p "  Press Enter once the wizard is done..." -r
+
+    # Step 6: close the now-unused wizard port
+    info "Closing port 3000 (admin UI moved to port 80)..."
+    sudo firewall-cmd --permanent --remove-port=3000/tcp > /dev/null 2>&1 || true
+    sudo firewall-cmd --reload > /dev/null
+    ok "Port 3000 closed."
+
+    # Step 7: Route devices through AdGuard — Tailscale is the only path we
+    # recommend. Router DHCP-DNS overrides are unreliable (many ISP routers
+    # reject LAN IPs), and per-device manual DNS leaks around IPv6 RA on Linux
+    # and iCloud Private Relay on iOS. Tailscale's "Override local DNS" wins.
+    echo ""
+    local ts_ip=""
+    if command -v tailscale &>/dev/null; then
+        ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+    fi
+    if [[ -n "$ts_ip" ]]; then
+        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "  ${YELLOW}ACTION NEEDED: Point Tailscale DNS at AdGuard${NC}"
+        echo ""
+        echo -e "  Every tailnet device (phones, laptops) will then use AdGuard"
+        echo -e "  automatically — at home and on the go, no per-device config."
+        echo ""
+        echo -e "  1. Open ${BLUE}https://login.tailscale.com/admin/dns${NC}"
+        echo -e "  2. Under ${BOLD}Nameservers${NC} → ${BOLD}Add nameserver${NC} → ${BOLD}Custom${NC}"
+        echo -e "  3. IP: ${BOLD}$ts_ip${NC}"
+        echo -e "  4. Enable ${BOLD}Override local DNS${NC}"
+        echo -e "  5. Save"
+        echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    else
+        warn "Tailscale not installed — install it first (step 10)."
+        echo -e "  AdGuard is running but no devices are pointed at it yet."
+        echo -e "  After installing Tailscale, re-run this step (14) for the DNS setup guide."
+    fi
+
+    echo ""
+    ok "AdGuard Home installed."
+    echo -e "  Dashboard: ${BLUE}http://$IP${NC}"
+    echo -e "  Query log: dashboard → ${BOLD}Query Log${NC} tab (red = blocked)"
+}
+
 step_backup() {
     info "Creates a daily cron job to back up the Immich database."
     info "The DB contains your albums, face data, and metadata — hard to recreate."
@@ -2067,8 +2189,9 @@ while true; do
         11) run_step "[11] Install WireGuard" "_on_server step_wireguard" ;;
         12) run_step "[12] Manage storage" "_on_server step_storage" ;;
         13) run_step "[13] Remote desktop" "_on_server step_remotedesktop" ;;
-        14) run_step "[14] Sync files" "_on_laptop step_sync" ;;
-        15) run_step "[15] Save to pass" "_on_laptop step_save_to_pass" ;;
+        14) run_step "[14] Install AdGuard Home" "_on_server step_adguard" ;;
+        15) run_step "[15] Sync files" "_on_laptop step_sync" ;;
+        16) run_step "[16] Save to pass" "_on_laptop step_save_to_pass" ;;
         s)  run_step "[s] Status" step_status ;;
         p)  run_step "[p] Power management" "_on_laptop step_power" ;;
         r)  run_step "[r] Reset password" "_on_server step_reset_password" ;;

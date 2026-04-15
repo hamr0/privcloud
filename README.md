@@ -45,6 +45,7 @@ One script sets up everything from a fresh Fedora XFCE install. Run from either 
 | **Tailscale** | — | Remote access from anywhere — MagicDNS lets you use `federver` as hostname |
 | **WireGuard** | 51820 | Full VPN — route all traffic through server |
 | **AdGuard Home** | 53, 80 | Network-wide DNS ad & tracker blocker — routed via Tailscale |
+| **Syncthing** | 8384, 22000, 21027 | Real-time bidirectional folder sync between devices |
 | **Remote Desktop** | 3389 | Full XFCE desktop via RDP from any device |
 
 ## Commands
@@ -75,14 +76,15 @@ One script sets up everything from a fresh Fedora XFCE install. Run from either 
   11) Manage WireGuard                      ← install, peers, QR, remove
   12) Manage AdGuard                        ← install DNS ad blocker, uses Tailscale
   13) Manage storage                        ← USB drives, media/data/Immich paths
-  14) Manage remote desktop                 ← install, access XFCE via RDP
+  14) Manage Syncthing                      ← real-time bidirectional file sync
+  15) Manage remote desktop                 ← install, access XFCE via RDP
 
   -- Immich photo management --
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools (from laptop, exit SSH first) --
-  15) Sync files                          ← upload, download, or delete files
-  16) Save to pass                        ← from laptop, backup everything to pass
+  16) Sync files                          ← upload, download, or delete files
+  17) Save to pass                        ← from laptop, backup everything to pass
 
   s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-9)   0)  Exit
 ```
@@ -140,7 +142,7 @@ Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
 | Remote desktop | RDP client → server IP port 3389 |
 | Backup | `privcloud backup` or `sudo /usr/local/bin/immich-backup.sh` |
 | Disk alerts | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
-| Backup to pass | `federver` → **16** (from laptop) |
+| Backup to pass | `federver` → **17** (from laptop) |
 | Reset password | `federver` → **r** (FileBrowser, Immich, Navidrome, Uptime Kuma) |
 | Shutdown | `federver` → **p** |
 

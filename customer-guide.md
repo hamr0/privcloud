@@ -37,6 +37,7 @@ Your server. Your data. No cloud required.
 - [Tailscale remote access](#tailscale-remote-access)
 - [WireGuard VPN](#wireguard-vpn)
 - [AdGuard Home DNS ad blocker](#adguard-home-dns-ad-blocker)
+- [Syncthing real-time folder sync](#syncthing-real-time-folder-sync)
 - [Remote desktop](#remote-desktop)
 - [Save to pass](#save-to-pass)
 - [Server maintenance](#server-maintenance)
@@ -117,14 +118,15 @@ Dedicated always-on machine running Immich + music streaming + file management +
   11) Manage WireGuard                      ← install, peers, QR, remove
   12) Manage AdGuard                        ← install DNS ad blocker, uses Tailscale
   13) Manage storage                        ← USB drives, media/data/Immich paths
-  14) Manage remote desktop                 ← install, access XFCE via RDP
+  14) Manage Syncthing                      ← real-time bidirectional file sync
+  15) Manage remote desktop                 ← install, access XFCE via RDP
 
   -- Immich photo management --
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools (from laptop, exit SSH first) --
-  15) Sync files                          ← upload, download, or delete files
-  16) Save to pass                        ← from laptop, backup everything to pass
+  16) Sync files                          ← upload, download, or delete files
+  17) Save to pass                        ← from laptop, backup everything to pass
 
   s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-9)   0)  Exit
 ```
@@ -878,6 +880,68 @@ Every tailnet device now uses AdGuard automatically. Roaming too — works from 
 
 ---
 
+## Syncthing real-time folder sync
+
+Continuous bidirectional file sync between devices. Peer-to-peer — no central cloud, changes propagate in seconds. Good for folders you actively edit on multiple devices (notes, code, documents, obsidian vault). Complements rsync (`federver` → 16), which is one-shot; Syncthing is always-on.
+
+### What it's good for
+
+- **Obsidian / notes** — edit on laptop, appear on phone instantly
+- **Active work folders** — shared between desktop and laptop
+- **Code drafts** — small repos you're hacking on from multiple machines
+- **Photos from camera SD** — drop in a folder, server auto-picks them up
+
+Not the tool for: photo backup (use Immich), music library (use Navidrome), or one-shot transfers (use option 16).
+
+### Install
+
+`federver` → **14**. The step:
+
+1. Opens firewall ports: 8384 (web UI), 22000/tcp+udp (sync protocol), 21027/udp (LAN discovery)
+2. Starts `syncthing/syncthing:latest` with `--network=host`, `STGUIADDRESS=0.0.0.0:8384`, and persistent volumes under `/opt/syncthing/{config,data}`
+3. Waits for the daemon to generate its Device ID
+4. Prints the **Server Device ID** and pairing instructions
+
+### Install on each device you want to sync
+
+**Fedora laptop:**
+```bash
+sudo dnf install -y syncthing
+systemctl --user enable --now syncthing
+```
+Open [http://localhost:8384](http://localhost:8384) in a browser.
+
+**Android:** Install **Syncthing** from F-Droid (recommended — official) or Play Store.
+
+**iOS:** Install **Möbius Sync** from the App Store (Syncthing-compatible, paid).
+
+**macOS / Windows:** Download from [syncthing.net](https://syncthing.net/downloads/).
+
+### Pairing
+
+Two-way handshake — each device knows about the other by Device ID.
+
+1. On the device (laptop/phone), open Syncthing → **Add Remote Device**
+2. Paste the server's Device ID (printed by step 14, or re-run 14 to see it again)
+3. Save
+4. On the server dashboard (`http://federver:8384`), a prompt appears asking to accept the incoming device → accept
+5. On one side, create a shared folder → on the other side, accept the folder share
+
+Repeat for each device you want in the sync group.
+
+### Dashboard
+
+[http://federver:8384](http://federver:8384) — first visit prompts you to set a GUI username and password. Do it. The web UI is reachable from the entire LAN (and over Tailscale if you've set up global DNS for AdGuard), so it needs credentials.
+
+### Troubleshooting
+
+- **Devices don't discover each other on LAN** — port 21027/udp blocked somewhere. Check firewall on both sides.
+- **Sync is slow on LAN** — port 22000 blocked, forcing traffic through Syncthing's public relays. Open 22000/tcp on the device firewall too.
+- **Device ID not shown after install** — container needs a few seconds to generate it. Re-run `federver` → 14 and it'll print the ID via `docker exec syncthing syncthing --device-id`.
+- **Forgot the GUI password** — stop the container, delete `/opt/syncthing/config/config.xml`, restart. It'll regenerate clean.
+
+---
+
 ## Remote desktop
 
 Access the full XFCE desktop from any device. Step 10 in `federver` installs xrdp.
@@ -910,10 +974,10 @@ Install "RD Client" from App Store. Add PC with `federver` (via Tailscale).
 
 ## Save to pass
 
-Option **16** in `federver` backs up everything to the `pass` password manager. Run from your **laptop** (where pass is installed) — it SSHes into the server to fetch data.
+Option **17** in `federver` backs up everything to the `pass` password manager. Run from your **laptop** (where pass is installed) — it SSHes into the server to fetch data.
 
 ```bash
-federver    # pick 16
+federver    # pick 17
 ```
 
 Saves:
@@ -994,7 +1058,7 @@ Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 | Check disk space | `df -h` | Monthly |
 | Check disk alerts | `cat /var/log/disk-check.log` | After alerts |
 | Check backup logs | `cat /var/log/immich-backup.log` | After issues |
-| Sync files | `federver` → **15** (from laptop) | As needed |
+| Sync files | `federver` → **16** (from laptop) | As needed |
 
 ### Kernel updates
 

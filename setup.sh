@@ -164,14 +164,15 @@ show_menu() {
     echo -e "  ${BOLD}11)${NC} Manage WireGuard                    ${DIM}← install, peers, QR, remove${NC}"
     echo -e "  ${BOLD}12)${NC} Manage AdGuard                      ${DIM}← install DNS ad blocker, uses Tailscale${NC}"
     echo -e "  ${BOLD}13)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
-    echo -e "  ${BOLD}14)${NC} Manage remote desktop               ${DIM}← install, access XFCE via RDP${NC}"
+    echo -e "  ${BOLD}14)${NC} Manage Syncthing                    ${DIM}← real-time bidirectional file sync${NC}"
+    echo -e "  ${BOLD}15)${NC} Manage remote desktop               ${DIM}← install, access XFCE via RDP${NC}"
     echo ""
     echo -e "  ${DIM}-- Immich photo management --${NC}"
     echo -e "  ${BOLD}i)${NC}  Immich (privcloud)                  ${DIM}← start/stop/status/update/backup${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Tools (from laptop, exit SSH first) --${NC}"
-    echo -e "  ${BOLD}15)${NC} Sync files                          ${DIM}← upload, download, or delete files${NC}"
-    echo -e "  ${BOLD}16)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
+    echo -e "  ${BOLD}16)${NC} Sync files                          ${DIM}← upload, download, or delete files${NC}"
+    echo -e "  ${BOLD}17)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
     echo ""
     echo -e "  ${BOLD}s)${NC}  Status     ${BOLD}i)${NC}  Immich     ${BOLD}p)${NC}  Power     ${BOLD}r)${NC}  Reset password     ${BOLD}a)${NC}  Run all (3-9)     ${BOLD}0)${NC}  Exit"
     echo ""
@@ -1049,6 +1050,114 @@ step_deploy() {
     echo ""
     echo -e "  See README or run ${BOLD}s)${NC} for full setup details."
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+_syncthing_device_id() {
+    sudo docker exec syncthing syncthing --device-id 2>/dev/null || echo ""
+}
+
+_syncthing_show_pairing_info() {
+    local IP
+    IP=$(hostname -I | awk '{print $1}')
+    echo -e "  Dashboard: ${BLUE}http://$IP:8384${NC}"
+    echo ""
+    local id
+    id=$(_syncthing_device_id)
+    if [[ -n "$id" ]]; then
+        echo -e "  ${BOLD}Server Device ID${NC} ${DIM}(paste this into clients to pair)${NC}:"
+        echo -e "    ${BOLD}$id${NC}"
+    else
+        warn "Device ID not ready yet. Give the container a few more seconds and re-run."
+    fi
+}
+
+step_syncthing() {
+    info "Syncthing syncs folders between devices in real-time, peer-to-peer."
+    info "Continuous bidirectional sync with conflict resolution."
+    echo ""
+
+    # Prereq: Docker
+    if ! command -v docker &>/dev/null; then
+        fail "Docker not installed. Run step 5 first."
+        return 1
+    fi
+
+    local IP
+    IP=$(hostname -I | awk '{print $1}')
+
+    # Idempotent: already running? Show dashboard + Device ID + guidance.
+    if [[ "$DRY_RUN" != "1" ]] && sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'; then
+        ok "Syncthing is already running."
+        echo ""
+        _syncthing_show_pairing_info
+        return 0
+    fi
+
+    # Open firewall: 8384 web UI, 22000/tcp+udp sync, 21027/udp LAN discovery
+    info "Opening firewall ports (8384 web UI, 22000 sync, 21027 discovery)..."
+    sudo firewall-cmd --permanent --add-port=8384/tcp > /dev/null
+    sudo firewall-cmd --permanent --add-port=22000/tcp > /dev/null
+    sudo firewall-cmd --permanent --add-port=22000/udp > /dev/null
+    sudo firewall-cmd --permanent --add-port=21027/udp > /dev/null
+    sudo firewall-cmd --reload > /dev/null
+    ok "Firewall: 8384/tcp, 22000/tcp+udp, 21027/udp open."
+
+    # Persistent volumes
+    sudo mkdir -p /opt/syncthing/config /opt/syncthing/data
+
+    # Launch container. STGUIADDRESS forces the web UI onto all interfaces —
+    # default is 127.0.0.1:8384 which is useless with --network=host.
+    info "Starting Syncthing container..."
+    sudo docker run -d \
+        --name syncthing \
+        --network=host \
+        --restart=unless-stopped \
+        -e PUID=$(id -u) \
+        -e PGID=$(id -g) \
+        -e STGUIADDRESS=0.0.0.0:8384 \
+        -v /opt/syncthing/config:/var/syncthing/config \
+        -v /opt/syncthing/data:/var/syncthing \
+        syncthing/syncthing:latest > /dev/null
+    sleep 3
+    if [[ "$DRY_RUN" != "1" ]] && ! sudo docker ps --format '{{.Names}}' | grep -q '^syncthing$'; then
+        fail "Syncthing container failed to start."
+        sudo docker logs --tail 20 syncthing 2>&1 || true
+        return 1
+    fi
+    ok "Syncthing running."
+
+    # Give the daemon a moment to generate its Device ID
+    sleep 2
+
+    echo ""
+    _syncthing_show_pairing_info
+
+    echo ""
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}NEXT: Install Syncthing on your other devices${NC}"
+    echo ""
+    echo -e "  ${BOLD}Laptop (Fedora):${NC}"
+    echo -e "    sudo dnf install -y syncthing"
+    echo -e "    systemctl --user enable --now syncthing"
+    echo -e "    Open ${BLUE}http://localhost:8384${NC}"
+    echo ""
+    echo -e "  ${BOLD}Phone:${NC}"
+    echo -e "    Android: ${BOLD}Syncthing${NC} (F-Droid or Play Store)"
+    echo -e "    iOS:     ${BOLD}Möbius Sync${NC} (App Store — Syncthing-compatible)"
+    echo ""
+    echo -e "  ${BOLD}Pair each device with the server:${NC}"
+    echo -e "    1. On the device, open Syncthing → ${BOLD}Add Remote Device${NC}"
+    echo -e "    2. Paste the server's Device ID shown above → Save"
+    echo -e "    3. On the server dashboard (${BLUE}http://$IP:8384${NC}),"
+    echo -e "       accept the incoming device request"
+    echo -e "    4. Create a shared folder on one side → accept on the other"
+    echo ""
+    echo -e "  ${DIM}Note: first time you open the server dashboard it'll ask you to${NC}"
+    echo -e "  ${DIM}set a GUI username + password. Do it — the UI is LAN-reachable.${NC}"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    echo ""
+    ok "Syncthing installed."
 }
 
 step_remotedesktop() {
@@ -2693,9 +2802,10 @@ while true; do
         11) run_step "[11] Manage WireGuard" "_on_server step_wireguard" ;;
         12) run_step "[12] Manage AdGuard" "_on_server step_adguard" ;;
         13) run_step "[13] Manage storage" "_on_server step_storage" ;;
-        14) run_step "[14] Manage remote desktop" "_on_server step_remotedesktop" ;;
-        15) run_step "[15] Sync files" "_on_laptop step_sync" ;;
-        16) run_step "[16] Save to pass" "_on_laptop step_save_to_pass" ;;
+        14) run_step "[14] Manage Syncthing" "_on_server step_syncthing" ;;
+        15) run_step "[15] Manage remote desktop" "_on_server step_remotedesktop" ;;
+        16) run_step "[16] Sync files" "_on_laptop step_sync" ;;
+        17) run_step "[17] Save to pass" "_on_laptop step_save_to_pass" ;;
         s)  run_step "[s] Status" step_status ;;
         i)  run_step "[i] Immich (privcloud)" step_immich ;;
         p)  run_step "[p] Power management" "_on_laptop step_power" ;;

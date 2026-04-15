@@ -1238,19 +1238,31 @@ step_wireguard() {
         # Count existing peers to determine next IP
         local existing_peers=$(sudo grep -c "^\[Peer\]" "$WG_DIR/wg0.conf" 2>/dev/null || echo "0")
 
-        echo -e "  ${BOLD}1)${NC} Add new peer"
-        echo -e "  ${BOLD}2)${NC} Show peer config (to set up a device)"
-        echo -e "  ${BOLD}3)${NC} Remove peer"
-        echo -e "  ${BOLD}4)${NC} Reinstall (regenerate all keys — existing peers stop working)"
+        echo -e "  ${BOLD}1)${NC} Status                     ${DIM}<- interface state, peer handshakes, transfer${NC}"
+        echo -e "  ${BOLD}2)${NC} Add new peer"
+        echo -e "  ${BOLD}3)${NC} Show peer config (to set up a device)"
+        echo -e "  ${BOLD}4)${NC} Remove peer"
+        echo -e "  ${BOLD}5)${NC} Reinstall (regenerate all keys — existing peers stop working)"
         echo -e "  ${BOLD}0)${NC} Cancel"
         echo ""
-        read -p "  Choose [1/2/3/4/0]: " wg_action
+        read -p "  Choose [1/2/3/4/5/0]: " wg_action
 
         case $wg_action in
             0) return ;;
-            3) _wg_remove_peer; return ;;
-            4) is_new_install=true ;;
-            2)
+            1)
+                echo ""
+                if sudo wg show wg0 &>/dev/null; then
+                    echo -e "  ${BOLD}Interface${NC}"
+                    sudo wg show wg0 | sed 's/^/    /'
+                else
+                    fail "wg0 interface is down."
+                    info "Bring it up: sudo systemctl start wg-quick@wg0"
+                fi
+                return
+                ;;
+            4) _wg_remove_peer; return ;;
+            5) is_new_install=true ;;
+            3)
                 # Show existing peer configs
                 echo ""
                 local conf_files=$(sudo find "$WG_DIR" -name "*.conf" ! -name "wg0.conf" 2>/dev/null)
@@ -1283,7 +1295,7 @@ step_wireguard() {
                 fi
                 return
                 ;;
-            1)
+            2)
                 # Add peer mode
                 local server_public=$(sudo cat "$WG_DIR/server_public.key")
                 local server_ip=$(hostname -I | awk '{print $1}')

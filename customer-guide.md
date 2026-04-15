@@ -837,17 +837,17 @@ Network-wide DNS ad and tracker blocker. Runs in Docker on the server, catches a
 
 `federver` → **12**.
 
-The step is fully self-contained — no setup wizard, no port-3000 detour. Flow:
+The step flow:
 
 1. **Tailscale pre-check.** If Tailscale isn't installed, the step stops and offers to send you to step 10 first (recommended) or continue anyway for manual per-device DNS.
 2. **systemd-resolved cleanup.** Fedora binds port 53 to `systemd-resolved`'s stub listener by default. The step explains exactly what it's going to change (`DNSStubListener=no` drop-in, `resolv.conf` symlink, `systemd-resolved` restart) and asks `Disable the stub listener and continue? [Y/n]` before touching anything. Local name resolution keeps working afterward — just not on port 53.
-3. **Admin login.** Prompts you for an admin username (defaults to `admin`) and a password (entered twice, hidden). The password is hashed with bcrypt via `htpasswd`.
-4. **Firewall.** Opens 53/udp, 53/tcp, 80/tcp.
-5. **Pre-seeded config.** Writes `/opt/adguard/conf/AdGuardHome.yaml` with sensible defaults: DNS on 0.0.0.0:53, admin UI on 0.0.0.0:80, Cloudflare + Quad9 DoH upstreams, AdGuard DNS filter + AdAway blocklists enabled, your admin user with the bcrypt hash.
-6. **Container start.** Launches `adguard/adguardhome:latest` with `--network=host` and `--restart=unless-stopped`, volumes under `/opt/adguard/{work,conf}`.
+3. **Firewall.** Opens 53/udp, 53/tcp, 80/tcp.
+4. **Minimal config pre-seed.** Writes a three-line `/opt/adguard/conf/AdGuardHome.yaml` that sets `http.address: 0.0.0.0:80`. AdGuard's own first-run wizard then runs on port 80 instead of its hardcoded default of port 3000 — so there's no port-3000 detour.
+5. **Container start.** Launches `adguard/adguardhome:latest` with `--network=host` and `--restart=unless-stopped`, volumes under `/opt/adguard/{work,conf}`.
+6. **Finish AdGuard's wizard in the browser.** The step prints an ACTION NEEDED block pointing at `http://<server-ip>` and waits for you to press Enter. You open the URL, click through AdGuard's native setup wizard (leave everything at defaults → Next → Next → create admin username + password → Finish), come back to the terminal, press Enter.
 7. **Tailscale guidance.** Prints the click-by-click steps to point tailnet DNS at AdGuard (see next section).
 
-Total user input: admin username + password (twice) + two Enter/Y confirmations. No browser wizard.
+Total user input: two Enter/Y confirmations in the terminal plus AdGuard's own 4-screen setup wizard in the browser. Admin credentials are set in the wizard, not in the terminal.
 
 ### Point devices at AdGuard (via Tailscale)
 

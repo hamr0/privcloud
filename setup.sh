@@ -1108,6 +1108,94 @@ step_deploy() {
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
+# Populate a `mounts` array (in the caller's scope) with -v bind-mount
+# flags for the three semantic sync paths: data / media / immich.
+# Reads .env for FILES_LOCATION, MEDIA_LOCATION, UPLOAD_LOCATION, falling
+# back to the stock privcloud layout if the var isn't set.
+_syncthing_build_mounts() {
+    local SCRIPT_DIR
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    [[ -f "$SCRIPT_DIR/.env" ]] && source "$SCRIPT_DIR/.env"
+
+    local data_path="${FILES_LOCATION:-/mnt/data/data}"
+    local media_path="${MEDIA_LOCATION:-/mnt/data/media}"
+    local immich_path
+    if [[ -n "${UPLOAD_LOCATION:-}" ]]; then
+        immich_path=$(dirname "$UPLOAD_LOCATION")
+    else
+        immich_path="/home/$USER/data/immich"
+    fi
+
+    mounts=()
+    local p seen=""
+    for p in "$data_path" "$media_path" "$immich_path"; do
+        [[ -z "$p" ]] && continue
+        [[ "$seen" == *":$p:"* ]] && continue
+        if sudo test -d "$p"; then
+            mounts+=(-v "${p}:${p}")
+            seen+=":$p:"
+        fi
+    done
+}
+
+_syncthing_show_paths() {
+    local SCRIPT_DIR
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    [[ -f "$SCRIPT_DIR/.env" ]] && source "$SCRIPT_DIR/.env"
+    echo ""
+    echo -e "  ${BOLD}Paths currently bind-mounted into the Syncthing container${NC}"
+    sudo docker inspect -f '{{range .Mounts}}    {{.Source}} → {{.Destination}}{{println}}{{end}}' syncthing 2>/dev/null
+    echo ""
+    echo -e "  ${BOLD}Expected from .env (data / media / immich)${NC}"
+    echo -e "    data:    ${FILES_LOCATION:-/mnt/data/data}"
+    echo -e "    media:   ${MEDIA_LOCATION:-/mnt/data/media}"
+    local im="${UPLOAD_LOCATION:-}"
+    if [[ -n "$im" ]]; then
+        echo -e "    immich:  $(dirname "$im")"
+    else
+        echo -e "    immich:  /home/$USER/data/immich"
+    fi
+    echo ""
+    info "If the .env paths differ from what's mounted, pick 'Reapply paths"
+    info "from .env' to recreate the container with the new mounts."
+    info "(Pairings and folder shares are kept — they live in /opt/syncthing.)"
+}
+
+_syncthing_reapply_paths() {
+    warn "This will stop the Syncthing container and recreate it with"
+    warn "fresh bind mounts read from .env (data / media / immich)."
+    info "Pairings and folder shares stay intact — they live under /opt/syncthing."
+    read -p "  Continue? [y/N] " -n 1 -r
+    echo ""
+    [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return 0; }
+
+    info "Stopping + removing container..."
+    sudo docker rm -f syncthing > /dev/null 2>&1 || true
+
+    local -a mounts
+    _syncthing_build_mounts
+    mounts+=(-v /opt/syncthing:/var/syncthing)
+
+    info "Restarting with new mounts..."
+    sudo docker run -d \
+        --name syncthing \
+        --network=host \
+        --restart=unless-stopped \
+        -e PUID=$(id -u) \
+        -e PGID=$(id -g) \
+        -e STGUIADDRESS=0.0.0.0:8384 \
+        "${mounts[@]}" \
+        syncthing/syncthing:latest > /dev/null
+    sleep 2
+    if _syncthing_is_running; then
+        ok "Syncthing restarted with new sync paths."
+        _syncthing_show_paths
+    else
+        fail "Container failed to start. Check logs."
+        sudo docker logs --tail 20 syncthing 2>&1 || true
+    fi
+}
+
 _syncthing_device_id() {
     # Read the server's Device ID. Syncthing 1.x has `syncthing --device-id`,
     # Syncthing 2.x restructured the CLI and that flag was removed, so we
@@ -1189,18 +1277,11 @@ _syncthing_install() {
     sudo mkdir -p /opt/syncthing
     sudo chown -R "$(id -u):$(id -g)" /opt/syncthing 2>/dev/null || true
 
-    # Build the mount list. /var/syncthing is the container state dir
-    # (config, cert, key). We also bind-mount every data directory from
-    # the host that the user might want to sync, so the UI's "Add Folder"
-    # dialog can actually browse to them — otherwise the container is
-    # isolated and you can only sync things under /var/syncthing.
-    local mounts=(-v /opt/syncthing:/var/syncthing)
-    local host_path
-    for host_path in /mnt/data /home/"$USER"/data; do
-        if [[ -d "$host_path" ]]; then
-            mounts+=(-v "${host_path}:${host_path}")
-        fi
-    done
+    # Build the bind-mount list from .env semantic paths. Defaults match
+    # the three privcloud categories: data / media / immich.
+    local -a mounts
+    _syncthing_build_mounts
+    mounts+=(-v /opt/syncthing:/var/syncthing)
 
     info "Starting Syncthing container..."
     sudo docker run -d \
@@ -1223,6 +1304,8 @@ _syncthing_install() {
 
     echo ""
     _syncthing_show_device_id
+
+    _syncthing_show_paths
 
     echo ""
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1337,21 +1420,25 @@ _syncthing_server_step() {
     _syncthing_status
     echo ""
     echo -e "  ${BOLD}1)${NC} Refresh status"
-    echo -e "  ${BOLD}2)${NC} Show Device ID           ${DIM}<- for pairing new clients${NC}"
-    echo -e "  ${BOLD}3)${NC} Start"
-    echo -e "  ${BOLD}4)${NC} Stop"
-    echo -e "  ${BOLD}5)${NC} Restart"
-    echo -e "  ${BOLD}6)${NC} Logs                     ${DIM}<- tail -f syncthing logs${NC}"
+    echo -e "  ${BOLD}2)${NC} Show Device ID             ${DIM}<- for pairing new clients${NC}"
+    echo -e "  ${BOLD}3)${NC} Show sync paths            ${DIM}<- what the UI can browse${NC}"
+    echo -e "  ${BOLD}4)${NC} Reapply paths from .env    ${DIM}<- recreate container with fresh mounts${NC}"
+    echo -e "  ${BOLD}5)${NC} Start"
+    echo -e "  ${BOLD}6)${NC} Stop"
+    echo -e "  ${BOLD}7)${NC} Restart"
+    echo -e "  ${BOLD}8)${NC} Logs                       ${DIM}<- tail -f syncthing logs${NC}"
     echo -e "  ${BOLD}0)${NC} Cancel"
     echo ""
     read -p "  Choose: " st_choice
     case $st_choice in
         1) _syncthing_status ;;
         2) _syncthing_show_device_id ;;
-        3) info "Starting..."; sudo docker start syncthing > /dev/null && ok "Started." ;;
-        4) info "Stopping..."; sudo docker stop syncthing > /dev/null && ok "Stopped." ;;
-        5) info "Restarting..."; sudo docker restart syncthing > /dev/null && ok "Restarted." ;;
-        6)
+        3) _syncthing_show_paths ;;
+        4) _syncthing_reapply_paths ;;
+        5) info "Starting..."; sudo docker start syncthing > /dev/null && ok "Started." ;;
+        6) info "Stopping..."; sudo docker stop syncthing > /dev/null && ok "Stopped." ;;
+        7) info "Restarting..."; sudo docker restart syncthing > /dev/null && ok "Restarted." ;;
+        8)
             info "Last 50 lines (Ctrl+C to exit follow mode)..."
             sudo docker logs --tail 50 -f syncthing || true
             ;;

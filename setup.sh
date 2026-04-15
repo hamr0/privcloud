@@ -2864,6 +2864,17 @@ step_reset_password() {
 
 # ── CLI argument handling (used by SSH routing) ─────
 if [[ "${1:-}" == "--run" && -n "${2:-}" ]]; then
+    # Guard against stale checkouts: when --run gets a step name the local
+    # setup.sh doesn't define, assume the remote copy is behind main and
+    # print an actionable fix instead of "command not found".
+    if ! declare -F "$2" >/dev/null; then
+        fail "Step '$2' is not defined in this copy of setup.sh."
+        echo ""
+        info "The server's checkout is probably behind main. On the server:"
+        info "  ${BOLD}cd ~/privcloud && git pull${NC}"
+        info "Then re-run the menu option from your laptop."
+        exit 1
+    fi
     "$2"
     exit $?
 fi

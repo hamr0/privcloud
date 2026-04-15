@@ -705,20 +705,13 @@ Every device with Tailscale installed and logged into the same account gets a pr
 ### Setup
 
 1. Create free account at [login.tailscale.com](https://login.tailscale.com)
-2. Server: `federver` → **10** (handles installation and authentication)
-3. Install on your other devices:
-
-**Laptop (Fedora):**
-```bash
-sudo dnf install tailscale
-sudo systemctl enable --now tailscaled
-sudo tailscale up
-# If DNS issues: sudo tailscale up --accept-dns=false
-```
-
-**iPhone/Android:** Install "Tailscale" from App Store / Play Store, log in with same account.
-
-**Mac:** Download from [tailscale.com/download](https://tailscale.com/download).
+2. Run `federver` → **10** from your laptop. The step installs and authenticates *both sides* in one shot:
+   - **Laptop:** `sudo dnf install tailscale` + `systemctl enable --now tailscaled` + `sudo tailscale up` (prints an auth URL — click, approve)
+   - **Server:** SSHes in and does the same flow for the server, printing the server's auth URL too
+3. For phones / Mac / Windows (can't automate), install manually:
+   - **iPhone/Android:** "Tailscale" from App Store / Play Store, log in with same account
+   - **Mac:** [tailscale.com/download](https://tailscale.com/download)
+   - **Windows:** [tailscale.com/download](https://tailscale.com/download)
 
 ### Access from anywhere
 
@@ -895,50 +888,112 @@ Not the tool for: photo backup (use Immich), music library (use Navidrome), or o
 
 ### Install
 
-`federver` → **14**. The step:
+`federver` → **14**. Run from the laptop — the step installs and configures *both sides in one shot*:
 
-1. Opens firewall ports: 8384 (web UI), 22000/tcp+udp (sync protocol), 21027/udp (LAN discovery)
-2. Starts `syncthing/syncthing:latest` with `--network=host`, `STGUIADDRESS=0.0.0.0:8384`, and persistent volumes under `/opt/syncthing/{config,data}`
-3. Waits for the daemon to generate its Device ID
-4. Prints the **Server Device ID** and pairing instructions
+**Laptop side (automatic):**
+1. `sudo dnf install -y syncthing` if it's not already there
+2. `systemctl --user enable --now syncthing`
+3. Reads the laptop's Device ID and prints it
 
-### Install on each device you want to sync
+**Server side (via SSH):**
+1. Opens firewall: 8384/tcp (web UI), 22000/tcp+udp (sync protocol), 21027/udp (LAN discovery)
+2. Reads your `.env` and bind-mounts the three semantic privcloud paths into the Syncthing container — `data`, `media`, and `immich` — so the web UI's *Add Folder* dialog can browse to them directly
+3. Launches `syncthing/syncthing:latest` with `--network=host`, `--restart=unless-stopped`, `STGUIADDRESS=0.0.0.0:8384`, and state at `/opt/syncthing`
+4. Reads the server's Device ID and prints it
 
-**Fedora laptop:**
-```bash
-sudo dnf install -y syncthing
-systemctl --user enable --now syncthing
-```
-Open [http://localhost:8384](http://localhost:8384) in a browser.
+You end the step with both Device IDs visible and both dashboards running. The next step is pairing, in the browser.
 
-**Android:** Install **Syncthing** from F-Droid (recommended — official) or Play Store.
+### Installing on other devices
 
-**iOS:** Install **Möbius Sync** from the App Store (Syncthing-compatible, paid).
-
-**macOS / Windows:** Download from [syncthing.net](https://syncthing.net/downloads/).
+- **Android:** install **Syncthing** from F-Droid (recommended — official) or Play Store
+- **iOS:** install **Möbius Sync** from the App Store (Syncthing-compatible, paid)
+- **macOS / Windows / non-Fedora Linux:** download from [syncthing.net](https://syncthing.net/downloads/)
 
 ### Pairing
 
-Two-way handshake — each device knows about the other by Device ID.
+Two-way handshake by Device ID. Each pair only happens once:
 
-1. On the device (laptop/phone), open Syncthing → **Add Remote Device**
-2. Paste the server's Device ID (printed by step 14, or re-run 14 to see it again)
-3. Save
-4. On the server dashboard (`http://federver:8384`), a prompt appears asking to accept the incoming device → accept
-5. On one side, create a shared folder → on the other side, accept the folder share
+1. **On the laptop UI** (`http://localhost:8384`): **Add Remote Device** → paste the **server's** Device ID → Save
+2. **On the server UI** (`http://federver:8384` or `http://<server-ip>:8384`): a yellow banner appears saying the laptop wants to connect → **Add Device** → Save
 
-Repeat for each device you want in the sync group.
+Both sides now know each other. Repeat for every additional device (phone, tablet, second laptop) you want in the sync group.
+
+### Sharing folders
+
+Pairing just establishes identities. To actually sync something, you create a folder share:
+
+1. **On one side** — say the laptop — click **Add Folder**
+   - **Folder Label:** display name, e.g. `Notes`
+   - **Folder Path:** local path on this device, e.g. `/home/hamr/notes`
+   - **Sharing** tab → tick the other device (server)
+   - **Advanced** tab → **Folder Type** stays at **Send & Receive** (the default) for normal two-way sync
+   - Save
+2. **On the other side** — a yellow banner appears saying the laptop wants to share "Notes" → **Add**
+   - **Folder Path:** pick where on this device, e.g. `/mnt/data/data/notes`
+   - Save
+
+Drop a file into the folder on either side → appears on the other side within seconds. Delete, rename, edit — all sync bidirectionally.
+
+**The path is per-device.** The server holds the folder at `/mnt/data/data/notes`, the laptop at `/home/hamr/notes`. Only the contents are synced, not the paths. You can give the same folder totally different locations on each device.
+
+### Folder encryption (per folder, optional)
+
+Syncthing has an "untrusted device" mode for offsite backups — the remote stores an encrypted blob it can't read. Useful if, say, a friend is hosting a backup for you and you don't want them reading your code.
+
+Set it up from the **trusted** side:
+
+1. Open the folder → **Edit** → **Sharing** tab
+2. Next to each remote device, there's an **Encryption Password** field
+3. Leave blank → plain sync. Fill in → encrypted-at-rest on that remote.
+4. Save
+
+The **untrusted** side must accept the folder with **Folder Type = Receive Encrypted** (in the Advanced tab when accepting the share).
+
+Both sides must agree. Mismatch produces a log error like:
+```
+remote expects to exchange plain data, but local data is encrypted
+(folder-type receive-encrypted)
+```
+
+For normal use (your own laptop ↔ your own server), leave the password blank and Folder Type at `Send & Receive` on both sides — that's plain bidirectional sync.
+
+### Sync over the internet
+
+Works automatically. When your laptop is away from home, Syncthing tries in order:
+
+1. **LAN broadcast** (port 21027/udp) — finds peers on the same network
+2. **Global discovery** — Syncthing's public discovery servers hand back peer addresses
+3. **Public relays** — encrypted end-to-end, bridges traffic when neither side can connect directly
+
+No port forwarding, no DDNS, no VPN required. Device IDs are location-independent.
+
+**Bonus for your setup:** since both your laptop and server are on Tailscale, they'll see each other at stable tailnet IPs (`100.x.x.x`) from anywhere, bypassing relays entirely. Syncthing naturally picks the fastest connection, so you get near-LAN speed even from a coffee shop.
 
 ### Dashboard
 
-[http://federver:8384](http://federver:8384) — first visit prompts you to set a GUI username and password. Do it. The web UI is reachable from the entire LAN (and over Tailscale if you've set up global DNS for AdGuard), so it needs credentials.
+- **Server:** [http://federver:8384](http://federver:8384) (or `http://<server-ip>:8384`)
+- **Laptop:** [http://localhost:8384](http://localhost:8384)
+
+First visit to each dashboard prompts you to set a GUI username and password. Set them — both web UIs are reachable from the LAN (and over Tailscale), so they need credentials. After that, run `federver → 17 (Save to pass)` to back up the server's `device_id`, `config.xml`, `cert.pem`, and `key.pem` into `pass`. The cert/key pair is the node's cryptographic identity — losing it means re-pairing every client.
+
+### Submenu (`federver` → 14 after install)
+
+Re-running option 14 once Syncthing is installed opens a management submenu:
+
+1. **Refresh status** — running state, uptime, dashboard URL, Device ID
+2. **Show Device ID** — for pairing new clients
+3. **Show sync paths** — dumps the container's current bind mounts and compares to `.env`
+4. **Reapply paths from .env** — stops the container, rebuilds it with fresh mounts (pairings and folder shares persist because they live in `/opt/syncthing`)
+5. **Start / 6. Stop / 7. Restart** — container lifecycle
+8. **Logs** — `docker logs -f`
 
 ### Troubleshooting
 
 - **Devices don't discover each other on LAN** — port 21027/udp blocked somewhere. Check firewall on both sides.
-- **Sync is slow on LAN** — port 22000 blocked, forcing traffic through Syncthing's public relays. Open 22000/tcp on the device firewall too.
-- **Device ID not shown after install** — container needs a few seconds to generate it. Re-run `federver` → 14 and it'll print the ID via `docker exec syncthing syncthing --device-id`.
-- **Forgot the GUI password** — stop the container, delete `/opt/syncthing/config/config.xml`, restart. It'll regenerate clean.
+- **Sync is slow from off-site** — check Syncthing dashboard → peer details. If the connection shows "Relay" it's using Syncthing's public relays (slower, bandwidth-limited). If both peers are on Tailscale, the tailnet connection should be direct — check Tailscale is up on both sides.
+- **Device ID unavailable** — container still starting up or Syncthing 2.x CLI couldn't be read. Wait 10 seconds and re-run option 14 → 2. The helper tries several CLI shapes and falls back to reading `config.xml` directly.
+- **"Remote expects to exchange plain data, but local data is encrypted"** — Folder Type mismatch. One side set `Receive Encrypted`, the other didn't set an encryption password. Either set a password on the trusted side's Sharing tab, or change the untrusted side's Folder Type to `Send & Receive`.
+- **Forgot the GUI password** — stop the container (`federver → 14 → 6`), delete `/opt/syncthing/config/config.xml`, restart. Regenerates clean. Pairings are lost (they lived in config.xml).
 
 ---
 

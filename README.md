@@ -134,6 +134,8 @@ Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
 | Show WireGuard peer config | `federver` → **11** → **2** (server) |
 | Remove WireGuard peer | `federver` → **11** → **3** (server) |
 | AdGuard dashboard | `http://federver` (Query Log tab shows live blocking) |
+| Syncthing dashboard | `http://federver:8384` (server) or `http://localhost:8384` (laptop) |
+| Show Syncthing Device ID | `federver` → **14** → **2** |
 | Check containers | `docker ps` |
 | View logs | `docker logs <container>` |
 | Update Immich | `privcloud update` |

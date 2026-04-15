@@ -895,12 +895,18 @@ _services_status() {
         has_adguard=1
     fi
 
+    local has_syncthing=0
+    if sg docker -c "docker ps --format '{{.Names}}'" 2>/dev/null | grep -q '^syncthing$'; then
+        has_syncthing=1
+    fi
+
     echo -e "  ${BOLD}Service URLs (local network)${NC}"
     echo -e "    Immich:       ${BLUE}http://$IP:2283${NC}"
     echo -e "    Navidrome:    ${BLUE}http://$IP:4533${NC}"
     echo -e "    FileBrowser:  ${BLUE}http://$IP:8080${NC}"
     echo -e "    Uptime Kuma:  ${BLUE}http://$IP:3001${NC}"
-    [[ "$has_adguard" == 1 ]] && echo -e "    AdGuard:      ${BLUE}http://$IP${NC}"
+    [[ "$has_adguard"   == 1 ]] && echo -e "    AdGuard:      ${BLUE}http://$IP${NC}"
+    [[ "$has_syncthing" == 1 ]] && echo -e "    Syncthing:    ${BLUE}http://$IP:8384${NC}"
 
     if [[ -n "$TS_IP" ]]; then
         echo ""
@@ -909,7 +915,8 @@ _services_status() {
         echo -e "    Navidrome:    ${BLUE}http://$HOST:4533${NC}"
         echo -e "    FileBrowser:  ${BLUE}http://$HOST:8080${NC}"
         echo -e "    Uptime Kuma:  ${BLUE}http://$HOST:3001${NC}"
-        [[ "$has_adguard" == 1 ]] && echo -e "    AdGuard:      ${BLUE}http://$HOST${NC}"
+        [[ "$has_adguard"   == 1 ]] && echo -e "    AdGuard:      ${BLUE}http://$HOST${NC}"
+        [[ "$has_syncthing" == 1 ]] && echo -e "    Syncthing:    ${BLUE}http://$HOST:8384${NC}"
         echo -e "    ${DIM}(MagicDNS resolves '$HOST' on any Tailscale device — or use IP $TS_IP)${NC}"
     fi
 }
@@ -1056,42 +1063,51 @@ _syncthing_device_id() {
     sudo docker exec syncthing syncthing --device-id 2>/dev/null || echo ""
 }
 
-_syncthing_show_pairing_info() {
+_syncthing_is_running() {
+    sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'
+}
+
+_syncthing_exists() {
+    sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'
+}
+
+_syncthing_status() {
     local IP
     IP=$(hostname -I | awk '{print $1}')
-    echo -e "  Dashboard: ${BLUE}http://$IP:8384${NC}"
     echo ""
-    local id
-    id=$(_syncthing_device_id)
-    if [[ -n "$id" ]]; then
-        echo -e "  ${BOLD}Server Device ID${NC} ${DIM}(paste this into clients to pair)${NC}:"
-        echo -e "    ${BOLD}$id${NC}"
+    echo -e "  ${BOLD}Syncthing${NC}"
+    if _syncthing_is_running; then
+        local uptime
+        uptime=$(sudo docker ps --filter name=syncthing --format '{{.Status}}' 2>/dev/null)
+        echo -e "    State:     ${GREEN}running${NC}  ${DIM}($uptime)${NC}"
+        echo -e "    Dashboard: ${BLUE}http://$IP:8384${NC}"
+        local id
+        id=$(_syncthing_device_id)
+        if [[ -n "$id" ]]; then
+            echo -e "    Device ID: ${BOLD}$id${NC}"
+        fi
+    elif _syncthing_exists; then
+        echo -e "    State:     ${RED}stopped${NC}"
     else
-        warn "Device ID not ready yet. Give the container a few more seconds and re-run."
+        echo -e "    State:     ${DIM}not installed${NC}"
     fi
 }
 
-step_syncthing() {
-    info "Syncthing syncs folders between devices in real-time, peer-to-peer."
-    info "Continuous bidirectional sync with conflict resolution."
-    echo ""
-
-    # Prereq: Docker
-    if ! command -v docker &>/dev/null; then
-        fail "Docker not installed. Run step 5 first."
-        return 1
+_syncthing_show_device_id() {
+    local id
+    id=$(_syncthing_device_id)
+    if [[ -n "$id" ]]; then
+        echo ""
+        echo -e "  ${BOLD}Server Device ID${NC} ${DIM}(paste into clients to pair):${NC}"
+        echo -e "    ${BOLD}$id${NC}"
+    else
+        fail "Device ID unavailable (container not running?)."
     fi
+}
 
+_syncthing_install() {
     local IP
     IP=$(hostname -I | awk '{print $1}')
-
-    # Idempotent: already running? Show dashboard + Device ID + guidance.
-    if [[ "$DRY_RUN" != "1" ]] && sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'; then
-        ok "Syncthing is already running."
-        echo ""
-        _syncthing_show_pairing_info
-        return 0
-    fi
 
     # Open firewall: 8384 web UI, 22000/tcp+udp sync, 21027/udp LAN discovery
     info "Opening firewall ports (8384 web UI, 22000 sync, 21027 discovery)..."
@@ -1102,11 +1118,10 @@ step_syncthing() {
     sudo firewall-cmd --reload > /dev/null
     ok "Firewall: 8384/tcp, 22000/tcp+udp, 21027/udp open."
 
-    # Persistent volumes
     sudo mkdir -p /opt/syncthing/config /opt/syncthing/data
 
-    # Launch container. STGUIADDRESS forces the web UI onto all interfaces —
-    # default is 127.0.0.1:8384 which is useless with --network=host.
+    # STGUIADDRESS forces the web UI onto all interfaces — default is
+    # 127.0.0.1:8384 which is useless with --network=host.
     info "Starting Syncthing container..."
     sudo docker run -d \
         --name syncthing \
@@ -1119,18 +1134,16 @@ step_syncthing() {
         -v /opt/syncthing/data:/var/syncthing \
         syncthing/syncthing:latest > /dev/null
     sleep 3
-    if [[ "$DRY_RUN" != "1" ]] && ! sudo docker ps --format '{{.Names}}' | grep -q '^syncthing$'; then
+    if [[ "$DRY_RUN" != "1" ]] && ! _syncthing_is_running; then
         fail "Syncthing container failed to start."
         sudo docker logs --tail 20 syncthing 2>&1 || true
         return 1
     fi
     ok "Syncthing running."
-
-    # Give the daemon a moment to generate its Device ID
     sleep 2
 
     echo ""
-    _syncthing_show_pairing_info
+    _syncthing_show_device_id
 
     echo ""
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1154,10 +1167,53 @@ step_syncthing() {
     echo ""
     echo -e "  ${DIM}Note: first time you open the server dashboard it'll ask you to${NC}"
     echo -e "  ${DIM}set a GUI username + password. Do it — the UI is LAN-reachable.${NC}"
+    echo -e "  ${DIM}After that, run 'federver → 17 (Save to pass)' to back up the${NC}"
+    echo -e "  ${DIM}device identity — lose cert.pem/key.pem and you re-pair everything.${NC}"
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-
     echo ""
     ok "Syncthing installed."
+}
+
+step_syncthing() {
+    info "Syncthing syncs folders between devices in real-time, peer-to-peer."
+    info "Continuous bidirectional sync with conflict resolution."
+    echo ""
+
+    if ! command -v docker &>/dev/null; then
+        fail "Docker not installed. Run step 5 first."
+        return 1
+    fi
+
+    # Fresh install path
+    if ! _syncthing_exists; then
+        _syncthing_install
+        return
+    fi
+
+    # Already exists — show status + management submenu
+    _syncthing_status
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Refresh status"
+    echo -e "  ${BOLD}2)${NC} Show Device ID           ${DIM}<- for pairing new clients${NC}"
+    echo -e "  ${BOLD}3)${NC} Start"
+    echo -e "  ${BOLD}4)${NC} Stop"
+    echo -e "  ${BOLD}5)${NC} Restart"
+    echo -e "  ${BOLD}6)${NC} Logs                     ${DIM}<- tail -f syncthing logs${NC}"
+    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Choose: " st_choice
+    case $st_choice in
+        1) _syncthing_status ;;
+        2) _syncthing_show_device_id ;;
+        3) info "Starting..."; sudo docker start syncthing > /dev/null && ok "Started." ;;
+        4) info "Stopping..."; sudo docker stop syncthing > /dev/null && ok "Stopped." ;;
+        5) info "Restarting..."; sudo docker restart syncthing > /dev/null && ok "Restarted." ;;
+        6)
+            info "Last 50 lines (Ctrl+C to exit follow mode)..."
+            sudo docker logs --tail 50 -f syncthing || true
+            ;;
+        0|*) return ;;
+    esac
 }
 
 step_remotedesktop() {
@@ -2462,6 +2518,7 @@ REMOTE_STATUS
     echo -e "    FileBrowser:  ${BLUE}http://$IP:8080${NC}"
     echo -e "    Uptime Kuma:  ${BLUE}http://$IP:3001${NC}"
     echo "$CONTAINERS" | grep -q '^adguard|' && echo -e "    AdGuard:      ${BLUE}http://$IP${NC}"
+    echo "$CONTAINERS" | grep -q '^syncthing|' && echo -e "    Syncthing:    ${BLUE}http://$IP:8384${NC}"
 
     if [[ "$TS_IP" != "not connected" ]]; then
         echo ""
@@ -2471,6 +2528,7 @@ REMOTE_STATUS
         echo -e "    FileBrowser:  ${BLUE}http://federver:8080${NC}"
         echo -e "    Uptime Kuma:  ${BLUE}http://federver:3001${NC}"
         echo "$CONTAINERS" | grep -q '^adguard|' && echo -e "    AdGuard:      ${BLUE}http://federver${NC}"
+        echo "$CONTAINERS" | grep -q '^syncthing|' && echo -e "    Syncthing:    ${BLUE}http://federver:8384${NC}"
         echo -e "    ${DIM}(or use Tailscale IP: $TS_IP)${NC}"
     fi
 
@@ -2565,6 +2623,14 @@ for f in $(sudo find /etc/wireguard -name '*.conf' ! -name 'wg0.conf' 2>/dev/nul
 done
 echo "---ADGUARD---"
 sudo cat /opt/adguard/conf/AdGuardHome.yaml 2>/dev/null || true
+echo "---SYNCTHING_ID---"
+sudo docker exec syncthing syncthing --device-id 2>/dev/null || true
+echo "---SYNCTHING_CONFIG---"
+sudo cat /opt/syncthing/config/config.xml 2>/dev/null || true
+echo "---SYNCTHING_CERT---"
+sudo cat /opt/syncthing/config/cert.pem 2>/dev/null || true
+echo "---SYNCTHING_KEY---"
+sudo cat /opt/syncthing/config/key.pem 2>/dev/null || true
 echo "---END---"
 FETCH
 )
@@ -2667,21 +2733,39 @@ $line"
     fi
 
     # AdGuard Home config (contains admin user + bcrypt password hash + filter config)
-    local adguard_data=$(echo "$server_data" | sed -n '/^---ADGUARD---$/,/^---END---$/p' | sed '1d;$d')
+    local adguard_data=$(echo "$server_data" | sed -n '/^---ADGUARD---$/,/^---SYNCTHING_ID---$/p' | sed '1d;$d')
     if [[ -n "$adguard_data" ]]; then
         echo ""
         info "AdGuard config..."
         echo "$adguard_data" | pass insert -m -f privcloud/adguard/config 2>/dev/null && ok "privcloud/adguard/config"
     fi
 
+    # Syncthing identity — device ID + config.xml + cert.pem + key.pem.
+    # The cert/key pair IS the node identity; losing them means re-pairing
+    # every client. config.xml holds device list, folder shares, GUI creds.
+    local st_id=$(echo "$server_data" | sed -n '/^---SYNCTHING_ID---$/,/^---SYNCTHING_CONFIG---$/p' | sed '1d;$d')
+    local st_config=$(echo "$server_data" | sed -n '/^---SYNCTHING_CONFIG---$/,/^---SYNCTHING_CERT---$/p' | sed '1d;$d')
+    local st_cert=$(echo "$server_data" | sed -n '/^---SYNCTHING_CERT---$/,/^---SYNCTHING_KEY---$/p' | sed '1d;$d')
+    local st_key=$(echo "$server_data" | sed -n '/^---SYNCTHING_KEY---$/,/^---END---$/p' | sed '1d;$d')
+    if [[ -n "$st_id" || -n "$st_config" ]]; then
+        echo ""
+        info "Syncthing identity..."
+        [[ -n "$st_id"     ]] && echo "$st_id"     | pass insert -e -f privcloud/syncthing/device_id 2>/dev/null && ok "privcloud/syncthing/device_id"
+        [[ -n "$st_config" ]] && echo "$st_config" | pass insert -m -f privcloud/syncthing/config    2>/dev/null && ok "privcloud/syncthing/config"
+        [[ -n "$st_cert"   ]] && echo "$st_cert"   | pass insert -m -f privcloud/syncthing/cert      2>/dev/null && ok "privcloud/syncthing/cert"
+        [[ -n "$st_key"    ]] && echo "$st_key"    | pass insert -m -f privcloud/syncthing/key       2>/dev/null && ok "privcloud/syncthing/key"
+    fi
+
     echo ""
     ok "All saved to pass."
     echo ""
-    info "pass show privcloud/                       # list everything"
-    info "pass show privcloud/server/local_ip         # server IP"
-    info "pass show privcloud/services/urls           # all service URLs"
-    info "pass show privcloud/config/env              # .env (DB password, paths)"
-    info "pass show privcloud/ssh/private_key         # SSH key"
+    info "pass show privcloud/                         # list everything"
+    info "pass show privcloud/server/local_ip           # server IP"
+    info "pass show privcloud/services/urls             # all service URLs"
+    info "pass show privcloud/config/env                # .env (DB password, paths)"
+    info "pass show privcloud/ssh/private_key           # SSH key"
+    info "pass show privcloud/syncthing/device_id       # Syncthing device ID"
+    info "pass show privcloud/syncthing/cert            # Syncthing node identity cert"
 }
 
 run_all() {

@@ -1060,7 +1060,18 @@ step_deploy() {
 }
 
 _syncthing_device_id() {
-    sudo docker exec syncthing syncthing --device-id 2>/dev/null || echo ""
+    # First-run Syncthing needs a few seconds to generate its cert and
+    # become ready for `docker exec`. Poll for up to 15 seconds.
+    local attempt id
+    for attempt in $(seq 1 15); do
+        id=$(sudo docker exec syncthing syncthing --device-id 2>/dev/null || echo "")
+        if [[ -n "$id" ]]; then
+            echo "$id"
+            return 0
+        fi
+        sleep 1
+    done
+    echo ""
 }
 
 _syncthing_is_running() {
@@ -1174,11 +1185,71 @@ _syncthing_install() {
     ok "Syncthing installed."
 }
 
+_syncthing_install_laptop() {
+    echo -e "  ${BOLD}── Laptop side ──${NC}"
+    if command -v syncthing &>/dev/null; then
+        ok "Syncthing already installed on this laptop."
+    else
+        if ! command -v dnf &>/dev/null; then
+            warn "Not a dnf-based system. Install Syncthing manually:"
+            info "  https://syncthing.net/downloads/"
+            return 0
+        fi
+        info "Installing Syncthing via dnf..."
+        sudo dnf install -y syncthing > /dev/null 2>&1 || {
+            fail "dnf install failed."
+            return 1
+        }
+        ok "Syncthing installed."
+    fi
+
+    # User-level systemd service — runs as the logged-in user, no sudo needed
+    if systemctl --user is-active syncthing &>/dev/null; then
+        ok "Syncthing user service already running."
+    else
+        info "Enabling Syncthing user service..."
+        systemctl --user enable --now syncthing 2>/dev/null && ok "Service enabled + started."
+    fi
+
+    # Give it a moment to generate its identity before asking for the ID
+    local attempt laptop_id=""
+    for attempt in $(seq 1 10); do
+        laptop_id=$(syncthing --device-id 2>/dev/null || echo "")
+        [[ -n "$laptop_id" ]] && break
+        sleep 1
+    done
+
+    echo -e "  Laptop dashboard: ${BLUE}http://localhost:8384${NC}"
+    if [[ -n "$laptop_id" ]]; then
+        echo -e "  ${BOLD}Laptop Device ID:${NC} ${BOLD}$laptop_id${NC}"
+    else
+        warn "Laptop Device ID not ready yet — check systemctl --user status syncthing"
+    fi
+    echo ""
+}
+
 step_syncthing() {
     info "Syncthing syncs folders between devices in real-time, peer-to-peer."
     info "Continuous bidirectional sync with conflict resolution."
     echo ""
 
+    # Laptop-side: install locally first, then SSH to server for its side.
+    # Server-side (we got here via --run from an SSH hop, or user is logged
+    # in directly on federver): just do the server half.
+    if ! _is_server; then
+        _syncthing_install_laptop || return 1
+        echo -e "  ${BOLD}── Server side ──${NC}"
+        _on_server _syncthing_server_step
+        return
+    fi
+
+    # ── From here on: we are on the server ──
+    _syncthing_server_step
+}
+
+# Server-side install-or-manage. Runs on federver, either called directly
+# or via `./setup.sh --run _syncthing_server_step` from an _on_server hop.
+_syncthing_server_step() {
     if ! command -v docker &>/dev/null; then
         fail "Docker not installed. Run step 5 first."
         return 1
@@ -2897,7 +2968,7 @@ while true; do
         11) run_step "[11] Manage WireGuard" "_on_server step_wireguard" ;;
         12) run_step "[12] Manage AdGuard" "_on_server step_adguard" ;;
         13) run_step "[13] Manage storage" "_on_server step_storage" ;;
-        14) run_step "[14] Manage Syncthing" "_on_server step_syncthing" ;;
+        14) run_step "[14] Manage Syncthing" step_syncthing ;;
         15) run_step "[15] Manage remote desktop" "_on_server step_remotedesktop" ;;
         16) run_step "[16] Sync files" "_on_laptop step_sync" ;;
         17) run_step "[17] Save to pass" "_on_laptop step_save_to_pass" ;;

@@ -1110,13 +1110,15 @@ step_deploy() {
 
 _syncthing_device_id() {
     # First-run Syncthing needs a few seconds to generate its cert and
-    # become ready for `docker exec`. Poll for up to 20 seconds, and
-    # validate the output looks like a real Device ID (the command can
-    # print warnings to stdout when the cert file doesn't exist yet).
+    # become ready for `docker exec`. Poll and validate the output matches
+    # the real Device ID format (8 groups of 7 uppercase alphanumeric chars
+    # separated by 7 hyphens). syncthing prints warnings to stdout when
+    # the cert isn't ready yet, so the grep silently drops anything that
+    # isn't a valid-shaped ID.
     local attempt id
     for attempt in $(seq 1 20); do
         id=$(sudo docker exec syncthing syncthing --device-id 2>/dev/null \
-             | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){6}$' || echo "")
+             | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$' | head -1 || echo "")
         if [[ -n "$id" ]]; then
             echo "$id"
             return 0
@@ -1266,25 +1268,15 @@ _syncthing_install_laptop() {
         systemctl --user enable --now syncthing 2>/dev/null && ok "Service enabled + started."
     fi
 
-    # Wait for Syncthing to generate its cert file before asking for the
-    # Device ID. `syncthing --device-id` prints a warning to STDOUT (not
-    # stderr) when the cert isn't there yet, which pollutes the output if
-    # we read it too early. So: poll for the cert file first, then read
-    # the ID, then validate it looks like a real Device ID (7-char groups
-    # separated by hyphens). Check every common config location because
-    # different Syncthing versions use XDG_STATE_HOME vs XDG_CONFIG_HOME.
-    local attempt laptop_id="" cert
-    for attempt in $(seq 1 20); do
-        for cert in \
-            ~/.local/state/syncthing/cert.pem \
-            ~/.config/syncthing/cert.pem \
-            ~/.local/share/syncthing/cert.pem
-        do
-            if [[ -f "$cert" ]]; then
-                laptop_id=$(syncthing --device-id 2>/dev/null | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){6}$' || echo "")
-                [[ -n "$laptop_id" ]] && break 2
-            fi
-        done
+    # Read the laptop's Device ID. `syncthing --device-id` prints warnings
+    # to STDOUT when the cert isn't ready yet, so validate the output
+    # matches the real format (8 groups of 7 uppercase chars, 7 hyphens).
+    # Short retry window because after `systemctl --user enable --now` the
+    # cert is usually ready within a second or two; no point waiting 20s.
+    local attempt laptop_id=""
+    for attempt in $(seq 1 10); do
+        laptop_id=$(syncthing --device-id 2>/dev/null | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$' | head -1 || echo "")
+        [[ -n "$laptop_id" ]] && break
         sleep 1
     done
 

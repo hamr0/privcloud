@@ -2090,7 +2090,7 @@ step_status() {
             docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null
             echo "@@DSTATS_END@@"
             echo "@@DISK_START@@"
-            df -h / /home 2>/dev/null | tail -n +2
+            df -h / /home /mnt/data 2>/dev/null | tail -n +2 | awk '!seen[$1]++'
             echo "@@DISK_END@@"
 REMOTE_STATUS
         ) || { fail "Cannot reach server at $SERVER_IP."; return 1; }
@@ -2122,7 +2122,7 @@ REMOTE_STATUS
         MEM=$(free -h 2>/dev/null | awk '/^Mem:/{print "mem|"$2"|"$3"|"$7} /^Swap:/{print "swap|"$2"|"$3}')
         CONTAINERS=$(docker ps --format '{{.Names}}|{{.Status}}' 2>/dev/null)
         DSTATS=$(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null)
-        DISK=$(df -h / /home 2>/dev/null | tail -n +2)
+        DISK=$(df -h / /home /mnt/data 2>/dev/null | tail -n +2 | awk '!seen[$1]++')
     fi
 
     echo -e "  ${BOLD}Server${NC}"
@@ -2150,7 +2150,7 @@ REMOTE_STATUS
     fi
 
     echo -e "  ${BOLD}Disk${NC}"
-    echo "$DISK" | awk '{printf "    %-20s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5}'
+    echo "$DISK" | awk '{printf "    %-20s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,$6}'
     echo ""
 
     # Containers + per-container CPU/MEM from docker stats

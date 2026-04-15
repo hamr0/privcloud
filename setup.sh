@@ -2441,10 +2441,13 @@ ADGUARDEOF
 
 # Ask the user to literally type the service name to confirm a destructive
 # action. Blank input or a mismatch cancels. Returns 0 on match, 1 otherwise.
+# Uses printf for the prompt because `read -p` doesn't interpret the color
+# escape sequences, which would show up as literal \033[1m text.
 _confirm_delete() {
     local name="$1"
     local reply
-    read -p "  Type '${BOLD}${name}${NC}' to DELETE (blank = cancel): " reply
+    printf "  Type ${BOLD}${RED}${name}${NC} to DELETE (blank = cancel): "
+    read -r reply
     if [[ -z "$reply" ]]; then
         info "Cancelled. Nothing deleted."
         return 1

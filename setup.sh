@@ -415,6 +415,41 @@ _ts_status() {
 _ts_up()   { info "Connecting..."; sudo tailscale up && ok "Connected."; }
 _ts_down() { info "Disconnecting..."; sudo tailscale down && ok "Disconnected."; }
 
+_ts_uninstall() {
+    echo ""
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${RED}DELETE Tailscale (server side)${NC}"
+    echo ""
+    echo -e "  ${BOLD}What will happen:${NC}"
+    echo -e "    ${RED}•${NC} tailscale down + logout (removes node from your tailnet)"
+    echo -e "    ${RED}•${NC} systemctl disable --now tailscaled"
+    echo -e "    ${RED}•${NC} dnf remove -y tailscale"
+    echo ""
+    echo -e "  ${BOLD}Consequences:${NC}"
+    echo -e "    ${YELLOW}•${NC} You lose remote access to this server via tailnet"
+    echo -e "    ${YELLOW}•${NC} MagicDNS name '${BOLD}federver${NC}' stops resolving from any device"
+    echo -e "    ${YELLOW}•${NC} If AdGuard was routing tailnet DNS through this server, that"
+    echo -e "      path breaks — edit Tailscale admin console DNS before uninstalling"
+    echo -e "    ${YELLOW}•${NC} Phones/laptops that used ${BOLD}http://federver:PORT${NC} URLs must"
+    echo -e "      switch to the LAN IP (${BOLD}http://192.168.x.x:PORT${NC}) or reconnect at home"
+    echo ""
+    echo -e "  ${BOLD}Kept:${NC}"
+    echo -e "    ${GREEN}•${NC} Tailscale on your laptop untouched"
+    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    _confirm_delete tailscale || return 0
+
+    info "Bringing tailnet connection down..."
+    sudo tailscale logout > /dev/null 2>&1 || true
+    sudo tailscale down > /dev/null 2>&1 || true
+    info "Disabling tailscaled..."
+    sudo systemctl disable --now tailscaled > /dev/null 2>&1 || true
+    info "Removing package..."
+    sudo dnf remove -y tailscale > /dev/null 2>&1 || true
+    ok "Tailscale removed."
+}
+
 _ts_install() {
     info "Installing Tailscale..."
     curl -fsSL https://tailscale.com/install.sh | sh
@@ -528,6 +563,7 @@ _ts_server_step() {
     echo -e "  ${BOLD}2)${NC} Connect              ${DIM}<- tailscale up${NC}"
     echo -e "  ${BOLD}3)${NC} Disconnect           ${DIM}<- tailscale down${NC}"
     echo -e "  ${BOLD}4)${NC} Re-authenticate      ${DIM}<- new login URL${NC}"
+    echo -e "  ${BOLD}5)${NC} ${RED}Uninstall${NC}            ${DIM}<- remove tailscaled + package${NC}"
     echo -e "  ${BOLD}0)${NC} Cancel"
     echo ""
     read -p "  Choose: " ts_choice
@@ -536,6 +572,7 @@ _ts_server_step() {
         2) _ts_up ;;
         3) _ts_down ;;
         4) _ts_install ;;
+        5) _ts_uninstall ;;
         0|*) return ;;
     esac
 }
@@ -984,6 +1021,95 @@ _services_lifecycle() {
     ok "${action^} complete."
 }
 
+# Show a numbered list of containers (running or all) + an "All" option,
+# read a selection, and echo either a container name or the literal "all".
+# Returns 1 if the user cancels. Use running=0 to list stopped containers
+# too (for Start/Resume), running=1 for only-running (for Stop/Restart/Logs).
+_pick_container() {
+    local running="${1:-1}"
+    local names
+    if [[ "$running" == 1 ]]; then
+        names=$(sudo docker ps --format '{{.Names}}' 2>/dev/null)
+    else
+        names=$(sudo docker ps -a --format '{{.Names}}' 2>/dev/null)
+    fi
+    if [[ -z "$names" ]]; then
+        fail "No containers found." >&2
+        return 1
+    fi
+    echo "" >&2
+    echo -e "  ${BOLD}0)${NC} ${BOLD}All${NC}" >&2
+    local idx=1
+    declare -a arr
+    while IFS= read -r n; do
+        local status
+        status=$(sudo docker ps -a --filter "name=^${n}$" --format '{{.Status}}' 2>/dev/null)
+        echo -e "  ${BOLD}$idx)${NC} $(printf '%-24s' "$n") ${DIM}${status}${NC}" >&2
+        arr[$idx]="$n"
+        idx=$((idx + 1))
+    done <<< "$names"
+    echo "" >&2
+    read -p "  Choose: " pick >&2
+    if [[ "$pick" == "0" ]]; then
+        echo "all"; return 0
+    elif [[ -n "${arr[$pick]:-}" ]]; then
+        echo "${arr[$pick]}"; return 0
+    fi
+    return 1
+}
+
+_services_action() {
+    local action="$1"   # start | stop | restart
+    local running_filter=1
+    [[ "$action" == "start" ]] && running_filter=0
+    local target
+    target=$(_pick_container "$running_filter") || { info "Cancelled."; return; }
+    if [[ "$target" == "all" ]]; then
+        _services_lifecycle "$action"
+    else
+        info "${action^} $target..."
+        sudo docker "$action" "$target" > /dev/null && ok "${action^} $target complete."
+    fi
+}
+
+# Suspend: stop the container AND disable its restart policy so it stays
+# down across reboots until explicitly Resumed. Resume flips both back.
+_services_suspend() {
+    local target
+    target=$(_pick_container 1) || { info "Cancelled."; return; }
+    local list
+    if [[ "$target" == "all" ]]; then
+        list=$(sudo docker ps --format '{{.Names}}')
+    else
+        list="$target"
+    fi
+    local c
+    for c in $list; do
+        info "Suspending $c..."
+        sudo docker update --restart=no "$c" > /dev/null 2>&1 || true
+        sudo docker stop "$c" > /dev/null 2>&1 || true
+    done
+    ok "Suspended. Container(s) will stay stopped across reboots until Resumed."
+}
+
+_services_resume() {
+    local target
+    target=$(_pick_container 0) || { info "Cancelled."; return; }
+    local list
+    if [[ "$target" == "all" ]]; then
+        list=$(sudo docker ps -a --format '{{.Names}}')
+    else
+        list="$target"
+    fi
+    local c
+    for c in $list; do
+        info "Resuming $c..."
+        sudo docker update --restart=unless-stopped "$c" > /dev/null 2>&1 || true
+        sudo docker start "$c" > /dev/null 2>&1 || true
+    done
+    ok "Resumed."
+}
+
 _services_logs() {
     echo ""
     echo -e "  ${BOLD}Running containers:${NC}"
@@ -1011,21 +1137,25 @@ _services_logs() {
 
 step_services() {
     echo -e "  ${BOLD}1)${NC} Status                     ${DIM}<- running containers + URLs${NC}"
-    echo -e "  ${BOLD}2)${NC} Start all"
-    echo -e "  ${BOLD}3)${NC} Stop all"
-    echo -e "  ${BOLD}4)${NC} Restart all"
-    echo -e "  ${BOLD}5)${NC} Logs for a container"
-    echo -e "  ${BOLD}6)${NC} Deploy / redeploy           ${DIM}<- first install or change data paths${NC}"
+    echo -e "  ${BOLD}2)${NC} Start                      ${DIM}<- pick one or All${NC}"
+    echo -e "  ${BOLD}3)${NC} Stop                       ${DIM}<- pick one or All${NC}"
+    echo -e "  ${BOLD}4)${NC} Restart                    ${DIM}<- pick one or All${NC}"
+    echo -e "  ${BOLD}5)${NC} Suspend                    ${DIM}<- stop + disable autostart (survives reboot)${NC}"
+    echo -e "  ${BOLD}6)${NC} Resume                     ${DIM}<- undo suspend${NC}"
+    echo -e "  ${BOLD}7)${NC} Logs                       ${DIM}<- tail -f a container${NC}"
+    echo -e "  ${BOLD}8)${NC} Deploy / redeploy          ${DIM}<- first install or change data paths${NC}"
     echo -e "  ${BOLD}0)${NC} Cancel"
     echo ""
     read -p "  Choose: " svc_choice
     case $svc_choice in
         1) _services_status ;;
-        2) _services_lifecycle start ;;
-        3) _services_lifecycle stop ;;
-        4) _services_lifecycle restart ;;
-        5) _services_logs ;;
-        6) step_deploy ;;
+        2) _services_action start ;;
+        3) _services_action stop ;;
+        4) _services_action restart ;;
+        5) _services_suspend ;;
+        6) _services_resume ;;
+        7) _services_logs ;;
+        8) step_deploy ;;
         0|*) return ;;
     esac
 }
@@ -1183,6 +1313,43 @@ _syncthing_show_paths() {
     info "If the .env paths differ from what's mounted, pick 'Reapply paths"
     info "from .env' to recreate the container with the new mounts."
     info "(Pairings and folder shares are kept — they live in /opt/syncthing.)"
+}
+
+_syncthing_uninstall() {
+    echo ""
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${RED}DELETE Syncthing (server side)${NC}"
+    echo ""
+    echo -e "  ${BOLD}What will happen:${NC}"
+    echo -e "    ${RED}•${NC} Stop + remove the syncthing container on the server"
+    echo -e "    ${RED}•${NC} Close firewall ports 8384/tcp, 22000/tcp+udp, 21027/udp"
+    echo ""
+    echo -e "  ${BOLD}Consequences:${NC}"
+    echo -e "    ${YELLOW}•${NC} Real-time file sync between server and other devices stops"
+    echo -e "    ${YELLOW}•${NC} Paired devices show the server as 'Disconnected'"
+    echo ""
+    echo -e "  ${BOLD}Kept:${NC}"
+    echo -e "    ${GREEN}•${NC} /opt/syncthing/ — device identity (cert.pem/key.pem), config,"
+    echo -e "      pairings, folder shares — so a future reinstall keeps the same ID"
+    echo -e "    ${GREEN}•${NC} Syncthing on your laptop (systemd user service) untouched"
+    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    _confirm_delete syncthing || return 0
+
+    info "Removing syncthing container..."
+    sudo docker rm -f syncthing > /dev/null 2>&1 || true
+
+    info "Closing firewall ports..."
+    sudo firewall-cmd --permanent --remove-port=8384/tcp  > /dev/null 2>&1 || true
+    sudo firewall-cmd --permanent --remove-port=22000/tcp > /dev/null 2>&1 || true
+    sudo firewall-cmd --permanent --remove-port=22000/udp > /dev/null 2>&1 || true
+    sudo firewall-cmd --permanent --remove-port=21027/udp > /dev/null 2>&1 || true
+    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+
+    ok "Syncthing removed."
+    echo -e "  ${DIM}Config kept at /opt/syncthing. To wipe entirely:${NC} sudo rm -rf /opt/syncthing"
+    echo -e "  ${DIM}Laptop Syncthing left running. Stop with:${NC} systemctl --user disable --now syncthing"
 }
 
 _syncthing_reapply_paths() {
@@ -1447,6 +1614,7 @@ _syncthing_server_step() {
     echo -e "  ${BOLD}6)${NC} Stop"
     echo -e "  ${BOLD}7)${NC} Restart"
     echo -e "  ${BOLD}8)${NC} Logs                       ${DIM}<- tail -f syncthing logs${NC}"
+    echo -e "  ${BOLD}9)${NC} ${RED}Uninstall${NC}                  ${DIM}<- stop + remove container, keep /opt/syncthing${NC}"
     echo -e "  ${BOLD}0)${NC} Cancel"
     echo ""
     read -p "  Choose: " st_choice
@@ -1462,11 +1630,70 @@ _syncthing_server_step() {
             info "Last 50 lines (Ctrl+C to exit follow mode)..."
             sudo docker logs --tail 50 -f syncthing || true
             ;;
+        9) _syncthing_uninstall ;;
         0|*) return ;;
     esac
 }
 
+_rdp_uninstall() {
+    echo ""
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${RED}DELETE Remote Desktop (xrdp)${NC}"
+    echo ""
+    echo -e "  ${BOLD}What will happen:${NC}"
+    echo -e "    ${RED}•${NC} systemctl disable --now xrdp"
+    echo -e "    ${RED}•${NC} Re-enable lightdm (local display manager)"
+    echo -e "    ${RED}•${NC} Close firewall port 3389/tcp"
+    echo -e "    ${RED}•${NC} dnf remove -y xrdp"
+    echo ""
+    echo -e "  ${BOLD}Consequences:${NC}"
+    echo -e "    ${YELLOW}•${NC} You can't RDP into the server anymore"
+    echo -e "    ${YELLOW}•${NC} To see the desktop again you'll need a physical monitor +"
+    echo -e "      keyboard, or re-enable a display manager yourself"
+    echo ""
+    echo -e "  ${BOLD}Kept:${NC}"
+    echo -e "    ${GREEN}•${NC} XFCE desktop packages (xfce4-session, xfwm4, xfce4-panel,"
+    echo -e "      xfdesktop) — removing them is more disruptive than it's worth"
+    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    _confirm_delete xrdp || return 0
+
+    info "Stopping xrdp..."
+    sudo systemctl disable --now xrdp > /dev/null 2>&1 || true
+    info "Re-enabling lightdm..."
+    sudo systemctl enable --now lightdm > /dev/null 2>&1 || true
+    info "Closing firewall port 3389/tcp..."
+    sudo firewall-cmd --permanent --remove-port=3389/tcp > /dev/null 2>&1 || true
+    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+    info "Removing xrdp package..."
+    sudo dnf remove -y xrdp > /dev/null 2>&1 || true
+    ok "Remote desktop removed."
+}
+
 step_remotedesktop() {
+    # If already installed, offer uninstall or reconnect info. Otherwise
+    # fall through to fresh install.
+    if command -v xrdp &>/dev/null && systemctl is-enabled xrdp &>/dev/null; then
+        local IP
+        IP=$(hostname -I | awk '{print $1}')
+        ok "Remote desktop (xrdp) is already installed."
+        echo -e "  Connect: RDP client → ${BOLD}$IP${NC} (or ${BOLD}$(hostname)${NC} via Tailscale)"
+        echo -e "           Username: ${BOLD}$USER${NC}"
+        echo ""
+        echo -e "  ${BOLD}1)${NC} Restart xrdp"
+        echo -e "  ${BOLD}2)${NC} ${RED}Uninstall${NC}                ${DIM}<- removes xrdp, re-enables lightdm${NC}"
+        echo -e "  ${BOLD}0)${NC} Cancel"
+        echo ""
+        read -p "  Choose: " rdp_choice
+        case "$rdp_choice" in
+            1) info "Restarting xrdp..."; sudo systemctl restart xrdp && ok "Restarted." ;;
+            2) _rdp_uninstall ;;
+            0|*) return ;;
+        esac
+        return 0
+    fi
+
     info "Installs xrdp for remote desktop access to the XFCE desktop."
     info "Connect from any device using an RDP client."
     echo ""
@@ -1660,6 +1887,40 @@ _wg_remove_peer() {
     ok "Peer '${peer_name}' removed."
 }
 
+_wg_uninstall() {
+    echo ""
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${RED}DELETE WireGuard${NC}"
+    echo ""
+    echo -e "  ${BOLD}What will happen:${NC}"
+    echo -e "    ${RED}•${NC} systemctl disable --now wg-quick@wg0"
+    echo -e "    ${RED}•${NC} Close firewall port 51820/udp"
+    echo -e "    ${RED}•${NC} dnf remove -y wireguard-tools qrencode"
+    echo ""
+    echo -e "  ${BOLD}Consequences:${NC}"
+    echo -e "    ${YELLOW}•${NC} The full-tunnel VPN stops. All paired devices (phones,"
+    echo -e "      laptop) lose remote-VPN access to the server"
+    echo -e "    ${YELLOW}•${NC} Tailscale is a separate system and keeps working"
+    echo ""
+    echo -e "  ${BOLD}Kept:${NC}"
+    echo -e "    ${GREEN}•${NC} /etc/wireguard/ — server + peer configs (so you can reinstall"
+    echo -e "      without re-generating keys or re-scanning QR codes)"
+    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    _confirm_delete wireguard || return 0
+
+    info "Stopping wg0..."
+    sudo systemctl disable --now wg-quick@wg0 > /dev/null 2>&1 || true
+    info "Closing firewall port 51820/udp..."
+    sudo firewall-cmd --permanent --remove-port=51820/udp > /dev/null 2>&1 || true
+    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+    info "Removing packages..."
+    sudo dnf remove -y wireguard-tools qrencode > /dev/null 2>&1 || true
+    ok "WireGuard removed."
+    echo -e "  ${DIM}Configs kept at /etc/wireguard. To wipe entirely:${NC} sudo rm -rf /etc/wireguard"
+}
+
 step_wireguard() {
     info "WireGuard routes ALL your traffic through this server."
     info "Unlike Tailscale (access server only), this is a full VPN."
@@ -1689,9 +1950,10 @@ step_wireguard() {
         echo -e "  ${BOLD}3)${NC} Show peer config (to set up a device)"
         echo -e "  ${BOLD}4)${NC} Remove peer"
         echo -e "  ${BOLD}5)${NC} Reinstall (regenerate all keys — existing peers stop working)"
+        echo -e "  ${BOLD}6)${NC} ${RED}Uninstall${NC}                  ${DIM}<- remove wg-quick + package${NC}"
         echo -e "  ${BOLD}0)${NC} Cancel"
         echo ""
-        read -p "  Choose [1/2/3/4/5/0]: " wg_action
+        read -p "  Choose [1/2/3/4/5/6/0]: " wg_action
 
         case $wg_action in
             0) return ;;
@@ -1708,6 +1970,7 @@ step_wireguard() {
                 ;;
             4) _wg_remove_peer; return ;;
             5) is_new_install=true ;;
+            6) _wg_uninstall; return ;;
             3)
                 # Show existing peer configs
                 echo ""
@@ -2030,14 +2293,25 @@ step_adguard() {
         echo ""
     fi
 
-    # ── Idempotent: already running? (skip in dry-run so the flow is visible)
+    # ── Idempotent: already running? Open management submenu.
     if [[ "$DRY_RUN" != "1" ]] && sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^adguard$'; then
         ok "AdGuard is already running."
         echo -e "  Dashboard: ${BLUE}http://$IP${NC}"
-        if [[ -n "$TS_IP" ]]; then
-            echo ""
-            _adguard_tailscale_guide "$TS_IP"
-        fi
+        echo ""
+        echo -e "  ${BOLD}1)${NC} Show Tailscale DNS guide"
+        echo -e "  ${BOLD}2)${NC} Restart container"
+        echo -e "  ${BOLD}3)${NC} Logs"
+        echo -e "  ${BOLD}4)${NC} ${RED}Uninstall${NC}"
+        echo -e "  ${BOLD}0)${NC} Cancel"
+        echo ""
+        read -p "  Choose: " ag_choice
+        case "$ag_choice" in
+            1) [[ -n "$TS_IP" ]] && _adguard_tailscale_guide "$TS_IP" || warn "Tailscale not detected." ;;
+            2) info "Restarting..."; sudo docker restart adguard > /dev/null && ok "Restarted." ;;
+            3) sudo docker logs --tail 50 -f adguard || true ;;
+            4) _adguard_uninstall ;;
+            0|*) return ;;
+        esac
         return 0
     fi
 
@@ -2163,6 +2437,63 @@ ADGUARDEOF
     ok "AdGuard Home installed."
     echo -e "  Dashboard: ${BLUE}http://$IP${NC}"
     echo -e "  Query log: dashboard → ${BOLD}Query Log${NC} tab (red = blocked)"
+}
+
+# Ask the user to literally type the service name to confirm a destructive
+# action. Blank input or a mismatch cancels. Returns 0 on match, 1 otherwise.
+_confirm_delete() {
+    local name="$1"
+    local reply
+    read -p "  Type '${BOLD}${name}${NC}' to DELETE (blank = cancel): " reply
+    if [[ -z "$reply" ]]; then
+        info "Cancelled. Nothing deleted."
+        return 1
+    fi
+    if [[ "$reply" != "$name" ]]; then
+        fail "Input '${reply}' did not match '${name}'. Cancelled. Nothing deleted."
+        return 1
+    fi
+    return 0
+}
+
+_adguard_uninstall() {
+    echo ""
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${RED}DELETE AdGuard Home${NC}"
+    echo ""
+    echo -e "  ${BOLD}What will happen:${NC}"
+    echo -e "    ${RED}•${NC} Stop + remove the adguard container"
+    echo -e "    ${RED}•${NC} Close firewall ports 53/udp, 53/tcp, 80/tcp"
+    echo -e "    ${RED}•${NC} Re-enable systemd-resolved's stub listener on port 53"
+    echo ""
+    echo -e "  ${BOLD}Consequences:${NC}"
+    echo -e "    ${YELLOW}•${NC} DNS ad/tracker blocking stops on every device that uses this"
+    echo -e "      server as DNS — they'll resolve ad domains again"
+    echo -e "    ${YELLOW}•${NC} If Tailscale is pointing global DNS at this server, those"
+    echo -e "      queries will fail until you change Tailscale DNS in the admin console"
+    echo ""
+    echo -e "  ${BOLD}Kept:${NC}"
+    echo -e "    ${GREEN}•${NC} /opt/adguard/ — config, filter lists, query log history"
+    echo -e "    ${GREEN}•${NC} Core privcloud services (Immich, Navidrome, etc.) untouched"
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    _confirm_delete adguard || return 0
+
+    info "Removing adguard container..."
+    sudo docker rm -f adguard > /dev/null 2>&1 || true
+
+    info "Closing firewall ports 53/udp, 53/tcp, 80/tcp..."
+    sudo firewall-cmd --permanent --remove-port=53/udp > /dev/null 2>&1 || true
+    sudo firewall-cmd --permanent --remove-port=53/tcp > /dev/null 2>&1 || true
+    sudo firewall-cmd --permanent --remove-port=80/tcp > /dev/null 2>&1 || true
+    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+
+    info "Re-enabling systemd-resolved stub listener..."
+    sudo rm -f /etc/systemd/resolved.conf.d/disable-stub.conf
+    sudo systemctl restart systemd-resolved > /dev/null 2>&1 || true
+
+    ok "AdGuard removed."
+    echo -e "  ${DIM}Config kept at /opt/adguard. To wipe entirely:${NC} sudo rm -rf /opt/adguard"
 }
 
 # Shared between fresh-install and "already running" paths so the message

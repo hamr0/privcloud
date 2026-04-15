@@ -464,11 +464,60 @@ _ts_install() {
     fi
 }
 
+_ts_install_laptop() {
+    echo -e "  ${BOLD}── Laptop side ──${NC}"
+    if command -v tailscale &>/dev/null; then
+        ok "Tailscale already installed on this laptop."
+    else
+        if ! command -v dnf &>/dev/null; then
+            warn "Not a dnf-based system. Install Tailscale manually:"
+            info "  https://tailscale.com/download"
+            return 0
+        fi
+        info "Installing Tailscale via dnf..."
+        sudo dnf install -y tailscale > /dev/null 2>&1 || {
+            fail "dnf install failed."
+            return 1
+        }
+        sudo systemctl enable --now tailscaled > /dev/null 2>&1
+        ok "Tailscale installed and tailscaled running."
+    fi
+
+    # Bring the laptop up on the tailnet if it isn't already
+    if tailscale ip -4 &>/dev/null; then
+        local laptop_ts_ip
+        laptop_ts_ip=$(tailscale ip -4)
+        ok "Laptop already on the tailnet: $laptop_ts_ip"
+    else
+        echo ""
+        info "Authenticating the laptop with Tailscale..."
+        info "A URL will appear below. Open it in your browser and approve."
+        echo ""
+        sudo tailscale up
+        echo ""
+    fi
+    echo ""
+}
+
 step_tailscale() {
-    if ! command -v tailscale &>/dev/null; then
+    # Laptop-side: install + auth locally first, then SSH to server for its
+    # side. Server-side (via --run from an SSH hop, or user logged in on
+    # federver directly): run the existing server flow.
+    if ! _is_server; then
         info "Tailscale lets you access this server from anywhere (phone, laptop)"
         info "without port forwarding. Like a private VPN."
         echo ""
+        _ts_install_laptop || return 1
+        echo -e "  ${BOLD}── Server side ──${NC}"
+        _on_server _ts_server_step
+        return
+    fi
+
+    _ts_server_step
+}
+
+_ts_server_step() {
+    if ! command -v tailscale &>/dev/null; then
         _ts_install
         return
     fi
@@ -2964,7 +3013,7 @@ while true; do
         7)  run_step "[7] Manage services" "_on_server step_services" ;;
         8)  run_step "[8] Setup backups + disk monitoring" "_on_server step_backup" ;;
         9)  run_step "[9] Log rotation" "_on_server step_logrotation" ;;
-        10) run_step "[10] Manage Tailscale" "_on_server step_tailscale" ;;
+        10) run_step "[10] Manage Tailscale" step_tailscale ;;
         11) run_step "[11] Manage WireGuard" "_on_server step_wireguard" ;;
         12) run_step "[12] Manage AdGuard" "_on_server step_adguard" ;;
         13) run_step "[13] Manage storage" "_on_server step_storage" ;;

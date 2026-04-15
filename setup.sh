@@ -114,7 +114,16 @@ _on_server() {
 _on_laptop() {
     local step="$1"
     if _is_server; then
-        fail "This step must be run from your laptop, not the server."
+        fail "This step must run from your laptop, not the server."
+        echo ""
+        info "It needs resources that only exist on the laptop:"
+        info "  • Sync files      — laptop's SSH keys to push/pull files"
+        info "  • Save to pass    — pass + GPG keyring live on the laptop"
+        info "  • SSH key auth    — installs the laptop's public key onto the server"
+        echo ""
+        info "Exit this SSH session (${BOLD}exit${NC}) and run from your laptop:"
+        info "  ${BOLD}cd ~/PycharmProjects/privcloud && ./setup.sh${NC}"
+        info "Then pick the same menu option."
         return 1
     else
         "$step"
@@ -169,6 +178,28 @@ show_menu() {
 }
 
 step_ssh() {
+    # Bootstrap step — must run on the server's physical console, not over SSH.
+    # If we got here via SSH, the server already has SSH working and this step
+    # would just reinstall things pointlessly (or confusingly install openssh
+    # onto the laptop if run locally on the wrong machine).
+    if [[ -n "${SSH_CLIENT:-}" || -n "${SSH_CONNECTION:-}" ]]; then
+        fail "Step 1 is the bootstrap step — must run on the server with a physical monitor + keyboard."
+        echo ""
+        info "You're in an SSH session right now, which means SSH is already working on the server."
+        info "Skip step 1 and continue with step 2 (SSH key auth) from your laptop."
+        return 1
+    fi
+    if ! _is_server && [[ "$(hostname)" != "fedora" && "$(hostname)" != localhost* ]]; then
+        # Heuristic: if hostname is neither "federver" nor a fresh-install default,
+        # we're probably on the laptop running step 1 by accident.
+        fail "Step 1 runs on the server, not the laptop."
+        echo ""
+        info "This is the bootstrap step. Go to the server, plug in monitor + keyboard,"
+        info "open a terminal, and run: ${BOLD}cd privcloud && ./setup.sh${NC}, then pick 1."
+        info "Once it's done, come back here to the laptop and run step 2 (SSH key auth)."
+        return 1
+    fi
+
     info "This enables remote access so you can unplug the monitor after."
     echo ""
     sudo dnf install -y openssh-server > /dev/null 2>&1
@@ -1107,7 +1138,7 @@ _wg_show_instructions() {
             echo ""
             read -p "  Press Enter when copied..." -r
 
-            clear
+            echo ""
             echo -e "  ${BOLD}Now on your laptop:${NC}"
             echo ""
             echo -e "  1. Get fedvpn (if you don't have it):"
@@ -2261,27 +2292,38 @@ step_power() {
     echo -e "  ${BOLD}2)${NC} Restart"
     echo ""
     read -p "  Choose [1/2]: " power_choice
+
+    # Run locally when on server, SSH from laptop.
+    local runner
+    if _is_server; then
+        runner="sudo"
+    else
+        runner="ssh -t $SERVER_USER@$SERVER_IP sudo"
+    fi
+
     case $power_choice in
         1)
             echo ""
-            warn "Server will shut down. SSH connection will be lost."
+            warn "Server will shut down."
+            _is_server || warn "SSH connection will be lost."
             read -p "  Are you sure? [y/N] " -n 1 -r
             echo ""
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 ok "Shutting down..."
-                ssh -t "$SERVER_USER@$SERVER_IP" "sudo shutdown now"
+                $runner shutdown now
             else
                 info "Cancelled."
             fi
             ;;
         2)
             echo ""
-            warn "Server will restart. SSH connection will drop and reconnect in ~1-2 minutes."
+            warn "Server will restart."
+            _is_server || warn "SSH connection will drop and reconnect in ~1-2 minutes."
             read -p "  Are you sure? [y/N] " -n 1 -r
             echo ""
             if [[ $REPLY =~ ^[Yy]$ ]]; then
                 ok "Restarting..."
-                ssh -t "$SERVER_USER@$SERVER_IP" "sudo reboot"
+                $runner reboot
             else
                 info "Cancelled."
             fi

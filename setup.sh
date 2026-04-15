@@ -1669,45 +1669,10 @@ step_adguard() {
         echo ""
     fi
 
-    # ── Collect admin credentials up front so we can pre-seed the config and
-    # skip the port-3000 setup wizard entirely. The user follows defaults
-    # (listen on all interfaces, port 53, standard filter lists) — the only
-    # thing they actually need to customise is the admin login.
-    echo -e "  ${BOLD}AdGuard admin login${NC}"
-    info "You'll use these to open the dashboard later. Save them."
-    echo ""
-    local ag_user ag_pass ag_pass2
-    read -p "  Admin username [admin]: " ag_user
-    ag_user="${ag_user:-admin}"
-    while :; do
-        read -s -p "  Admin password: " ag_pass
-        echo ""
-        [[ -z "$ag_pass" ]] && { warn "Password cannot be empty."; continue; }
-        read -s -p "  Re-enter password: " ag_pass2
-        echo ""
-        [[ "$ag_pass" == "$ag_pass2" ]] && break
-        warn "Passwords didn't match. Try again."
-    done
-    echo ""
-
-    # htpasswd (from httpd-tools) gives us a bcrypt hash compatible with
-    # AdGuard's config format. Install it silently if missing.
-    if ! command -v htpasswd &>/dev/null; then
-        info "Installing httpd-tools (for bcrypt password hashing)..."
-        sudo dnf install -y httpd-tools > /dev/null 2>&1 || {
-            fail "Could not install httpd-tools. Cannot hash the admin password."
-            return 1
-        }
-    fi
-    local ag_hash
-    ag_hash=$(htpasswd -nbB "$ag_user" "$ag_pass" 2>/dev/null | cut -d: -f2)
-    if [[ -z "$ag_hash" ]]; then
-        fail "Failed to hash the admin password."
-        return 1
-    fi
-
-    # ── Open firewall ports: only 53 DNS and 80 admin UI. No 3000 any more —
-    # we're skipping the wizard entirely.
+    # ── Open firewall ports: 53 for DNS, 80 for the admin UI. No port 3000:
+    # by pre-seeding a minimal config that points the HTTP listener at :80,
+    # AdGuard runs its own first-run wizard on :80 directly — no hardcoded
+    # port-3000 detour, no credentials collected here.
     info "Opening firewall ports (53 DNS, 80 admin UI)..."
     sudo firewall-cmd --permanent --add-port=53/udp > /dev/null
     sudo firewall-cmd --permanent --add-port=53/tcp > /dev/null
@@ -1715,38 +1680,14 @@ step_adguard() {
     sudo firewall-cmd --reload > /dev/null
     ok "Firewall: 53/udp, 53/tcp, 80/tcp open."
 
-    # ── Pre-seed AdGuardHome.yaml with sensible defaults so AdGuard starts
-    # directly on port 80 with DNS listening on 53 — no setup wizard.
+    # ── Pre-seed a minimal config: just move the HTTP listener off the
+    # default 3000 and onto 80. AdGuard sees no `users:` block and still
+    # runs its normal first-run setup wizard — it just runs on the port we
+    # told it to. User creates their own admin account in the browser.
     sudo mkdir -p /opt/adguard/work /opt/adguard/conf
-    sudo tee /opt/adguard/conf/AdGuardHome.yaml > /dev/null <<ADGUARDEOF
+    sudo tee /opt/adguard/conf/AdGuardHome.yaml > /dev/null <<'ADGUARDEOF'
 http:
   address: 0.0.0.0:80
-users:
-  - name: ${ag_user}
-    password: ${ag_hash}
-dns:
-  bind_hosts:
-    - 0.0.0.0
-  port: 53
-  upstream_dns:
-    - https://dns.cloudflare.com/dns-query
-    - https://dns.quad9.net/dns-query
-  bootstrap_dns:
-    - 1.1.1.1
-    - 9.9.9.9
-  ratelimit: 0
-filters:
-  - enabled: true
-    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_1.txt
-    name: AdGuard DNS filter
-    id: 1
-  - enabled: true
-    url: https://adguardteam.github.io/HostlistsRegistry/assets/filter_2.txt
-    name: AdAway Default Blocklist
-    id: 2
-filtering:
-  protection_enabled: true
-  filtering_enabled: true
 schema_version: 20
 ADGUARDEOF
 
@@ -1767,6 +1708,18 @@ ADGUARDEOF
     fi
     ok "AdGuard running."
 
+    # ── Point the user at AdGuard's own wizard on port 80
+    echo ""
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}ACTION NEEDED: Finish AdGuard's setup wizard${NC}"
+    echo ""
+    echo -e "  1. Open ${BLUE}http://$IP${NC} in your laptop browser"
+    echo -e "  2. Leave ${BOLD}Admin Web Interface${NC} and ${BOLD}DNS Server${NC} at their defaults → Next"
+    echo -e "  3. Create your ${BOLD}admin username + password${NC} ${RED}(save them)${NC}"
+    echo -e "  4. Finish the wizard"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    read -p "  Press Enter once the wizard is done..." -r
+
     # ── Tailscale DNS guidance (only if Tailscale is present)
     echo ""
     if [[ -n "$TS_IP" ]]; then
@@ -1779,7 +1732,6 @@ ADGUARDEOF
     echo ""
     ok "AdGuard Home installed."
     echo -e "  Dashboard: ${BLUE}http://$IP${NC}"
-    echo -e "  Login:     ${BOLD}$ag_user${NC} / (the password you just set)"
     echo -e "  Query log: dashboard → ${BOLD}Query Log${NC} tab (red = blocked)"
 }
 

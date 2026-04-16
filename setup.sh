@@ -3941,7 +3941,7 @@ step_sync() {
             echo -e "    ${BOLD}1)${NC} Copy folder     ${DIM}destination/${src_name}/files...  (creates the folder inside)${NC}"
             echo -e "    ${BOLD}2)${NC} Copy contents   ${DIM}destination/files...              (files go directly in)${NC}"
             echo ""
-            echo -e "  ${DIM}Tip: if your destination path already ends with /${src_name}, pick 2.${NC}"
+            echo -e "  ${YELLOW}Tip: if your destination path already ends with /${src_name}, pick 2.${NC}"
             echo ""
             read -p "  Mode [1/2]: " mode
             [[ "$mode" == "2" ]] && copy_mode="contents" || copy_mode="folder"

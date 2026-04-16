@@ -3345,6 +3345,8 @@ _sync_execute_or_schedule() {
         2)
             echo ""
             echo -e "  ${BOLD}Schedule:${NC}"
+            echo -e "  ${DIM}(After scheduling, runs once immediately to confirm it works.)${NC}"
+            echo ""
             echo -e "    ${BOLD}1)${NC} Every hour"
             echo -e "    ${BOLD}2)${NC} Every 6 hours"
             echo -e "    ${BOLD}3)${NC} Daily at 2am"
@@ -3371,17 +3373,27 @@ _sync_execute_or_schedule() {
                     echo -e "  ${DIM}          0 9,18 * * * = twice a day at 9am and 6pm${NC}"
                     echo -e "  ${DIM}          0 2 * * 1    = every Monday at 2am${NC}"
                     echo ""
-                    read -p "  Cron expression: " schedule
-                    if [[ -z "$schedule" ]]; then
-                        fail "Empty schedule. Aborting."
-                        return 1
-                    fi
-                    local human
-                    human=$(_cron_to_english "$schedule")
-                    echo ""
-                    echo -e "  That means: ${BOLD}$human${NC}"
-                    read -p "  Correct? [Y/n] " -n 1 -r; echo ""
-                    [[ "$REPLY" =~ ^[Nn]$ ]] && { info "Cancelled."; return 0; }
+                    local attempts=0
+                    while (( attempts < 3 )); do
+                        read -p "  Cron expression: " schedule
+                        if [[ -z "$schedule" ]]; then
+                            fail "Empty schedule. Aborting."
+                            return 1
+                        fi
+                        local human
+                        human=$(_cron_to_english "$schedule")
+                        echo ""
+                        echo -e "  That means: ${BOLD}$human${NC}"
+                        read -p "  Correct? [Y/n] " -n 1 -r; echo ""
+                        [[ ! "$REPLY" =~ ^[Nn]$ ]] && break
+                        attempts=$((attempts + 1))
+                        if (( attempts >= 3 )); then
+                            fail "3 attempts. Aborting."
+                            return 1
+                        fi
+                        echo ""
+                        info "Try again:"
+                    done
                     ;;
                 *) fail "Invalid choice."; return 1 ;;
             esac
@@ -3438,26 +3450,65 @@ SYNCSCRIPT
 # Translate a 5-field cron expression into short plain English.
 _cron_to_english() {
     local expr="$1"
+    local min hour dom mon dow
+    read -r min hour dom mon dow <<< "$expr"
+
+    # Helper: translate hour to human time
+    _hour_str() {
+        local h="$1"
+        if (( h == 0 )); then echo "midnight"
+        elif (( h < 12 )); then echo "${h}am"
+        elif (( h == 12 )); then echo "noon"
+        else echo "$((h-12))pm"
+        fi
+    }
+
+    # Helper: translate day-of-week number to name
+    _dow_str() {
+        case "$1" in
+            0|7) echo "Sunday" ;; 1) echo "Monday" ;; 2) echo "Tuesday" ;;
+            3) echo "Wednesday" ;; 4) echo "Thursday" ;; 5) echo "Friday" ;;
+            6) echo "Saturday" ;; *) echo "day $1" ;;
+        esac
+    }
+
+    # Simple interval patterns
     case "$expr" in
-        "* * * * *")        echo "every minute" ;;
-        "*/5 * * * *")      echo "every 5 min" ;;
-        "*/10 * * * *")     echo "every 10 min" ;;
-        "*/15 * * * *")     echo "every 15 min" ;;
-        "*/30 * * * *")     echo "every 30 min" ;;
-        "0 * * * *")        echo "every hour" ;;
-        "0 */2 * * *")      echo "every 2 hours" ;;
-        "0 */3 * * *")      echo "every 3 hours" ;;
-        "0 */6 * * *")      echo "every 6 hours" ;;
-        "0 */12 * * *")     echo "every 12 hours" ;;
-        0\ [0-9]\ \*\ \*\ \*|0\ [0-1][0-9]\ \*\ \*\ \*|0\ [2][0-3]\ \*\ \*\ \*)
-            local h=$(echo "$expr" | awk '{print $2}')
-            if (( h == 0 )); then echo "daily at midnight"
-            elif (( h < 12 )); then echo "daily at ${h}am"
-            elif (( h == 12 )); then echo "daily at noon"
-            else echo "daily at $((h-12))pm"
-            fi ;;
-        *)                  echo "$expr" ;;
+        "* * * * *")     echo "every minute"; return ;;
+        "*/5 * * * *")   echo "every 5 min"; return ;;
+        "*/10 * * * *")  echo "every 10 min"; return ;;
+        "*/15 * * * *")  echo "every 15 min"; return ;;
+        "*/30 * * * *")  echo "every 30 min"; return ;;
+        "0 * * * *")     echo "every hour"; return ;;
+        "0 */2 * * *")   echo "every 2 hours"; return ;;
+        "0 */3 * * *")   echo "every 3 hours"; return ;;
+        "0 */6 * * *")   echo "every 6 hours"; return ;;
+        "0 */12 * * *")  echo "every 12 hours"; return ;;
     esac
+
+    # Daily at a specific hour (no day-of-week restriction)
+    if [[ "$min" == "0" && "$hour" =~ ^[0-9]+$ && "$dom" == "*" && "$mon" == "*" && "$dow" == "*" ]]; then
+        echo "daily at $(_hour_str "$hour")"; return
+    fi
+
+    # Weekly: specific day-of-week at a specific hour
+    if [[ "$min" == "0" && "$hour" =~ ^[0-9]+$ && "$dom" == "*" && "$mon" == "*" && "$dow" =~ ^[0-7]$ ]]; then
+        echo "every $(_dow_str "$dow") at $(_hour_str "$hour")"; return
+    fi
+
+    # Comma-separated hours (e.g. 0 9,18 * * *)
+    if [[ "$min" == "0" && "$hour" == *,* && "$dom" == "*" && "$mon" == "*" && "$dow" == "*" ]]; then
+        local times=""
+        IFS=',' read -ra hrs <<< "$hour"
+        for h in "${hrs[@]}"; do
+            [[ -n "$times" ]] && times+=", "
+            times+="$(_hour_str "$h")"
+        done
+        echo "daily at $times"; return
+    fi
+
+    # Fallback: return the raw expression
+    echo "$expr"
 }
 
 _sync_show_status() {

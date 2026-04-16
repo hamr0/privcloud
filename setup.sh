@@ -646,6 +646,7 @@ _ts_uninstall_both() {
     ok "Laptop: removed."
 
     info "Removing from server..."
+    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
     ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_TS_UNINSTALL'
         sudo tailscale logout > /dev/null 2>&1 || true
         sudo tailscale down > /dev/null 2>&1 || true
@@ -804,7 +805,11 @@ _storage_mount_source() {
 
 _storage_status() {
     echo ""
-    source "$SCRIPT_DIR/.env" 2>/dev/null
+    local FILES_LOCATION MUSIC_LOCATION UPLOAD_LOCATION DB_DATA_LOCATION
+    FILES_LOCATION=$(_env_get FILES_LOCATION "$SCRIPT_DIR/.env")
+    MUSIC_LOCATION=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env")
+    UPLOAD_LOCATION=$(_env_get UPLOAD_LOCATION "$SCRIPT_DIR/.env")
+    DB_DATA_LOCATION=$(_env_get DB_DATA_LOCATION "$SCRIPT_DIR/.env")
 
     echo -e "  ${BOLD}Internal drives${NC}"
     lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL -n | grep -v loop | while IFS= read -r line; do
@@ -1007,7 +1012,8 @@ _set_env() {
 
 _storage_change_music() {
     echo ""
-    source "$SCRIPT_DIR/.env" 2>/dev/null
+    local MUSIC_LOCATION
+    MUSIC_LOCATION=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env")
 
     info "Current music location: ${MUSIC_LOCATION:-not set}"
     info "Used by: Navidrome (music streaming)"
@@ -1045,7 +1051,8 @@ _storage_change_music() {
 
 _storage_change_files() {
     echo ""
-    source "$SCRIPT_DIR/.env" 2>/dev/null
+    local FILES_LOCATION
+    FILES_LOCATION=$(_env_get FILES_LOCATION "$SCRIPT_DIR/.env")
 
     info "Current files location: ${FILES_LOCATION:-not set}"
     info "Used by: FileBrowser (upload/manage)"
@@ -1083,7 +1090,9 @@ _storage_change_files() {
 
 _storage_change_immich() {
     echo ""
-    source "$SCRIPT_DIR/.env" 2>/dev/null
+    local UPLOAD_LOCATION DB_DATA_LOCATION
+    UPLOAD_LOCATION=$(_env_get UPLOAD_LOCATION "$SCRIPT_DIR/.env")
+    DB_DATA_LOCATION=$(_env_get DB_DATA_LOCATION "$SCRIPT_DIR/.env")
 
     info "Current Immich paths:"
     echo -e "    Photos:    ${UPLOAD_LOCATION:-not set}"
@@ -1232,9 +1241,11 @@ _pick_container() {
     echo -e "  ${BOLD}a)${NC} ${BOLD}All${NC}" >&2
     local idx=1
     declare -a arr
+    local all_statuses
+    all_statuses=$(sudo docker ps -a --format '{{.Names}}|{{.Status}}' 2>/dev/null)
     while IFS= read -r n; do
         local status
-        status=$(sudo docker ps -a --filter "name=^${n}$" --format '{{.Status}}' 2>/dev/null)
+        status=$(echo "$all_statuses" | awk -F'|' -v name="$n" '$1==name{print $2; exit}')
         echo -e "  ${BOLD}$idx)${NC} $(printf '%-24s' "$n") ${DIM}${status}${NC}" >&2
         arr[$idx]="$n"
         idx=$((idx + 1))
@@ -1674,7 +1685,7 @@ step_deploy() {
 
     # ── Ask for base data path ──
     info "Default: /mnt/data (USB drive)"
-    info "Internal drive example: /home/ahassan/data"
+    info "Internal drive example: /home/$SERVER_USER/data"
     echo ""
     read -p "  Base data path [/mnt/data]: " base_path
     base_path="${base_path:-/mnt/data}"
@@ -1691,7 +1702,10 @@ step_deploy() {
     _set_env "MUSIC_LOCATION" "${base_path}/media/My Music" "$SCRIPT_DIR/.env"
     _set_env "FILES_LOCATION" "${base_path}" "$SCRIPT_DIR/.env"
 
-    source "$SCRIPT_DIR/.env"
+    UPLOAD_LOCATION=$(_env_get UPLOAD_LOCATION "$SCRIPT_DIR/.env")
+    DB_DATA_LOCATION=$(_env_get DB_DATA_LOCATION "$SCRIPT_DIR/.env")
+    MEDIA_LOCATION=$(_env_get MEDIA_LOCATION "$SCRIPT_DIR/.env")
+    MUSIC_LOCATION=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env")
     sudo mkdir -p "$UPLOAD_LOCATION" "$DB_DATA_LOCATION" "$MEDIA_LOCATION" "$MUSIC_LOCATION" 2>/dev/null || true
 
     cd "$SCRIPT_DIR"
@@ -2127,6 +2141,7 @@ _syncthing_uninstall_both() {
     ok "Laptop: removed."
 
     info "Removing from server..."
+    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
     ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_UNINSTALL'
         sudo docker rm -f syncthing > /dev/null 2>&1 || true
         sudo firewall-cmd --permanent --remove-port=8384/tcp  > /dev/null 2>&1 || true
@@ -2156,7 +2171,7 @@ step_syncthing() {
     # ── Laptop-side: check if both sides are installed ──
     local laptop_installed=false server_installed=false
     command -v syncthing &>/dev/null && laptop_installed=true
-    ssh "$SERVER_USER@$SERVER_IP" "sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'" 2>/dev/null && server_installed=true
+    ssh "$SERVER_USER@$SERVER_IP" "docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'" 2>/dev/null && server_installed=true
 
     # Fresh install: install both sides
     if [[ "$laptop_installed" == false || "$server_installed" == false ]]; then
@@ -3166,9 +3181,10 @@ step_backup() {
     echo ""
 
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    source "$SCRIPT_DIR/.env" 2>/dev/null || true
+    local DB_DATA_LOCATION
+    DB_DATA_LOCATION=$(_env_get DB_DATA_LOCATION "$SCRIPT_DIR/.env")
 
-    BACKUP_DIR="${DB_DATA_LOCATION:-/home/ahassan/data/immich/postgres}/../backups"
+    BACKUP_DIR="${DB_DATA_LOCATION:-/home/$SERVER_USER/data/immich/postgres}/../backups"
     BACKUP_DIR=$(realpath -m "$BACKUP_DIR")
     sudo mkdir -p "$BACKUP_DIR"
 
@@ -3321,8 +3337,8 @@ _sync_execute_or_schedule() {
             return
             ;;
         1)
-            [[ -n "$pre_cmd" ]] && eval "$pre_cmd"
-            eval "$rsync_cmd" || { fail "Sync failed."; return 1; }
+            [[ -n "$pre_cmd" ]] && bash -c "$pre_cmd"
+            bash -c "$rsync_cmd" || { fail "Sync failed."; return 1; }
             echo ""
             ok "Sync complete."
             ;;
@@ -3387,8 +3403,8 @@ SYNCSCRIPT
             info "Schedule: $schedule"
             echo ""
             info "Running once now to verify..."
-            [[ -n "$pre_cmd" ]] && eval "$pre_cmd"
-            eval "$rsync_cmd" || { fail "Sync failed on initial run."; return 1; }
+            [[ -n "$pre_cmd" ]] && bash -c "$pre_cmd"
+            bash -c "$rsync_cmd" || { fail "Sync failed on initial run."; return 1; }
             echo ""
             ok "Initial sync complete. Job scheduled."
             ;;
@@ -3413,9 +3429,13 @@ _cron_to_english() {
         "0 */3 * * *")      echo "every 3 hours" ;;
         "0 */6 * * *")      echo "every 6 hours" ;;
         "0 */12 * * *")     echo "every 12 hours" ;;
-        0\ [0-9]\ \*\ \*\ \*)   echo "daily at $(echo "$expr" | awk '{print $2}')am" ;;
-        0\ [0-1][0-9]\ \*\ \*\ \*) echo "daily at $(echo "$expr" | awk '{print $2}'):00" ;;
-        0\ [2][0-3]\ \*\ \*\ \*)   echo "daily at $(echo "$expr" | awk '{print $2}'):00" ;;
+        0\ [0-9]\ \*\ \*\ \*|0\ [0-1][0-9]\ \*\ \*\ \*|0\ [2][0-3]\ \*\ \*\ \*)
+            local h=$(echo "$expr" | awk '{print $2}')
+            if (( h == 0 )); then echo "daily at midnight"
+            elif (( h < 12 )); then echo "daily at ${h}am"
+            elif (( h == 12 )); then echo "daily at noon"
+            else echo "daily at $((h-12))pm"
+            fi ;;
         *)                  echo "$expr" ;;
     esac
 }
@@ -3440,8 +3460,6 @@ _sync_show_status() {
     printf "  ${BOLD}%-20s %-18s %-16s %-10s %s${NC}\n" "Name" "Schedule" "When" "Type" "Note"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    local found_any=false
-
     if [[ -n "$server_crons" ]]; then
         echo "$server_crons" | while IFS= read -r line; do
             [[ "$line" =~ ^#|^$ ]] && continue
@@ -3450,13 +3468,11 @@ _sync_show_status() {
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
                 when=$(_cron_to_english "$sched")
                 printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$sched" "$when" "backup" "(step 8)"
-                found_any=true
             elif echo "$line" | grep -q "disk-check"; then
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
                 when=$(_cron_to_english "$sched")
                 printf "  %-20s %-18s %-16s %-10s %s\n" "disk-check" "$sched" "$when" "monitor" "(step 8)"
-                found_any=true
             fi
         done
     fi
@@ -3493,20 +3509,17 @@ _sync_show_status() {
                 when=$(_cron_to_english "$sched")
                 printf "  %-20s %-18s %-16s %-10s " "$name" "$sched" "$when" "$direction"
                 [[ -n "$status" ]] && echo -e "$status" || echo ""
-                found_any=true
             fi
         done
     fi
 
-    if [[ "$found_any" == "false" ]]; then
-        # Check again outside subshells
-        local has_server=false has_laptop=false
-        [[ -n "$server_crons" ]] && echo "$server_crons" | grep -qE "immich-backup|disk-check" && has_server=true
-        [[ -n "$laptop_crons" ]] && echo "$laptop_crons" | grep -q "sync-.*\.sh" && has_laptop=true
-        if [[ "$has_server" == "false" && "$has_laptop" == "false" ]]; then
-            echo ""
-            info "No scheduled tasks found."
-        fi
+    # Check outside subshells (pipe subshells can't propagate state)
+    local has_server=false has_laptop=false
+    [[ -n "$server_crons" ]] && echo "$server_crons" | grep -qE "immich-backup|disk-check" && has_server=true
+    [[ -n "$laptop_crons" ]] && echo "$laptop_crons" | grep -q "sync-.*\.sh" && has_laptop=true
+    if [[ "$has_server" == "false" && "$has_laptop" == "false" ]]; then
+        echo ""
+        info "No scheduled tasks found."
     fi
 
     echo ""
@@ -3533,11 +3546,7 @@ _sync_list_jobs() {
                 echo "$line" | grep -q "sync-.*\.sh" || continue
                 ;;
             all)
-                echo "$line" | grep -q "sync-.*\.sh" || continue
-                # Also match paused lines
-                if ! echo "$line" | grep -q "sync-.*\.sh"; then
-                    echo "$line" | sed 's/^#PAUSED#//' | grep -q "sync-.*\.sh" || continue
-                fi
+                echo "$line" | grep -q "sync-.*\.sh" || { echo "$line" | sed 's/^#PAUSED#//' | grep -q "sync-.*\.sh" || continue; }
                 ;;
         esac
 
@@ -3732,7 +3741,7 @@ step_sync() {
         local i=1
         sources=()
 
-        for mnt in /home/hamr/Documents /home/hamr/PycharmProjects /stuff; do
+        for mnt in $HOME/Documents $HOME/PycharmProjects /stuff; do
             if [[ -d "$mnt" ]]; then
                 echo "    $i) $mnt"
                 sources[$i]="$mnt"
@@ -3806,7 +3815,7 @@ step_sync() {
         if [[ "$show_presets" == "true" ]]; then
             echo ""
             echo -e "  ${BOLD}Server paths:${NC}"
-            echo "    1) /home/ahassan/data  (internal drive)"
+            echo "    1) /home/$SERVER_USER/data  (internal drive)"
             echo "    2) /mnt/data           (USB drive)"
             echo ""
             info "Or type a path directly (e.g. /mnt/data/media/My Music)"
@@ -3817,7 +3826,7 @@ step_sync() {
             if [[ "$show_presets" == "true" ]]; then
                 read -p "  Choose [number or path]: " choice
                 case $choice in
-                    1) server_path="/home/ahassan/data" ;;
+                    1) server_path="/home/$SERVER_USER/data" ;;
                     2) server_path="/mnt/data" ;;
                     *) server_path="$choice" ;;
                 esac
@@ -4227,6 +4236,7 @@ step_save_to_pass() {
 
     # Fetch all data from server in one SSH call
     local server_data
+    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
     server_data=$(ssh "$SERVER_USER@$SERVER_IP" bash -s <<'FETCH'
 echo "HOSTNAME=$(hostname)"
 echo "LOCAL_IP=$(hostname -I | awk '{print $1}')"

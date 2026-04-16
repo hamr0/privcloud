@@ -171,7 +171,7 @@ show_menu() {
     echo -e "  ${BOLD}i)${NC}  Immich (privcloud)                  ${DIM}← start/stop/status/update/backup${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Tools (from laptop, exit SSH first) --${NC}"
-    echo -e "  ${BOLD}16)${NC} Sync files                          ${DIM}← upload, download, or delete files${NC}"
+    echo -e "  ${BOLD}16)${NC} Manage sync                         ${DIM}← transfer, schedule, cron jobs${NC}"
     echo -e "  ${BOLD}17)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
     echo ""
     echo -e "  ${BOLD}s)${NC}  Status     ${BOLD}i)${NC}  Immich     ${BOLD}p)${NC}  Power     ${BOLD}r)${NC}  Reset password     ${BOLD}a)${NC}  Run all (3-9)     ${BOLD}0)${NC}  Exit"
@@ -2660,6 +2660,371 @@ LOGJSON
     fi
 }
 
+_sync_execute_or_schedule() {
+    local sync_direction="$1"
+    local src_path="$2"
+    local dest_path="$3"
+    local rsync_cmd="$4"
+    local pre_cmd="$5"
+
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Run now"
+    echo -e "  ${BOLD}2)${NC} Schedule as recurring job"
+    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Choice [1/2/0]: " action
+    case $action in
+        0)
+            info "Cancelled."
+            return
+            ;;
+        1)
+            [[ -n "$pre_cmd" ]] && eval "$pre_cmd"
+            eval "$rsync_cmd" || { fail "Sync failed."; return 1; }
+            echo ""
+            ok "Sync complete."
+            ;;
+        2)
+            echo ""
+            echo -e "  ${BOLD}Schedule:${NC}"
+            echo -e "    ${BOLD}1)${NC} Every hour"
+            echo -e "    ${BOLD}2)${NC} Every 6 hours"
+            echo -e "    ${BOLD}3)${NC} Daily at 2am"
+            echo -e "    ${BOLD}4)${NC} Custom cron expression"
+            echo ""
+            read -p "  Schedule [1/2/3/4]: " sched_choice
+            local schedule
+            case $sched_choice in
+                1) schedule="0 * * * *" ;;
+                2) schedule="0 */6 * * *" ;;
+                3) schedule="0 2 * * *" ;;
+                4)
+                    read -p "  Cron expression (e.g. '*/30 * * * *'): " schedule
+                    if [[ -z "$schedule" ]]; then
+                        fail "Empty schedule. Aborting."
+                        return 1
+                    fi
+                    ;;
+                *) fail "Invalid choice."; return 1 ;;
+            esac
+
+            local default_name
+            default_name=$(basename "$src_path" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
+            read -p "  Name for this job [${default_name}]: " job_name
+            job_name="${job_name:-$default_name}"
+            job_name=$(echo "$job_name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
+
+            local script_dir="$HOME/.local/bin"
+            local log_dir="$HOME/.local/share/sync-jobs"
+            mkdir -p "$script_dir" "$log_dir"
+
+            local script_path="$script_dir/sync-${job_name}.sh"
+            cat > "$script_path" <<SYNCSCRIPT
+#!/bin/bash
+# Sync job: ${job_name}
+# Direction: ${sync_direction}
+# Source: ${src_path}
+# Destination: ${dest_path}
+# Created: $(date '+%Y-%m-%d %H:%M')
+
+SERVER_USER="$SERVER_USER"
+SERVER_IP="$SERVER_IP"
+
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: ${job_name}"
+${pre_cmd:+$pre_cmd}
+$rsync_cmd
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: ${job_name} (exit \$?)"
+SYNCSCRIPT
+            chmod +x "$script_path"
+
+            (crontab -l 2>/dev/null | grep -v "sync-${job_name}.sh"; echo "$schedule $script_path >> $log_dir/${job_name}.log 2>&1") | crontab -
+
+            ok "Scheduled sync job '${job_name}'"
+            info "Script: $script_path"
+            info "Log:    $log_dir/${job_name}.log"
+            info "Schedule: $schedule"
+            echo ""
+            info "Running once now to verify..."
+            [[ -n "$pre_cmd" ]] && eval "$pre_cmd"
+            eval "$rsync_cmd" || { fail "Sync failed on initial run."; return 1; }
+            echo ""
+            ok "Initial sync complete. Job scheduled."
+            ;;
+        *)
+            fail "Invalid choice."
+            return 1
+            ;;
+    esac
+}
+
+_sync_show_status() {
+    echo ""
+    echo -e "  ${BOLD}Scheduled tasks${NC}"
+    echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf "  ${BOLD}%-20s %-18s %-10s %s${NC}\n" "Name" "Schedule" "Type" "Note"
+    echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    # Server-side crons (read-only)
+    local server_crons
+    server_crons=$(ssh "$SERVER_USER@$SERVER_IP" 'sudo crontab -l 2>/dev/null' 2>/dev/null) || server_crons=""
+
+    local found_any=false
+
+    if [[ -n "$server_crons" ]]; then
+        echo "$server_crons" | while IFS= read -r line; do
+            [[ "$line" =~ ^#|^$ ]] && continue
+            if echo "$line" | grep -q "immich-backup"; then
+                local sched
+                sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
+                printf "  %-20s %-18s %-10s %s\n" "immich-backup" "$sched" "backup" "(managed by step 8)"
+                found_any=true
+            elif echo "$line" | grep -q "disk-check"; then
+                local sched
+                sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
+                printf "  %-20s %-18s %-10s %s\n" "disk-check" "$sched" "monitor" "(managed by step 8)"
+                found_any=true
+            fi
+        done
+    fi
+
+    # Laptop-side sync crons
+    local laptop_crons
+    laptop_crons=$(crontab -l 2>/dev/null) || laptop_crons=""
+
+    if [[ -n "$laptop_crons" ]]; then
+        echo "$laptop_crons" | while IFS= read -r line; do
+            if echo "$line" | grep -q "sync-.*\.sh"; then
+                local sched name direction status
+                sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
+                name=$(echo "$line" | grep -oP 'sync-\K[^.]+')
+                local script_path
+                script_path=$(echo "$line" | grep -oP '/[^ ]*sync-[^ ]*\.sh')
+                direction="sync"
+                if [[ -f "$script_path" ]]; then
+                    direction=$(grep '^# Direction:' "$script_path" 2>/dev/null | sed 's/# Direction: //')
+                    [[ -z "$direction" ]] && direction="sync"
+                fi
+                status=""
+                if echo "$line" | grep -q "^#PAUSED#"; then
+                    status="${YELLOW}(paused)${NC}"
+                    sched=$(echo "$line" | sed 's/^#PAUSED#//' | awk '{print $1,$2,$3,$4,$5}')
+                    name=$(echo "$line" | sed 's/^#PAUSED#//' | grep -oP 'sync-\K[^.]+')
+                    script_path=$(echo "$line" | sed 's/^#PAUSED#//' | grep -oP '/[^ ]*sync-[^ ]*\.sh')
+                    if [[ -f "$script_path" ]]; then
+                        direction=$(grep '^# Direction:' "$script_path" 2>/dev/null | sed 's/# Direction: //')
+                        [[ -z "$direction" ]] && direction="sync"
+                    fi
+                fi
+                printf "  %-20s %-18s %-10s " "$name" "$sched" "$direction"
+                [[ -n "$status" ]] && echo -e "$status" || echo ""
+                found_any=true
+            fi
+        done
+    fi
+
+    if [[ "$found_any" == "false" ]]; then
+        # Check again outside subshells
+        local has_server=false has_laptop=false
+        [[ -n "$server_crons" ]] && echo "$server_crons" | grep -qE "immich-backup|disk-check" && has_server=true
+        [[ -n "$laptop_crons" ]] && echo "$laptop_crons" | grep -q "sync-.*\.sh" && has_laptop=true
+        if [[ "$has_server" == "false" && "$has_laptop" == "false" ]]; then
+            echo ""
+            info "No scheduled tasks found."
+        fi
+    fi
+
+    echo ""
+}
+
+_sync_list_jobs() {
+    local filter="$1"  # "active", "paused", or "all"
+    local laptop_crons
+    laptop_crons=$(crontab -l 2>/dev/null) || laptop_crons=""
+
+    _sync_jobs=()
+    _sync_job_lines=()
+    local i=1
+
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        case "$filter" in
+            active)
+                echo "$line" | grep -q "^#PAUSED#" && continue
+                echo "$line" | grep -q "sync-.*\.sh" || continue
+                ;;
+            paused)
+                echo "$line" | grep -q "^#PAUSED#" || continue
+                echo "$line" | grep -q "sync-.*\.sh" || continue
+                ;;
+            all)
+                echo "$line" | grep -q "sync-.*\.sh" || continue
+                # Also match paused lines
+                if ! echo "$line" | grep -q "sync-.*\.sh"; then
+                    echo "$line" | sed 's/^#PAUSED#//' | grep -q "sync-.*\.sh" || continue
+                fi
+                ;;
+        esac
+
+        local clean_line name sched status_tag
+        clean_line=$(echo "$line" | sed 's/^#PAUSED#//')
+        name=$(echo "$clean_line" | grep -oP 'sync-\K[^.]+')
+        sched=$(echo "$clean_line" | awk '{print $1,$2,$3,$4,$5}')
+        status_tag=""
+        echo "$line" | grep -q "^#PAUSED#" && status_tag=" ${YELLOW}(paused)${NC}"
+
+        echo -e "    ${BOLD}${i})${NC} ${name}  [${sched}]${status_tag}"
+        _sync_jobs+=("$name")
+        _sync_job_lines+=("$line")
+        ((i++))
+    done <<< "$laptop_crons"
+
+    if [[ ${#_sync_jobs[@]} -eq 0 ]]; then
+        return 1
+    fi
+    return 0
+}
+
+_sync_pause_job() {
+    echo ""
+    echo -e "  ${BOLD}Pause a sync job${NC}"
+    echo ""
+
+    if ! _sync_list_jobs "active"; then
+        info "No active sync jobs to pause."
+        return
+    fi
+
+    echo ""
+    read -p "  Pick a job [number]: " pick
+    if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#_sync_jobs[@]} )); then
+        fail "Invalid choice."
+        return
+    fi
+
+    local job_name="${_sync_jobs[$((pick-1))]}"
+    local old_line="${_sync_job_lines[$((pick-1))]}"
+    local new_line="#PAUSED#${old_line}"
+
+    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
+    ok "Paused sync job '${job_name}'"
+}
+
+_sync_resume_job() {
+    echo ""
+    echo -e "  ${BOLD}Resume a sync job${NC}"
+    echo ""
+
+    if ! _sync_list_jobs "paused"; then
+        info "No paused sync jobs to resume."
+        return
+    fi
+
+    echo ""
+    read -p "  Pick a job [number]: " pick
+    if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#_sync_jobs[@]} )); then
+        fail "Invalid choice."
+        return
+    fi
+
+    local job_name="${_sync_jobs[$((pick-1))]}"
+    local old_line="${_sync_job_lines[$((pick-1))]}"
+    local new_line
+    new_line=$(echo "$old_line" | sed 's/^#PAUSED#//')
+
+    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
+    ok "Resumed sync job '${job_name}'"
+}
+
+_sync_delete_job() {
+    echo ""
+    echo -e "  ${BOLD}Delete a sync job${NC}"
+    echo ""
+
+    if ! _sync_list_jobs "all"; then
+        info "No sync jobs to delete."
+        return
+    fi
+
+    echo ""
+    read -p "  Pick a job [number]: " pick
+    if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#_sync_jobs[@]} )); then
+        fail "Invalid choice."
+        return
+    fi
+
+    local job_name="${_sync_jobs[$((pick-1))]}"
+    echo ""
+    _confirm_delete "sync-${job_name}" || return 0
+
+    # Remove cron line
+    local old_line="${_sync_job_lines[$((pick-1))]}"
+    (crontab -l 2>/dev/null | grep -vF "$old_line") | crontab -
+
+    # Remove script and log
+    local script_path="$HOME/.local/bin/sync-${job_name}.sh"
+    local log_path="$HOME/.local/share/sync-jobs/${job_name}.log"
+    rm -f "$script_path" "$log_path"
+
+    ok "Deleted sync job '${job_name}'"
+    [[ -f "$script_path" ]] || info "Removed $script_path"
+    [[ -f "$log_path" ]] || info "Removed $log_path"
+}
+
+_sync_run_now() {
+    echo ""
+    echo -e "  ${BOLD}Run a sync job now${NC}"
+    echo ""
+
+    if ! _sync_list_jobs "active"; then
+        info "No active sync jobs to run."
+        return
+    fi
+
+    echo ""
+    read -p "  Pick a job [number]: " pick
+    if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#_sync_jobs[@]} )); then
+        fail "Invalid choice."
+        return
+    fi
+
+    local job_name="${_sync_jobs[$((pick-1))]}"
+    local script_path="$HOME/.local/bin/sync-${job_name}.sh"
+
+    if [[ ! -x "$script_path" ]]; then
+        fail "Script not found or not executable: $script_path"
+        return 1
+    fi
+
+    info "Running sync-${job_name}..."
+    echo ""
+    bash "$script_path" || { fail "Sync job failed."; return 1; }
+    echo ""
+    ok "Sync job '${job_name}' completed."
+}
+
+step_manage_sync() {
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Status                    ${DIM}← all scheduled tasks${NC}"
+    echo -e "  ${BOLD}2)${NC} New sync                  ${DIM}← transfer files, run now or schedule${NC}"
+    echo -e "  ${BOLD}3)${NC} Pause a sync job"
+    echo -e "  ${BOLD}4)${NC} Resume a sync job"
+    echo -e "  ${BOLD}5)${NC} Delete a sync job"
+    echo -e "  ${BOLD}6)${NC} Run a sync job now"
+    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Choice [0-6]: " sync_choice
+    case $sync_choice in
+        1) _sync_show_status ;;
+        2) step_sync ;;
+        3) _sync_pause_job ;;
+        4) _sync_resume_job ;;
+        5) _sync_delete_job ;;
+        6) _sync_run_now ;;
+        0) return ;;
+        *) fail "Invalid choice." ;;
+    esac
+}
+
 step_sync() {
     info "Transfer or delete files between this laptop and the server."
     info "Run this from your LAPTOP, not over SSH."
@@ -2850,13 +3215,10 @@ step_sync() {
             echo -e "  From: $local_path ($src_size)"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-            echo ""
-            read -p "  Start sync? [Y/n] " -n 1 -r
-            echo ""
-            [[ $REPLY =~ ^[Nn]$ ]] && info "Cancelled." && return
 
-            ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$dest_display' && sudo chown $SERVER_USER:$SERVER_USER '$dest_display'"
-            rsync -avh --progress "$rsync_src" "$SERVER_USER@$SERVER_IP:$server_path/" || { fail "Sync failed."; return 1; }
+            local pre_cmd="ssh -t $SERVER_USER@$SERVER_IP \"sudo mkdir -p '$dest_display' && sudo chown $SERVER_USER:$SERVER_USER '$dest_display'\""
+            local rsync_cmd="rsync -avh --progress \"$rsync_src\" \"$SERVER_USER@$SERVER_IP:$server_path/\""
+            _sync_execute_or_schedule "upload" "$local_path" "$dest_display" "$rsync_cmd" "$pre_cmd"
             ;;
 
         2)
@@ -2883,13 +3245,10 @@ step_sync() {
             echo -e "  From: $SERVER_USER@$SERVER_IP:$server_path"
             echo -e "  To:   $dest_display"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-            echo ""
-            read -p "  Start sync? [Y/n] " -n 1 -r
-            echo ""
-            [[ $REPLY =~ ^[Nn]$ ]] && info "Cancelled." && return
 
-            sudo mkdir -p "$dest_display"
-            rsync -avh --progress "$SERVER_USER@$SERVER_IP:$rsync_src" "$local_path/" || { fail "Sync failed."; return 1; }
+            local pre_cmd="sudo mkdir -p \"$dest_display\""
+            local rsync_cmd="rsync -avh --progress \"$SERVER_USER@$SERVER_IP:$rsync_src\" \"$local_path/\""
+            _sync_execute_or_schedule "download" "$server_path" "$dest_display" "$rsync_cmd" "$pre_cmd"
             ;;
 
         3)
@@ -2937,9 +3296,6 @@ step_sync() {
             ;;
 
     esac
-
-    echo ""
-    ok "Sync complete."
 }
 
 step_status() {
@@ -3486,7 +3842,7 @@ while true; do
         13) run_step "[13] Manage storage" "_on_server step_storage" ;;
         14) run_step "[14] Manage Syncthing" step_syncthing ;;
         15) run_step "[15] Manage remote desktop" "_on_server step_remotedesktop" ;;
-        16) run_step "[16] Sync files" "_on_laptop step_sync" ;;
+        16) run_step "[16] Manage sync" "_on_laptop step_manage_sync" ;;
         17) run_step "[17] Save to pass" "_on_laptop step_save_to_pass" ;;
         s)  run_step "[s] Status" step_status ;;
         i)  run_step "[i] Immich (privcloud)" step_immich ;;

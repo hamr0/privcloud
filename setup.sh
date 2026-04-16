@@ -1133,22 +1133,49 @@ _storage_change_immich() {
 
 _services_status() {
     echo ""
-    echo -e "  ${BOLD}Running containers${NC}"
-    echo ""
     if ! command -v docker &>/dev/null; then
         fail "Docker not installed."
         return 1
     fi
-    sg docker -c "docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'" 2>/dev/null | sed 's/^/    /'
+
+    # Fetch container list + stats (same data as step_status uses)
+    local CONTAINERS DSTATS
+    CONTAINERS=$(sg docker -c "docker ps -a --format '{{.Names}}|{{.Status}}'" 2>/dev/null)
+    DSTATS=$(sg docker -c "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}'" 2>/dev/null)
+
+    echo -e "  ${BOLD}Server containers${NC}"
+    if [[ -n "$CONTAINERS" ]]; then
+        echo "$CONTAINERS" | while IFS='|' read -r name status; do
+            local cpu="" mem=""
+            if [[ -n "$DSTATS" ]]; then
+                local line
+                line=$(echo "$DSTATS" | awk -F'|' -v n="$name" '$1==n{print $2"|"$3; exit}')
+                cpu=$(echo "$line" | cut -d'|' -f1)
+                mem=$(echo "$line" | cut -d'|' -f2 | awk '{print $1}')
+            fi
+            local suffix=""
+            [[ -n "$cpu" ]] && suffix="$suffix  ${DIM}cpu ${cpu}${NC}"
+            [[ -n "$mem" ]] && suffix="$suffix  ${DIM}mem ${mem}${NC}"
+            if echo "$status" | grep -qi "unhealthy\|exit\|restart"; then
+                echo -e "    ${RED}✗${NC} $(printf '%-24s' "$name")  $status$suffix"
+            elif echo "$status" | grep -qi "healthy\|^Up "; then
+                echo -e "    ${GREEN}✓${NC} $(printf '%-24s' "$name")  $status$suffix"
+            else
+                echo -e "    ${YELLOW}!!${NC} $(printf '%-24s' "$name")  $status$suffix"
+            fi
+        done
+    else
+        echo -e "    ${DIM}No containers found${NC}"
+    fi
 
     # Check for known standalone containers that might be completely removed
     local all_names
-    all_names=$(sg docker -c "docker ps -a --format '{{.Names}}'" 2>/dev/null)
+    all_names=$(echo "$CONTAINERS" | cut -d'|' -f1)
     if ! echo "$all_names" | grep -q '^adguard$'; then
-        echo -e "    ${RED}✗${NC} adguard                  not created (install: ${BOLD}federver → 12${NC})"
+        echo -e "    ${RED}✗${NC} $(printf '%-24s' "adguard")  ${RED}not created${NC} ${DIM}(install: federver → 12)${NC}"
     fi
     if ! echo "$all_names" | grep -q '^syncthing$'; then
-        echo -e "    ${RED}✗${NC} syncthing                not created (install: ${BOLD}federver → 14${NC})"
+        echo -e "    ${RED}✗${NC} $(printf '%-24s' "syncthing")  ${RED}not created${NC} ${DIM}(install: federver → 14)${NC}"
     fi
 
     echo ""
@@ -1156,14 +1183,9 @@ _services_status() {
     IP=$(hostname -I | awk '{print $1}')
     HOST=$(hostname)
     TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
-    if sg docker -c "docker ps --format '{{.Names}}'" 2>/dev/null | grep -q '^adguard$'; then
-        has_adguard=1
-    fi
-
+    echo "$all_names" | grep -q '^adguard$' && has_adguard=1
     local has_syncthing=0
-    if sg docker -c "docker ps --format '{{.Names}}'" 2>/dev/null | grep -q '^syncthing$'; then
-        has_syncthing=1
-    fi
+    echo "$all_names" | grep -q '^syncthing$' && echo "$CONTAINERS" | grep '^syncthing|Up' -q && has_syncthing=1
 
     echo -e "  ${BOLD}Service URLs (local network)${NC}"
     echo -e "    Immich:       ${BLUE}http://$IP:2283${NC}"
@@ -1399,10 +1421,11 @@ _unified_service_picker() {
     declare -a entries
     local idx=0
 
-    # Determine running state for both-sides services
+    # Both-sides: fully running only if ALL sides are up. If any side is
+    # down, the service shows in the Start picker (needs starting somewhere).
     local ts_running=0 st_running=0
-    [[ "$ts_laptop" == connected* || "$ts_server" == "connected" ]] && ts_running=1
-    [[ "$st_laptop" == "running" || "$st_server" == Up* ]] && st_running=1
+    [[ "$ts_laptop" == connected* && "$ts_server" == "connected" ]] && ts_running=1
+    [[ "$st_laptop" == "running" && "$st_server" == Up* ]] && st_running=1
 
     # Tailscale
     entries[$idx]="tailscale|Tailscale|B|laptop: $ts_laptop / server: $ts_server|$ts_running"

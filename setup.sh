@@ -3557,7 +3557,7 @@ _sync_show_status() {
             if echo "$line" | grep -q "sync-.*\.sh"; then
                 local sched name direction status
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
-                name=$(echo "$line" | grep -oP 'sync-\K[^.]+')
+                name=$(echo "$line" | grep -oP 'sync-\K[^.]+(?=\.sh)')
                 local script_path
                 script_path=$(echo "$line" | grep -oP '/[^ ]*sync-[^ ]*\.sh')
                 direction="sync"
@@ -3569,7 +3569,7 @@ _sync_show_status() {
                 if echo "$line" | grep -q "^#PAUSED#"; then
                     status="${YELLOW}(paused)${NC}"
                     sched=$(echo "$line" | sed 's/^#PAUSED#//' | awk '{print $1,$2,$3,$4,$5}')
-                    name=$(echo "$line" | sed 's/^#PAUSED#//' | grep -oP 'sync-\K[^.]+')
+                    name=$(echo "$line" | sed 's/^#PAUSED#//' | grep -oP 'sync-\K[^.]+(?=\.sh)')
                     script_path=$(echo "$line" | sed 's/^#PAUSED#//' | grep -oP '/[^ ]*sync-[^ ]*\.sh')
                     if [[ -f "$script_path" ]]; then
                         direction=$(grep '^# Direction:' "$script_path" 2>/dev/null | sed 's/# Direction: //')
@@ -3623,7 +3623,7 @@ _sync_list_jobs() {
 
         local clean_line name sched status_tag
         clean_line=$(echo "$line" | sed 's/^#PAUSED#//')
-        name=$(echo "$clean_line" | grep -oP 'sync-\K[^.]+')
+        name=$(echo "$clean_line" | grep -oP 'sync-\K[^.]+(?=\.sh)')
         sched=$(echo "$clean_line" | awk '{print $1,$2,$3,$4,$5}')
         status_tag=""
         echo "$line" | grep -q "^#PAUSED#" && status_tag=" ${YELLOW}(paused)${NC}"

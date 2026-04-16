@@ -140,7 +140,7 @@ show_menu() {
 _show_server_menu() {
     _show_menu_header
     echo -e "  Running from: ${YELLOW}server${NC}"
-    echo -e "  ${DIM}For the full menu, run federver from your laptop.${NC}"
+    echo -e "  ${DIM}For the full menu, run ${BOLD}${YELLOW}\"federver\"${NC} ${DIM}from your laptop.${NC}"
     echo -e "${BOLD}========================================${NC}"
     echo ""
     echo -e "  ${BOLD}1)${NC}  Enable SSH + auto-login + hostname  ${YELLOW}← bootstrap (needs monitor)${NC}"
@@ -4111,7 +4111,7 @@ if _is_server; then
             s)  run_step "[s] Status" step_status ;;
             p)  run_step "[p] Power" step_power ;;
             0)  echo "Bye."; exit 0 ;;
-            *)  echo -e "  ${DIM}Run federver from your laptop for the full menu.${NC}"
+            *)  echo -e "  ${DIM}Run ${BOLD}${YELLOW}\"federver\"${NC} ${DIM}from your laptop for the full menu.${NC}"
                 read -p "  Press Enter..." -r ;;
         esac
     done

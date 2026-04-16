@@ -1007,20 +1007,6 @@ _services_status() {
     fi
 }
 
-_services_lifecycle() {
-    local action="$1"   # start | stop | restart
-    local SCRIPT_DIR
-    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    info "${action^} all privcloud services..."
-    cd "$SCRIPT_DIR"
-    case "$action" in
-        start)   sg docker -c "docker compose up -d" ;;
-        stop)    sg docker -c "docker compose stop" ;;
-        restart) sg docker -c "docker compose restart" ;;
-    esac
-    ok "${action^} complete."
-}
-
 # Show a numbered list of containers (running or all) + an "All" option,
 # read a selection, and echo either a container name or the literal "all".
 # Returns 1 if the user cancels. Use running=0 to list stopped containers
@@ -1059,55 +1045,50 @@ _pick_container() {
 }
 
 _services_action() {
-    local action="$1"   # start | stop | restart
+    local action="$1"
     local running_filter=1
     [[ "$action" == "start" ]] && running_filter=0
     local target
     target=$(_pick_container "$running_filter") || { info "Cancelled."; return; }
     if [[ "$target" == "all" ]]; then
-        _services_lifecycle "$action"
+        local SCRIPT_DIR
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        cd "$SCRIPT_DIR"
+        case "$action" in
+            start)
+                # Re-enable autostart on all, then start compose stack
+                for c in $(sudo docker ps -a --format '{{.Names}}'); do
+                    sudo docker update --restart=unless-stopped "$c" > /dev/null 2>&1 || true
+                done
+                sg docker -c "docker compose up -d"
+                ;;
+            stop)
+                # Disable autostart on all, then stop compose stack
+                for c in $(sudo docker ps --format '{{.Names}}'); do
+                    sudo docker update --restart=no "$c" > /dev/null 2>&1 || true
+                done
+                sg docker -c "docker compose stop"
+                # Also stop standalone containers
+                for c in adguard syncthing; do
+                    sudo docker stop "$c" > /dev/null 2>&1 || true
+                done
+                ;;
+            restart) sg docker -c "docker compose restart" ;;
+        esac
     else
-        info "${action^} $target..."
-        sudo docker "$action" "$target" > /dev/null && ok "${action^} $target complete."
+        case "$action" in
+            start)
+                sudo docker update --restart=unless-stopped "$target" > /dev/null 2>&1 || true
+                sudo docker start "$target" > /dev/null
+                ;;
+            stop)
+                sudo docker update --restart=no "$target" > /dev/null 2>&1 || true
+                sudo docker stop "$target" > /dev/null
+                ;;
+            restart) sudo docker restart "$target" > /dev/null ;;
+        esac
     fi
-}
-
-# Suspend: stop the container AND disable its restart policy so it stays
-# down across reboots until explicitly Resumed. Resume flips both back.
-_services_suspend() {
-    local target
-    target=$(_pick_container 1) || { info "Cancelled."; return; }
-    local list
-    if [[ "$target" == "all" ]]; then
-        list=$(sudo docker ps --format '{{.Names}}')
-    else
-        list="$target"
-    fi
-    local c
-    for c in $list; do
-        info "Suspending $c..."
-        sudo docker update --restart=no "$c" > /dev/null 2>&1 || true
-        sudo docker stop "$c" > /dev/null 2>&1 || true
-    done
-    ok "Suspended. Container(s) will stay stopped across reboots until Resumed."
-}
-
-_services_resume() {
-    local target
-    target=$(_pick_container 0) || { info "Cancelled."; return; }
-    local list
-    if [[ "$target" == "all" ]]; then
-        list=$(sudo docker ps -a --format '{{.Names}}')
-    else
-        list="$target"
-    fi
-    local c
-    for c in $list; do
-        info "Resuming $c..."
-        sudo docker update --restart=unless-stopped "$c" > /dev/null 2>&1 || true
-        sudo docker start "$c" > /dev/null 2>&1 || true
-    done
-    ok "Resumed."
+    ok "${action^} complete."
 }
 
 _services_logs() {
@@ -1137,13 +1118,11 @@ _services_logs() {
 
 step_services() {
     echo -e "  ${BOLD}1)${NC} Status                     ${DIM}<- running containers + URLs${NC}"
-    echo -e "  ${BOLD}2)${NC} Start                      ${DIM}<- pick one or All${NC}"
-    echo -e "  ${BOLD}3)${NC} Stop                       ${DIM}<- pick one or All${NC}"
+    echo -e "  ${BOLD}2)${NC} Start                      ${DIM}<- pick one or All (re-enables autostart)${NC}"
+    echo -e "  ${BOLD}3)${NC} Stop                       ${DIM}<- pick one or All (stays off across reboots)${NC}"
     echo -e "  ${BOLD}4)${NC} Restart                    ${DIM}<- pick one or All${NC}"
-    echo -e "  ${BOLD}5)${NC} Suspend                    ${DIM}<- stop + disable autostart (survives reboot)${NC}"
-    echo -e "  ${BOLD}6)${NC} Resume                     ${DIM}<- undo suspend${NC}"
-    echo -e "  ${BOLD}7)${NC} Logs                       ${DIM}<- tail -f a container${NC}"
-    echo -e "  ${BOLD}8)${NC} Deploy / redeploy          ${DIM}<- first install or change data paths${NC}"
+    echo -e "  ${BOLD}5)${NC} Logs                       ${DIM}<- tail -f a container${NC}"
+    echo -e "  ${BOLD}6)${NC} Deploy / redeploy          ${DIM}<- first install or change data paths${NC}"
     echo -e "  ${BOLD}0)${NC} Cancel"
     echo ""
     read -p "  Choose: " svc_choice
@@ -1152,10 +1131,8 @@ step_services() {
         2) _services_action start ;;
         3) _services_action stop ;;
         4) _services_action restart ;;
-        5) _services_suspend ;;
-        6) _services_resume ;;
-        7) _services_logs ;;
-        8) step_deploy ;;
+        5) _services_logs ;;
+        6) step_deploy ;;
         0|*) return ;;
     esac
 }
@@ -1623,8 +1600,8 @@ _syncthing_server_step() {
         2) _syncthing_show_device_id ;;
         3) _syncthing_show_paths ;;
         4) _syncthing_reapply_paths ;;
-        5) info "Starting..."; sudo docker start syncthing > /dev/null && ok "Started." ;;
-        6) info "Stopping..."; sudo docker stop syncthing > /dev/null && ok "Stopped." ;;
+        5) info "Starting..."; sudo docker update --restart=unless-stopped syncthing > /dev/null 2>&1 || true; sudo docker start syncthing > /dev/null && ok "Started." ;;
+        6) info "Stopping..."; sudo docker update --restart=no syncthing > /dev/null 2>&1 || true; sudo docker stop syncthing > /dev/null && ok "Stopped." ;;
         7) info "Restarting..."; sudo docker restart syncthing > /dev/null && ok "Restarted." ;;
         8)
             info "Last 50 lines (Ctrl+C to exit follow mode)..."

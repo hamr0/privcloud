@@ -83,7 +83,7 @@ One script sets up everything from a fresh Fedora XFCE install. Run from either 
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools (from laptop, exit SSH first) --
-  16) Sync files                          ← upload, download, or delete files
+  16) Manage sync                          ← transfer, schedule, cron jobs
   17) Save to pass                        ← from laptop, backup everything to pass
 
   s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-9)   0)  Exit

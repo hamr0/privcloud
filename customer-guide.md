@@ -125,7 +125,7 @@ Dedicated always-on machine running Immich + music streaming + file management +
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools (from laptop, exit SSH first) --
-  16) Sync files                          ← upload, download, or delete files
+  16) Manage sync                          ← transfer, schedule, cron jobs
   17) Save to pass                        ← from laptop, backup everything to pass
 
   s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-9)   0)  Exit
@@ -875,7 +875,7 @@ Every tailnet device now uses AdGuard automatically. Roaming too — works from 
 
 ## Syncthing real-time folder sync
 
-Continuous bidirectional file sync between devices. Peer-to-peer — no central cloud, changes propagate in seconds. Good for folders you actively edit on multiple devices (notes, code, documents, obsidian vault). Complements rsync (`federver` → 16), which is one-shot; Syncthing is always-on.
+Continuous bidirectional file sync between devices. Peer-to-peer — no central cloud, changes propagate in seconds. Good for folders you actively edit on multiple devices (notes, code, documents, obsidian vault). Complements Manage sync (`federver` → 16), which handles one-shot transfers and scheduled jobs; Syncthing is always-on.
 
 ### What it's good for
 
@@ -884,7 +884,7 @@ Continuous bidirectional file sync between devices. Peer-to-peer — no central 
 - **Code drafts** — small repos you're hacking on from multiple machines
 - **Photos from camera SD** — drop in a folder, server auto-picks them up
 
-Not the tool for: photo backup (use Immich), music library (use Navidrome), or one-shot transfers (use option 16).
+Not the tool for: photo backup (use Immich), music library (use Navidrome), or one-shot transfers (use Manage sync, option 16).
 
 ### Install
 
@@ -994,6 +994,27 @@ Re-running option 14 once Syncthing is installed opens a management submenu:
 - **Device ID unavailable** — container still starting up or Syncthing 2.x CLI couldn't be read. Wait 10 seconds and re-run option 14 → 2. The helper tries several CLI shapes and falls back to reading `config.xml` directly.
 - **"Remote expects to exchange plain data, but local data is encrypted"** — Folder Type mismatch. One side set `Receive Encrypted`, the other didn't set an encryption password. Either set a password on the trusted side's Sharing tab, or change the untrusted side's Folder Type to `Send & Receive`.
 - **Forgot the GUI password** — stop the container (`federver → 14 → 6`), delete `/opt/syncthing/config/config.xml`, restart. Regenerates clean. Pairings are lost (they lived in config.xml).
+
+---
+
+## Manage sync
+
+`federver` → **16** (from laptop, exit SSH first). One-shot file transfers and scheduled sync jobs between laptop and server via rsync over SSH.
+
+### What it does
+
+- **Transfer files** — upload or download files and directories between laptop and server. Accepts files and directories, strips quotes and trailing slashes, handles folder-vs-contents mode. Cancel at every step, 3-attempt retry on invalid input.
+- **Delete files** — remove files on the laptop or server side.
+- **Scheduled sync jobs** — set up cron-based rsync jobs that run automatically on a schedule. Pick source and destination, set the cron interval, and the job runs unattended. Useful for recurring backups of specific folders (e.g. sync laptop notes to server every hour).
+
+### When to use it vs Syncthing
+
+| | Manage sync (option 16) | Syncthing (option 14) |
+|---|---|---|
+| **Mode** | One-shot or scheduled cron | Always-on real-time |
+| **Direction** | One-way per transfer | Bidirectional |
+| **Runs from** | Laptop (SSHes to server) | Both sides independently |
+| **Good for** | Bulk transfers, scheduled backups, cleanup | Live working folders, notes, code drafts |
 
 ---
 
@@ -1113,7 +1134,7 @@ Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 | Check disk space | `df -h` | Monthly |
 | Check disk alerts | `cat /var/log/disk-check.log` | After alerts |
 | Check backup logs | `cat /var/log/immich-backup.log` | After issues |
-| Sync files | `federver` → **16** (from laptop) | As needed |
+| Manage sync | `federver` → **16** (from laptop) | As needed |
 
 ### Kernel updates
 

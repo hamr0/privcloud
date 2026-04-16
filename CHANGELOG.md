@@ -2,7 +2,17 @@
 
 ## Unreleased
 
+### Added
+
 ### Changed
+
+### Fixed
+
+## v0.3.0 — 2026-04-16
+
+### Changed
+- **Service Stop/Start simplified (`federver` → 7, 14).** Collapsed Stop/Suspend/Resume into two actions: Stop (`docker update --restart=no` + `docker stop` — stays off across reboots) and Start (`docker update --restart=unless-stopped` + `docker start` — stays running across reboots). Restart just bounces the container without changing restart policy. Applies to Manage services submenu and Syncthing submenu. Removes the separate Suspend/Resume menu entries — Stop and Start now handle restart-policy management automatically.
+- **Manage sync replaces Sync files (`federver` → 16).** Menu label, README, and customer guide updated to reflect the expanded scope: one-shot transfers, scheduled cron jobs, and file deletion.
 - **AdGuard install (`federver` → 12)** three big UX fixes:
   - **No more port-3000 wizard detour.** The install pre-seeds a minimal `/opt/adguard/conf/AdGuardHome.yaml` that sets `http.address: 0.0.0.0:80` and nothing else. AdGuard's native first-run wizard then runs on port 80 directly (instead of its hardcoded 3000 default), so the user opens `http://<server-ip>` in a browser, clicks through AdGuard's own setup wizard there, and is done. No firewall shuffle for port 3000, no credentials collected in the terminal, no `htpasswd` / bcrypt dependency. Keeps all of AdGuard's defaults (DNS upstreams, filter lists, etc.) because AdGuard's wizard sets them itself.
   - **systemd-resolved cleanup now explains itself.** Previously ran silently — scary if you have a custom DNS setup. Now prints a yellow block describing exactly what will change (drop-in file path, `resolv.conf` symlink, `systemd-resolved` restart), notes that local name resolution still works, and asks `Disable the stub listener and continue? [Y/n]` before touching anything. Cancel path is safe — no changes made.

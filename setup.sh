@@ -101,11 +101,11 @@ _on_server() {
     if _is_server; then
         "$step"
     else
-        info "This step runs on the server. Connecting via SSH..."
+        info "Connecting to server..."
         echo ""
         local dry=""
         [[ "$DRY_RUN" == "1" ]] && dry="--dry-run "
-        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && ./setup.sh ${dry}--run $step"
+        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && git pull --ff-only -q 2>/dev/null; ./setup.sh ${dry}--run $step"
     fi
 }
 

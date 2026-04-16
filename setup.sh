@@ -1140,6 +1140,17 @@ _services_status() {
         return 1
     fi
     sg docker -c "docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'" 2>/dev/null | sed 's/^/    /'
+
+    # Check for known standalone containers that might be completely removed
+    local all_names
+    all_names=$(sg docker -c "docker ps -a --format '{{.Names}}'" 2>/dev/null)
+    if ! echo "$all_names" | grep -q '^adguard$'; then
+        echo -e "    ${RED}✗${NC} adguard                  not created (install: ${BOLD}federver → 12${NC})"
+    fi
+    if ! echo "$all_names" | grep -q '^syncthing$'; then
+        echo -e "    ${RED}✗${NC} syncthing                not created (install: ${BOLD}federver → 14${NC})"
+    fi
+
     echo ""
     local IP HOST TS_IP has_adguard=0
     IP=$(hostname -I | awk '{print $1}')
@@ -1330,6 +1341,250 @@ _show_laptop_services() {
     echo ""
 }
 
+# Unified service picker: shows laptop services + server containers in one
+# list. Runs locally on the laptop, SSHes once to get server container states.
+# Usage: _unified_service_picker start|stop|restart
+_unified_service_picker() {
+    local action="$1"
+
+    # ── 1. Collect laptop service states ──
+    local ts_laptop="disconnected" st_laptop="stopped"
+    if command -v tailscale &>/dev/null && tailscale status &>/dev/null; then
+        local ts_ip
+        ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+        ts_laptop="connected${ts_ip:+ ($ts_ip)}"
+    fi
+    if systemctl --user is-active syncthing &>/dev/null; then
+        st_laptop="running"
+    elif ! command -v syncthing &>/dev/null; then
+        st_laptop="not installed"
+    fi
+
+    # ── 2. Collect server container states via single SSH call ──
+    local server_data
+    server_data=$(ssh "$SERVER_USER@$SERVER_IP" \
+        'docker ps -a --format "{{.Names}}|{{.Status}}" 2>/dev/null') || {
+        fail "Could not reach server."
+        return 1
+    }
+
+    # ── 3. Extract Tailscale server state ──
+    local ts_server="disconnected"
+    local ts_server_raw
+    ts_server_raw=$(ssh "$SERVER_USER@$SERVER_IP" \
+        'tailscale status &>/dev/null && echo "connected" || echo "disconnected"' 2>/dev/null) || true
+    [[ -n "$ts_server_raw" ]] && ts_server="$ts_server_raw"
+
+    # ── 4. Extract Syncthing server state from docker data ──
+    local st_server="not created"
+    local st_server_line
+    st_server_line=$(echo "$server_data" | grep '^syncthing|' || true)
+    if [[ -n "$st_server_line" ]]; then
+        st_server="${st_server_line#syncthing|}"
+    fi
+
+    # ── 5. Check for known standalone containers that might be removed ──
+    local adguard_status=""
+    local adguard_line
+    adguard_line=$(echo "$server_data" | grep '^adguard|' || true)
+    if [[ -n "$adguard_line" ]]; then
+        adguard_status="${adguard_line#adguard|}"
+    else
+        adguard_status="not created"
+    fi
+
+    # ── 6. Build the display list ──
+    # Each entry: "name|display_label|section|state_text|is_running"
+    # section: B=both-sides, S=server-container
+    declare -a entries
+    local idx=0
+
+    # Determine running state for both-sides services
+    local ts_running=0 st_running=0
+    [[ "$ts_laptop" == connected* || "$ts_server" == "connected" ]] && ts_running=1
+    [[ "$st_laptop" == "running" || "$st_server" == Up* ]] && st_running=1
+
+    # Tailscale
+    entries[$idx]="tailscale|Tailscale|B|laptop: $ts_laptop / server: $ts_server|$ts_running"
+    idx=$((idx + 1))
+
+    # Syncthing (both-sides)
+    entries[$idx]="syncthing|Syncthing|B|laptop: $st_laptop / server: $st_server|$st_running"
+    idx=$((idx + 1))
+
+    # Server containers (excluding syncthing, already shown above)
+    while IFS='|' read -r cname cstatus; do
+        [[ -z "$cname" ]] && continue
+        [[ "$cname" == "syncthing" ]] && continue
+        [[ "$cname" == "adguard" ]] && continue
+        local is_running=0
+        [[ "$cstatus" == Up* ]] && is_running=1
+        entries[$idx]="$cname|$cname|S|$cstatus|$is_running"
+        idx=$((idx + 1))
+    done <<< "$server_data"
+
+    # AdGuard as server container
+    local ag_running=0
+    [[ "$adguard_status" == Up* ]] && ag_running=1
+    entries[$idx]="adguard|adguard|S|$adguard_status|$ag_running"
+    idx=$((idx + 1))
+
+    # ── 7. Filter based on action ──
+    declare -a filtered
+    local fidx=0
+    for entry in "${entries[@]}"; do
+        local is_running="${entry##*|}"
+        local state_text
+        state_text=$(echo "$entry" | cut -d'|' -f4)
+        case "$action" in
+            start)
+                # Show stopped/exited/disconnected/not-created services
+                [[ "$is_running" == "1" ]] && continue
+                ;;
+            stop)
+                # Show only running services
+                [[ "$is_running" == "0" ]] && continue
+                ;;
+            restart)
+                # Show all (running makes most sense, but show everything)
+                ;;
+        esac
+        filtered[$fidx]="$entry"
+        fidx=$((fidx + 1))
+    done
+
+    if [[ ${#filtered[@]} -eq 0 ]]; then
+        info "No services available to ${action}."
+        return 0
+    fi
+
+    # ── 8. Display ──
+    echo ""
+    echo -e "  ${BOLD}a)${NC} ${BOLD}All${NC}"
+
+    local display_idx=1 printed_both=0 printed_server=0
+    declare -a pick_map  # maps display number → entry
+
+    for entry in "${filtered[@]}"; do
+        local section
+        section=$(echo "$entry" | cut -d'|' -f3)
+        local label
+        label=$(echo "$entry" | cut -d'|' -f2)
+        local state_text
+        state_text=$(echo "$entry" | cut -d'|' -f4)
+
+        if [[ "$section" == "B" && "$printed_both" -eq 0 ]]; then
+            echo -e "  ${DIM}── Both sides ──${NC}"
+            printed_both=1
+        elif [[ "$section" == "S" && "$printed_server" -eq 0 ]]; then
+            echo -e "  ${DIM}── Server containers ──${NC}"
+            printed_server=1
+        fi
+
+        echo -e "  ${BOLD}${display_idx})${NC} $(printf '%-24s' "$label") ${DIM}${state_text}${NC}"
+        pick_map[$display_idx]="$entry"
+        display_idx=$((display_idx + 1))
+    done
+
+    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Choose: " pick
+
+    # ── 9. Execute choice ──
+    if [[ "$pick" == "a" || "$pick" == "A" ]]; then
+        # All
+        if [[ "$action" == "stop" ]]; then
+            echo ""
+            warn "This will stop ALL services (laptop + server)."
+            read -p "  Continue? [y/N] " -n 1 -r
+            echo ""
+            [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
+        fi
+        # Both-sides services
+        "_ts_${action}_both"
+        "_syncthing_${action}_both"
+        # Server containers via SSH
+        case "$action" in
+            start)
+                ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && \
+                    for c in \$(sudo docker ps -a --format '{{.Names}}'); do \
+                        sudo docker update --restart=unless-stopped \"\$c\" >/dev/null 2>&1 || true; \
+                    done; \
+                    sg docker -c 'docker compose up -d'; \
+                    for c in adguard syncthing; do sudo docker start \"\$c\" >/dev/null 2>&1 || true; done"
+                ;;
+            stop)
+                ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && \
+                    for c in \$(sudo docker ps --format '{{.Names}}'); do \
+                        sudo docker update --restart=no \"\$c\" >/dev/null 2>&1 || true; \
+                    done; \
+                    sg docker -c 'docker compose stop'; \
+                    for c in adguard syncthing; do sudo docker stop \"\$c\" >/dev/null 2>&1 || true; done"
+                ;;
+            restart)
+                ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && \
+                    sg docker -c 'docker compose restart'; \
+                    for c in adguard syncthing; do sudo docker restart \"\$c\" >/dev/null 2>&1 || true; done"
+                ;;
+        esac
+        ok "${action^} complete (all services)."
+        return 0
+    fi
+
+    if [[ "$pick" == "0" || -z "$pick" ]]; then
+        info "Cancelled."
+        return 0
+    fi
+
+    local chosen="${pick_map[$pick]:-}"
+    if [[ -z "$chosen" ]]; then
+        fail "Invalid choice."
+        return 1
+    fi
+
+    local cname
+    cname=$(echo "$chosen" | cut -d'|' -f1)
+    local section
+    section=$(echo "$chosen" | cut -d'|' -f3)
+    local state_text
+    state_text=$(echo "$chosen" | cut -d'|' -f4)
+
+    # Handle "not created" containers
+    if [[ "$state_text" == "not created" ]]; then
+        case "$cname" in
+            adguard)   warn "Container doesn't exist. Use ${BOLD}federver → 12${NC} to install it." ;;
+            syncthing) warn "Container doesn't exist. Use ${BOLD}federver → 14${NC} to install it." ;;
+            *)         warn "Container '$cname' doesn't exist." ;;
+        esac
+        return 0
+    fi
+
+    # Both-sides services
+    if [[ "$section" == "B" ]]; then
+        case "$cname" in
+            tailscale)  "_ts_${action}_both" ;;
+            syncthing)  "_syncthing_${action}_both" ;;
+        esac
+        return 0
+    fi
+
+    # Server container
+    case "$action" in
+        start)
+            ssh "$SERVER_USER@$SERVER_IP" \
+                "sudo docker update --restart=unless-stopped '$cname' >/dev/null 2>&1 || true; sudo docker start '$cname' >/dev/null"
+            ;;
+        stop)
+            ssh "$SERVER_USER@$SERVER_IP" \
+                "sudo docker update --restart=no '$cname' >/dev/null 2>&1 || true; sudo docker stop '$cname' >/dev/null"
+            ;;
+        restart)
+            ssh "$SERVER_USER@$SERVER_IP" "sudo docker restart '$cname' >/dev/null"
+            ;;
+    esac
+    ok "${action^} complete: $cname"
+}
+
 # Laptop-side wrapper for option 7. Shows the submenu locally, collects
 # laptop service info for Status, and SSHes to the server for everything else.
 step_services_wrapper() {
@@ -1348,9 +1603,9 @@ step_services_wrapper() {
             _show_laptop_services
             _on_server _services_status
             ;;
-        2) _on_server "_services_action start" ;;
-        3) _on_server "_services_action stop" ;;
-        4) _on_server "_services_action restart" ;;
+        2) _unified_service_picker start ;;
+        3) _unified_service_picker stop ;;
+        4) _unified_service_picker restart ;;
         5) _on_server _services_logs ;;
         6) _on_server step_deploy ;;
         0|*) return ;;

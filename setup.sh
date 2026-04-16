@@ -1139,7 +1139,7 @@ _services_status() {
         fail "Docker not installed."
         return 1
     fi
-    sg docker -c "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'" 2>/dev/null | sed 's/^/    /'
+    sg docker -c "docker ps -a --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'" 2>/dev/null | sed 's/^/    /'
     echo ""
     local IP HOST TS_IP has_adguard=0
     IP=$(hostname -I | awk '{print $1}')
@@ -1173,6 +1173,8 @@ _services_status() {
         [[ "$has_syncthing" == 1 ]] && echo -e "    Syncthing:    ${BLUE}http://$HOST:8384${NC}"
         echo -e "    ${DIM}(MagicDNS resolves '$HOST' on any Tailscale device — or use IP $TS_IP)${NC}"
     fi
+    echo ""
+    echo -e "  ${DIM}Laptop services (Tailscale, Syncthing): run ${BOLD}s${NC} ${DIM}for full status.${NC}"
 }
 
 # Show a numbered list of containers (running or all) + an "All" option,

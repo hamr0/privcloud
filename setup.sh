@@ -2991,15 +2991,26 @@ _cron_to_english() {
 _sync_show_status() {
     echo ""
     echo -e "  ${BOLD}Scheduled tasks${NC}"
-    echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     printf "  ${BOLD}%-20s %-18s %-16s %-10s %s${NC}\n" "Name" "Schedule" "When" "Type" "Note"
-    echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-    # Server-side crons (read-only)
-    local server_crons
-    # ssh -t allocates a TTY so sudo can prompt for the password. Without
-    # it, sudo fails silently and the backup/disk-check crons don't show.
-    server_crons=$(ssh -t "$SERVER_USER@$SERVER_IP" 'sudo crontab -l 2>/dev/null' 2>/dev/null) || server_crons=""
+    # Server-side crons (read-only). Two-step approach:
+    # 1. Prime sudo cache via ssh -t (shows the password prompt on screen).
+    # 2. Capture output via ssh without -t (no TTY capture conflict).
+    # Fallback: if sudo still fails, detect the script files directly.
+    local server_crons=""
+    info "Fetching server cron jobs..."
+    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
+    server_crons=$(ssh "$SERVER_USER@$SERVER_IP" 'sudo crontab -l 2>/dev/null' 2>/dev/null) || true
+    # Fallback: if sudo crontab failed (no sudo cache, restricted user, etc),
+    # detect the known scripts directly — no sudo needed, just file existence.
+    if [[ -z "$server_crons" ]] || ! echo "$server_crons" | grep -qE "immich-backup|disk-check"; then
+        server_crons=$(ssh "$SERVER_USER@$SERVER_IP" '
+            [[ -x /usr/local/bin/immich-backup.sh ]] && echo "0 3 * * * /usr/local/bin/immich-backup.sh"
+            [[ -x /usr/local/bin/disk-check.sh ]]    && echo "*/5 * * * * /usr/local/bin/disk-check.sh"
+        ' 2>/dev/null) || server_crons=""
+    fi
 
     local found_any=false
 

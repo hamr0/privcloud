@@ -2089,15 +2089,10 @@ _syncthing_stop_both() {
 _syncthing_start_both() {
     info "Starting Syncthing on both laptop and server..."
     systemctl --user start syncthing 2>/dev/null && ok "Laptop: started." || warn "Laptop: failed to start."
-    local result
-    result=$(ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=unless-stopped syncthing 2>&1; sudo docker start syncthing 2>&1" 2>/dev/null)
-    if [[ $? -eq 0 ]]; then
-        ok "Server: started."
-    else
-        warn "Server: failed to start."
-        [[ -n "$result" ]] && echo -e "    ${DIM}$result${NC}"
-        info "If the container has bad config, remove and reinstall: federver → 14"
-    fi
+    # ssh -t for sudo TTY. NOT inside $() — that captures the prompt.
+    ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=unless-stopped syncthing >/dev/null 2>&1; sudo docker start syncthing >/dev/null 2>&1" \
+        && ok "Server: started." \
+        || { warn "Server: failed to start."; info "If container has bad config: federver → 14 to reinstall."; }
 }
 
 _syncthing_restart_both() {

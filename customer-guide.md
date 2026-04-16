@@ -739,6 +739,19 @@ Each device that needs remote access needs Tailscale installed and logged into t
 
 Tailscale only routes traffic to your server — it does NOT route all their internet through a VPN. Normal browsing, apps, everything else goes through their regular connection.
 
+### Submenu (`federver` → 10 after install)
+
+Re-running option 10 from the laptop once both sides are installed shows a unified status (laptop IP + server IP/hostname) and a both-sides management submenu:
+
+1. **Refresh status** — both sides
+2. **Connect both** — `tailscale up` on laptop + server
+3. **Disconnect both** — `tailscale down` on both (stays disconnected until you Connect again)
+4. **Restart both** — `systemctl restart tailscaled` on both
+5. **Re-authenticate server** — SSHes to server and runs `tailscale up` with a new login URL
+6. **Uninstall both** — removes Tailscale from laptop + server. Typed-name confirmation. Phones untouched.
+
+When run directly on the server, option 10 opens a server-only submenu instead.
+
 ---
 
 ## WireGuard VPN
@@ -978,14 +991,19 @@ First visit to each dashboard prompts you to set a GUI username and password. Se
 
 ### Submenu (`federver` → 14 after install)
 
-Re-running option 14 once Syncthing is installed opens a management submenu:
+Re-running option 14 from the laptop once both sides are installed opens a unified submenu that **controls both laptop and server together**:
 
-1. **Refresh status** — running state, uptime, dashboard URL, Device ID
-2. **Show Device ID** — for pairing new clients
-3. **Show sync paths** — dumps the container's current bind mounts and compares to `.env`
-4. **Reapply paths from .env** — stops the container, rebuilds it with fresh mounts (pairings and folder shares persist because they live in `/opt/syncthing`)
-5. **Start / 6. Stop / 7. Restart** — container lifecycle
-8. **Logs** — `docker logs -f`
+1. **Refresh status** — both sides: laptop service state + server container state, both dashboard URLs, both Device IDs
+2. **Show Device IDs** — laptop + server IDs for pairing new clients
+3. **Start both** — laptop `systemctl --user start` + server `docker start` (re-enables autostart on both)
+4. **Stop both** — stops on both sides, disables autostart so they stay off across reboots
+5. **Restart both** — bounces both without changing autostart policy
+6. **Show sync paths** — server-side container bind mounts vs `.env`
+7. **Reapply paths from .env** — recreates the server container with fresh mounts (pairings persist)
+8. **Logs (server)** — `docker logs -f syncthing` via SSH
+9. **Uninstall both** — removes from laptop (`dnf remove`) + server (container + firewall). Typed-name confirm. Config kept on both sides.
+
+When run directly on the server, option 14 opens a server-only submenu instead.
 
 ### Troubleshooting
 

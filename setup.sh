@@ -3357,11 +3357,31 @@ _sync_execute_or_schedule() {
                 2) schedule="0 */6 * * *" ;;
                 3) schedule="0 2 * * *" ;;
                 4)
-                    read -p "  Cron expression (e.g. '*/30 * * * *'): " schedule
+                    echo ""
+                    echo -e "  ${DIM}Cron format: 5 fields separated by spaces${NC}"
+                    echo -e "  ${DIM}┌───── minute (0-59)${NC}"
+                    echo -e "  ${DIM}│ ┌───── hour (0-23)${NC}"
+                    echo -e "  ${DIM}│ │ ┌───── day of month (1-31)${NC}"
+                    echo -e "  ${DIM}│ │ │ ┌───── month (1-12)${NC}"
+                    echo -e "  ${DIM}│ │ │ │ ┌───── day of week (0-6, Sun=0)${NC}"
+                    echo -e "  ${DIM}│ │ │ │ │${NC}"
+                    echo -e "  ${DIM}* * * * *    * = every, /N = every N, number = at exactly${NC}"
+                    echo ""
+                    echo -e "  ${DIM}Examples: */30 * * * * = every 30 min${NC}"
+                    echo -e "  ${DIM}          0 9,18 * * * = twice a day at 9am and 6pm${NC}"
+                    echo -e "  ${DIM}          0 2 * * 1    = every Monday at 2am${NC}"
+                    echo ""
+                    read -p "  Cron expression: " schedule
                     if [[ -z "$schedule" ]]; then
                         fail "Empty schedule. Aborting."
                         return 1
                     fi
+                    local human
+                    human=$(_cron_to_english "$schedule")
+                    echo ""
+                    echo -e "  That means: ${BOLD}$human${NC}"
+                    read -p "  Correct? [Y/n] " -n 1 -r; echo ""
+                    [[ "$REPLY" =~ ^[Nn]$ ]] && { info "Cancelled."; return 0; }
                     ;;
                 *) fail "Invalid choice."; return 1 ;;
             esac
@@ -3867,8 +3887,10 @@ step_sync() {
         if [[ "$is_dir" == "true" ]]; then
             echo ""
             echo -e "  ${BOLD}Copy mode for ${src_name}/:${NC}"
-            echo -e "    ${BOLD}1)${NC} Copy folder     (creates ${src_name}/ inside destination)"
-            echo -e "    ${BOLD}2)${NC} Copy contents   (files go directly into destination)"
+            echo -e "    ${BOLD}1)${NC} Copy folder     ${DIM}destination/${src_name}/files...  (creates the folder inside)${NC}"
+            echo -e "    ${BOLD}2)${NC} Copy contents   ${DIM}destination/files...              (files go directly in)${NC}"
+            echo ""
+            echo -e "  ${DIM}Tip: if your destination path already ends with /${src_name}, pick 2.${NC}"
             echo ""
             read -p "  Mode [1/2]: " mode
             [[ "$mode" == "2" ]] && copy_mode="contents" || copy_mode="folder"

@@ -1169,19 +1169,25 @@ _services_action() {
     local target
     target=$(_pick_container "$running_filter") || { info "Cancelled."; return; }
     if [[ "$target" == "all" ]]; then
+        # Confirm before stopping everything — easy to hit by accident.
+        if [[ "$action" == "stop" ]]; then
+            echo ""
+            warn "This will stop ALL containers on the server."
+            read -p "  Continue? [y/N] " -n 1 -r
+            echo ""
+            [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
+        fi
         local SCRIPT_DIR
         SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         cd "$SCRIPT_DIR"
         case "$action" in
             start)
-                # Re-enable autostart on all, then start compose stack
                 for c in $(sudo docker ps -a --format '{{.Names}}'); do
                     sudo docker update --restart=unless-stopped "$c" > /dev/null 2>&1 || true
                 done
                 sg docker -c "docker compose up -d"
                 ;;
             stop)
-                # Disable autostart on all, then stop compose stack
                 for c in $(sudo docker ps --format '{{.Names}}'); do
                     sudo docker update --restart=no "$c" > /dev/null 2>&1 || true
                 done

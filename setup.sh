@@ -119,24 +119,40 @@ _on_laptop() {
     fi
 }
 
-show_menu() {
+_show_menu_header() {
     clear
     echo ""
-    if [[ "$(hostname)" == "federver" ]]; then
-        local location="server"
-    else
-        local location="laptop"
-    fi
     echo -e "${BOLD}========================================"
     echo -e "  Federver — Fedora XFCE Server Manager"
-    if [[ "$location" == "server" ]]; then
-        echo -e "  ${RED}Running from: server${NC} ${DIM}— run from your laptop instead${NC}"
-    else
-        echo -e "  Running from: ${GREEN}laptop${NC}"
-    fi
     if [[ "$DRY_RUN" == "1" ]]; then
         echo -e "  ${YELLOW}DRY RUN${NC} ${DIM}— no commands will be executed${NC}"
     fi
+}
+
+show_menu() {
+    if _is_server; then
+        _show_server_menu
+    else
+        _show_laptop_menu
+    fi
+}
+
+_show_server_menu() {
+    _show_menu_header
+    echo -e "  Running from: ${YELLOW}server${NC}"
+    echo -e "  ${DIM}For the full menu, run federver from your laptop.${NC}"
+    echo -e "${BOLD}========================================${NC}"
+    echo ""
+    echo -e "  ${BOLD}1)${NC}  Enable SSH + auto-login + hostname  ${YELLOW}← bootstrap (needs monitor)${NC}"
+    echo -e "  ${BOLD}s)${NC}  Status"
+    echo -e "  ${BOLD}p)${NC}  Power (shutdown / restart)"
+    echo -e "  ${BOLD}0)${NC}  Exit"
+    echo ""
+}
+
+_show_laptop_menu() {
+    _show_menu_header
+    echo -e "  Running from: ${GREEN}laptop${NC}"
     echo -e "${BOLD}========================================${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Initial setup (run once, in order) --${NC}"
@@ -4083,33 +4099,51 @@ if [[ "${1:-}" == "--run" && -n "${2:-}" ]]; then
 fi
 
 # ── Main loop ────────────────────────────────────────
-while true; do
-    show_menu
-    read -p "  Choose: " choice
-    case $choice in
-        1)  run_step "[1] Enable SSH + auto-login + hostname" step_ssh ;;  # must be on server with monitor and keyboard
-        2)  run_step "[2] SSH key auth" "_on_laptop step_sshkey" ;;
-        3)  run_step "[3] System update" "_on_server step_update" ;;
-        4)  run_step "[4] Auto-updates" "_on_server step_autoupdates" ;;
-        5)  run_step "[5] Install Docker" "_on_server step_docker" ;;
-        6)  run_step "[6] Manage firewall" "_on_server step_firewall" ;;
-        7)  run_step "[7] Manage services" "_on_server step_services" ;;
-        8)  run_step "[8] Setup backups + disk monitoring" "_on_server step_backup" ;;
-        9)  run_step "[9] Log rotation" "_on_server step_logrotation" ;;
-        10) run_step "[10] Manage Tailscale" step_tailscale ;;
-        11) run_step "[11] Manage WireGuard" "_on_server step_wireguard" ;;
-        12) run_step "[12] Manage AdGuard" "_on_server step_adguard" ;;
-        13) run_step "[13] Manage storage" "_on_server step_storage" ;;
-        14) run_step "[14] Manage Syncthing" step_syncthing ;;
-        15) run_step "[15] Manage remote desktop" "_on_server step_remotedesktop" ;;
-        16) run_step "[16] Manage sync" "_on_laptop step_manage_sync" ;;
-        17) run_step "[17] Save to pass" "_on_laptop step_save_to_pass" ;;
-        s)  run_step "[s] Status" step_status ;;
-        i)  run_step "[i] Immich (privcloud)" step_immich ;;
-        p)  run_step "[p] Power management" "_on_laptop step_power" ;;
-        r)  run_step "[r] Reset password" "_on_server step_reset_password" ;;
-        a)  run_step "Run all (3-9)" "_on_server run_all" ;;
-        0)  echo "Bye."; exit 0 ;;
-        *)  echo -e "  ${RED}Invalid choice.${NC}" ;;
-    esac
-done
+# Server gets a reduced menu (bootstrap + status + power). Laptop gets
+# everything. This enforces "always run from the laptop" at the UI level
+# instead of via error messages 2 menus deep.
+if _is_server; then
+    while true; do
+        show_menu
+        read -p "  Choose: " choice
+        case $choice in
+            1)  run_step "[1] Enable SSH + auto-login + hostname" step_ssh ;;
+            s)  run_step "[s] Status" step_status ;;
+            p)  run_step "[p] Power" step_power ;;
+            0)  echo "Bye."; exit 0 ;;
+            *)  echo -e "  ${DIM}Run federver from your laptop for the full menu.${NC}"
+                read -p "  Press Enter..." -r ;;
+        esac
+    done
+else
+    while true; do
+        show_menu
+        read -p "  Choose: " choice
+        case $choice in
+            1)  run_step "[1] Enable SSH + auto-login + hostname" step_ssh ;;
+            2)  run_step "[2] SSH key auth" step_sshkey ;;
+            3)  run_step "[3] System update" "_on_server step_update" ;;
+            4)  run_step "[4] Auto-updates" "_on_server step_autoupdates" ;;
+            5)  run_step "[5] Install Docker" "_on_server step_docker" ;;
+            6)  run_step "[6] Manage firewall" "_on_server step_firewall" ;;
+            7)  run_step "[7] Manage services" "_on_server step_services" ;;
+            8)  run_step "[8] Setup backups + disk monitoring" "_on_server step_backup" ;;
+            9)  run_step "[9] Log rotation" "_on_server step_logrotation" ;;
+            10) run_step "[10] Manage Tailscale" step_tailscale ;;
+            11) run_step "[11] Manage WireGuard" "_on_server step_wireguard" ;;
+            12) run_step "[12] Manage AdGuard" "_on_server step_adguard" ;;
+            13) run_step "[13] Manage storage" "_on_server step_storage" ;;
+            14) run_step "[14] Manage Syncthing" step_syncthing ;;
+            15) run_step "[15] Manage remote desktop" "_on_server step_remotedesktop" ;;
+            16) run_step "[16] Manage sync" step_manage_sync ;;
+            17) run_step "[17] Save to pass" step_save_to_pass ;;
+            s)  run_step "[s] Status" step_status ;;
+            i)  run_step "[i] Immich (privcloud)" step_immich ;;
+            p)  run_step "[p] Power" step_power ;;
+            r)  run_step "[r] Reset password" "_on_server step_reset_password" ;;
+            a)  run_step "Run all (3-9)" "_on_server run_all" ;;
+            0)  echo "Bye."; exit 0 ;;
+            *)  echo -e "  ${RED}Invalid choice.${NC}" ;;
+        esac
+    done
+fi

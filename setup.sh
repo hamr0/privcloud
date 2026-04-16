@@ -534,21 +534,130 @@ _ts_install_laptop() {
     echo ""
 }
 
+_ts_stop_both() {
+    info "Disconnecting Tailscale on both laptop and server..."
+    sudo tailscale down 2>/dev/null && ok "Laptop: disconnected." || warn "Laptop: not connected."
+    ssh "$SERVER_USER@$SERVER_IP" "sudo tailscale down 2>/dev/null" \
+        && ok "Server: disconnected." || warn "Server: not connected."
+}
+
+_ts_start_both() {
+    info "Connecting Tailscale on both laptop and server..."
+    sudo tailscale up 2>/dev/null && ok "Laptop: connected." || warn "Laptop: failed."
+    ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale up" || warn "Server: failed."
+}
+
+_ts_restart_both() {
+    info "Restarting Tailscale on both laptop and server..."
+    sudo systemctl restart tailscaled 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."
+    ssh "$SERVER_USER@$SERVER_IP" "sudo systemctl restart tailscaled 2>/dev/null" \
+        && ok "Server: restarted." || warn "Server: failed."
+}
+
+_ts_uninstall_both() {
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${RED}DELETE Tailscale (both laptop and server)${NC}"
+    echo ""
+    echo -e "  ${BOLD}What will happen:${NC}"
+    echo -e "    ${RED}•${NC} Laptop: tailscale logout + disable tailscaled + dnf remove"
+    echo -e "    ${RED}•${NC} Server: tailscale logout + disable tailscaled + dnf remove"
+    echo ""
+    echo -e "  ${BOLD}Consequences:${NC}"
+    echo -e "    ${YELLOW}•${NC} No remote access to the server from anywhere"
+    echo -e "    ${YELLOW}•${NC} MagicDNS name 'federver' stops resolving"
+    echo -e "    ${YELLOW}•${NC} AdGuard DNS routing via tailnet stops"
+    echo -e "    ${YELLOW}•${NC} Phones with Tailscale can't reach services remotely"
+    echo ""
+    echo -e "  ${BOLD}Kept:${NC}"
+    echo -e "    ${GREEN}•${NC} Tailscale on phones untouched (remove via their app settings)"
+    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    _confirm_delete tailscale || return 0
+
+    info "Removing from laptop..."
+    sudo tailscale logout > /dev/null 2>&1 || true
+    sudo tailscale down > /dev/null 2>&1 || true
+    sudo systemctl disable --now tailscaled > /dev/null 2>&1 || true
+    sudo dnf remove -y tailscale > /dev/null 2>&1 || true
+    ok "Laptop: removed."
+
+    info "Removing from server..."
+    ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_TS_UNINSTALL'
+        sudo tailscale logout > /dev/null 2>&1 || true
+        sudo tailscale down > /dev/null 2>&1 || true
+        sudo systemctl disable --now tailscaled > /dev/null 2>&1 || true
+        sudo dnf remove -y tailscale > /dev/null 2>&1 || true
+REMOTE_TS_UNINSTALL
+    ok "Server: removed."
+}
+
 step_tailscale() {
-    # Laptop-side: install + auth locally first, then SSH to server for its
-    # side. Server-side (via --run from an SSH hop, or user logged in on
-    # federver directly): run the existing server flow.
-    if ! _is_server; then
-        info "Tailscale lets you access this server from anywhere (phone, laptop)"
-        info "without port forwarding. Like a private VPN."
-        echo ""
-        _ts_install_laptop || return 1
-        echo -e "  ${BOLD}── Server side ──${NC}"
-        _on_server _ts_server_step
+    # Server-side (via --run from an SSH hop, or user on federver directly):
+    # run the server-only management submenu.
+    if _is_server; then
+        _ts_server_step
         return
     fi
 
-    _ts_server_step
+    info "Tailscale lets you access this server from anywhere (phone, laptop)"
+    info "without port forwarding. Like a private VPN."
+    echo ""
+
+    # Check if both sides have Tailscale
+    local laptop_installed=false server_installed=false
+    command -v tailscale &>/dev/null && laptop_installed=true
+    ssh "$SERVER_USER@$SERVER_IP" "command -v tailscale" &>/dev/null && server_installed=true
+
+    # Fresh install: install both sides
+    if [[ "$laptop_installed" == false || "$server_installed" == false ]]; then
+        [[ "$laptop_installed" == false ]] && { _ts_install_laptop || return 1; }
+        if [[ "$server_installed" == false ]]; then
+            echo -e "  ${BOLD}── Server side ──${NC}"
+            _on_server _ts_server_step
+        fi
+        return
+    fi
+
+    # Both installed — show status + unified management submenu
+    echo -e "  ${BOLD}── Laptop ──${NC}"
+    local laptop_ip
+    laptop_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
+    echo -e "    State:  $(if tailscale status &>/dev/null; then echo "${GREEN}connected${NC}"; else echo "${RED}disconnected${NC}"; fi)"
+    echo -e "    IP:     $laptop_ip"
+    echo ""
+
+    echo -e "  ${BOLD}── Server ──${NC}"
+    ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_TS_STATUS'
+        ts_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
+        if tailscale status &>/dev/null; then
+            echo "    State:  connected"
+        else
+            echo "    State:  disconnected"
+        fi
+        echo "    IP:     $ts_ip"
+        echo "    Host:   $(hostname) (MagicDNS)"
+REMOTE_TS_STATUS
+
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Refresh status"
+    echo -e "  ${BOLD}2)${NC} Connect both             ${DIM}<- tailscale up${NC}"
+    echo -e "  ${BOLD}3)${NC} Disconnect both          ${DIM}<- tailscale down${NC}"
+    echo -e "  ${BOLD}4)${NC} Restart both             ${DIM}<- restart tailscaled service${NC}"
+    echo -e "  ${BOLD}5)${NC} Re-authenticate server   ${DIM}<- new login URL${NC}"
+    echo -e "  ${BOLD}6)${NC} ${RED}Uninstall both${NC}           ${DIM}<- remove from laptop + server${NC}"
+    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Choose: " ts_choice
+    case $ts_choice in
+        1) step_tailscale ;;
+        2) _ts_start_both ;;
+        3) _ts_stop_both ;;
+        4) _ts_restart_both ;;
+        5) _on_server _ts_install ;;
+        6) _ts_uninstall_both ;;
+        0|*) return ;;
+    esac
 }
 
 _ts_server_step() {
@@ -1547,23 +1656,154 @@ _syncthing_install_laptop() {
     echo ""
 }
 
+_syncthing_stop_both() {
+    info "Stopping Syncthing on both laptop and server..."
+    systemctl --user stop syncthing 2>/dev/null && ok "Laptop: stopped." || warn "Laptop: not running."
+    ssh "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=no syncthing >/dev/null 2>&1; sudo docker stop syncthing >/dev/null 2>&1" \
+        && ok "Server: stopped." || warn "Server: not running."
+}
+
+_syncthing_start_both() {
+    info "Starting Syncthing on both laptop and server..."
+    systemctl --user start syncthing 2>/dev/null && ok "Laptop: started." || warn "Laptop: failed to start."
+    ssh "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=unless-stopped syncthing >/dev/null 2>&1; sudo docker start syncthing >/dev/null 2>&1" \
+        && ok "Server: started." || warn "Server: failed to start."
+}
+
+_syncthing_restart_both() {
+    info "Restarting Syncthing on both laptop and server..."
+    systemctl --user restart syncthing 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."
+    ssh "$SERVER_USER@$SERVER_IP" "sudo docker restart syncthing >/dev/null 2>&1" \
+        && ok "Server: restarted." || warn "Server: failed."
+}
+
+_syncthing_uninstall_both() {
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${RED}DELETE Syncthing (both laptop and server)${NC}"
+    echo ""
+    echo -e "  ${BOLD}What will happen:${NC}"
+    echo -e "    ${RED}•${NC} Laptop: systemctl --user disable --now syncthing + dnf remove"
+    echo -e "    ${RED}•${NC} Server: stop + remove Docker container, close firewall ports"
+    echo ""
+    echo -e "  ${BOLD}Consequences:${NC}"
+    echo -e "    ${YELLOW}•${NC} Real-time file sync between all devices stops"
+    echo ""
+    echo -e "  ${BOLD}Kept:${NC}"
+    echo -e "    ${GREEN}•${NC} Server: /opt/syncthing/ (identity, config, pairings)"
+    echo -e "    ${GREEN}•${NC} Laptop: ~/.local/state/syncthing/ (identity, config)"
+    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    _confirm_delete syncthing || return 0
+
+    info "Removing from laptop..."
+    systemctl --user disable --now syncthing 2>/dev/null || true
+    sudo dnf remove -y syncthing > /dev/null 2>&1 || true
+    ok "Laptop: removed."
+
+    info "Removing from server..."
+    ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_UNINSTALL'
+        sudo docker rm -f syncthing > /dev/null 2>&1 || true
+        sudo firewall-cmd --permanent --remove-port=8384/tcp  > /dev/null 2>&1 || true
+        sudo firewall-cmd --permanent --remove-port=22000/tcp > /dev/null 2>&1 || true
+        sudo firewall-cmd --permanent --remove-port=22000/udp > /dev/null 2>&1 || true
+        sudo firewall-cmd --permanent --remove-port=21027/udp > /dev/null 2>&1 || true
+        sudo firewall-cmd --reload > /dev/null 2>&1 || true
+REMOTE_UNINSTALL
+    ok "Server: removed."
+    echo ""
+    echo -e "  ${DIM}Server config kept at /opt/syncthing${NC}"
+    echo -e "  ${DIM}Laptop config kept at ~/.local/state/syncthing${NC}"
+}
+
 step_syncthing() {
     info "Syncthing syncs folders between devices in real-time, peer-to-peer."
     info "Continuous bidirectional sync with conflict resolution."
     echo ""
 
-    # Laptop-side: install locally first, then SSH to server for its side.
-    # Server-side (we got here via --run from an SSH hop, or user is logged
-    # in directly on federver): just do the server half.
-    if ! _is_server; then
-        _syncthing_install_laptop || return 1
-        echo -e "  ${BOLD}── Server side ──${NC}"
-        _on_server _syncthing_server_step
+    # Server-side (via --run from an SSH hop, or user on federver directly):
+    # run the server-only management submenu.
+    if _is_server; then
+        _syncthing_server_step
         return
     fi
 
-    # ── From here on: we are on the server ──
-    _syncthing_server_step
+    # ── Laptop-side: check if both sides are installed ──
+    local laptop_installed=false server_installed=false
+    command -v syncthing &>/dev/null && laptop_installed=true
+    ssh "$SERVER_USER@$SERVER_IP" "sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'" 2>/dev/null && server_installed=true
+
+    # Fresh install: install both sides
+    if [[ "$laptop_installed" == false || "$server_installed" == false ]]; then
+        [[ "$laptop_installed" == false ]] && { _syncthing_install_laptop || return 1; }
+        if [[ "$server_installed" == false ]]; then
+            echo -e "  ${BOLD}── Server side ──${NC}"
+            _on_server _syncthing_server_step
+        fi
+        return
+    fi
+
+    # Both installed — show unified status + management submenu
+    echo -e "  ${BOLD}── Laptop ──${NC}"
+    local laptop_state="stopped"
+    systemctl --user is-active syncthing &>/dev/null && laptop_state="${GREEN}running${NC}"
+    local laptop_id
+    laptop_id=$(syncthing --device-id 2>/dev/null | grep -E '^[A-Z0-9]{7}(-[A-Z0-9]{7}){7}$' | head -1 || echo "")
+    echo -e "    State:     $laptop_state"
+    echo -e "    Dashboard: ${BLUE}http://localhost:8384${NC}"
+    [[ -n "$laptop_id" ]] && echo -e "    Device ID: ${BOLD}$laptop_id${NC}"
+    echo ""
+
+    echo -e "  ${BOLD}── Server ──${NC}"
+    ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_STATUS'
+        state="stopped"
+        if sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'; then
+            uptime=$(sudo docker ps --filter name=syncthing --format '{{.Status}}' 2>/dev/null)
+            state="running  ($uptime)"
+        fi
+        ip=$(hostname -I | awk '{print $1}')
+        echo "    State:     $state"
+        echo "    Dashboard: http://$ip:8384"
+        # Try several CLI shapes for Device ID (Syncthing 1.x vs 2.x)
+        id=""
+        for cmd in 'syncthing --device-id' 'syncthing show device-id' 'syncthing cli show system' 'cat /var/syncthing/config/config.xml'; do
+            id=$(sudo docker exec syncthing sh -c "$cmd" 2>/dev/null | grep -oE '[A-Z0-9]{7}(-[A-Z0-9]{7}){7}' | head -1 || echo "")
+            [[ -n "$id" ]] && break
+        done
+        [[ -n "$id" ]] && echo "    Device ID: $id"
+REMOTE_STATUS
+
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Refresh status"
+    echo -e "  ${BOLD}2)${NC} Show Device IDs            ${DIM}<- for pairing new clients${NC}"
+    echo -e "  ${BOLD}3)${NC} Start both"
+    echo -e "  ${BOLD}4)${NC} Stop both                  ${DIM}<- stays off across reboots${NC}"
+    echo -e "  ${BOLD}5)${NC} Restart both"
+    echo -e "  ${BOLD}6)${NC} Show sync paths            ${DIM}<- server-side container mounts${NC}"
+    echo -e "  ${BOLD}7)${NC} Reapply paths from .env    ${DIM}<- recreate server container${NC}"
+    echo -e "  ${BOLD}8)${NC} Logs (server)              ${DIM}<- tail -f syncthing logs${NC}"
+    echo -e "  ${BOLD}9)${NC} ${RED}Uninstall both${NC}             ${DIM}<- remove from laptop + server${NC}"
+    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Choose: " st_choice
+    case $st_choice in
+        1) step_syncthing ;;
+        2)
+            echo ""
+            [[ -n "$laptop_id" ]] && echo -e "  ${BOLD}Laptop:${NC} $laptop_id"
+            local server_id
+            server_id=$(ssh "$SERVER_USER@$SERVER_IP" 'for cmd in "syncthing --device-id" "syncthing show device-id" "syncthing cli show system" "cat /var/syncthing/config/config.xml"; do id=$(sudo docker exec syncthing sh -c "$cmd" 2>/dev/null | grep -oE "[A-Z0-9]{7}(-[A-Z0-9]{7}){7}" | head -1); [[ -n "$id" ]] && echo "$id" && break; done' 2>/dev/null)
+            [[ -n "$server_id" ]] && echo -e "  ${BOLD}Server:${NC} $server_id"
+            ;;
+        3) _syncthing_start_both ;;
+        4) _syncthing_stop_both ;;
+        5) _syncthing_restart_both ;;
+        6) _on_server _syncthing_show_paths ;;
+        7) _on_server _syncthing_reapply_paths ;;
+        8) ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker logs --tail 50 -f syncthing" || true ;;
+        9) _syncthing_uninstall_both ;;
+        0|*) return ;;
+    esac
 }
 
 # Server-side install-or-manage. Runs on federver, either called directly

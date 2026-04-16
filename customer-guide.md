@@ -1025,9 +1025,10 @@ When run directly on the server, option 14 opens a server-only submenu instead.
 
 ### What it does
 
-- **Transfer files** — upload or download files and directories between laptop and server. Accepts files and directories, strips quotes and trailing slashes, handles folder-vs-contents mode. Cancel at every step, 3-attempt retry on invalid input.
+- **Transfer files** — upload or download files and directories between laptop and server. Accepts files and directories, strips quotes and trailing slashes, handles folder-vs-contents mode (with a visual preview of the result path + a tip to avoid accidental nesting). Cancel at every step, 3-attempt retry on invalid input. At the end you choose: run now or schedule as a recurring job.
 - **Delete files** — remove files on the laptop or server side.
-- **Scheduled sync jobs** — set up cron-based rsync jobs that run automatically on a schedule. Pick source and destination, set the cron interval, and the job runs unattended. Useful for recurring backups of specific folders (e.g. sync laptop notes to server every hour).
+- **Scheduled sync jobs** — set up cron-based rsync jobs that run automatically on a schedule. Pick source and destination, choose from presets (hourly, every 6h, daily at 2am) or enter a custom cron expression with a built-in cheat sheet showing what each field means + English translation + confirmation before saving. Jobs run once immediately after creation to confirm they work. Scripts saved to `~/.local/bin/sync-*.sh`, logs to `~/.local/share/sync-jobs/*.log`.
+- **View all scheduled tasks** — unified table showing server cron jobs (immich-backup, disk-check) alongside your laptop sync jobs, with schedule, English translation, type, and status.
 
 ### When to use it vs Syncthing
 

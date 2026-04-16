@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Fixed
+- **Sync job name parsing.** The status table showed job names on two lines because the regex matched both the script path (`sync-pycharmprojects.sh`) and the log path (`sync-jobs/pycharmprojects.log`). Added a `(?=\.sh)` lookahead so only the script filename is captured.
+- **Copy mode clarity.** The folder/contents picker now shows the actual resulting path layout for each option, plus a tip: "if your destination already ends with /FolderName, pick Copy contents."
+- **Custom cron cheat sheet + confirmation.** Entering a custom cron expression now shows a visual diagram of the 5 fields (minute, hour, day-of-month, month, day-of-week) with examples, translates the expression to English ("every Sunday at 2am"), and confirms before saving. Retries up to 3 times if the user rejects. The schedule section also notes upfront that the job runs once immediately after creation.
+- **Cron translator expanded.** `_cron_to_english` now handles day-of-week ("every Monday at 2am"), PM hours ("daily at 5pm"), comma-separated hours ("daily at 9am, 6pm"), midnight, and noon. Previously only handled preset patterns and fell through to the raw expression for anything else.
 - **Code review sweep (9 findings).** Replaced all 6 remaining `source .env` calls with the safe `_env_get` reader (prevents breakage on unquoted values with spaces). Replaced `eval` with `bash -c` in sync command execution (removes injection surface). Added `sudo -v` SSH pre-auth before heredoc captures in save-to-pass and uninstall functions. Removed hardcoded `/home/ahassan` (→ `$SERVER_USER`) and `/home/hamr` (→ `$HOME`). Fixed `_cron_to_english` to handle PM hours, midnight, and noon. Removed dead `found_any` subshell variable and unreachable code in sync job list. Optimized `_pick_container` from N+1 docker calls to a single batch query.
 
 ### Changed

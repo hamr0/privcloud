@@ -2069,15 +2069,22 @@ _syncthing_install_laptop() {
 _syncthing_stop_both() {
     info "Stopping Syncthing on both laptop and server..."
     systemctl --user stop syncthing 2>/dev/null && ok "Laptop: stopped." || warn "Laptop: not running."
-    ssh "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=no syncthing >/dev/null 2>&1; sudo docker stop syncthing >/dev/null 2>&1" \
+    ssh "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=no syncthing 2>&1 >/dev/null; sudo docker stop syncthing 2>&1 >/dev/null" \
         && ok "Server: stopped." || warn "Server: not running."
 }
 
 _syncthing_start_both() {
     info "Starting Syncthing on both laptop and server..."
     systemctl --user start syncthing 2>/dev/null && ok "Laptop: started." || warn "Laptop: failed to start."
-    ssh "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=unless-stopped syncthing >/dev/null 2>&1; sudo docker start syncthing >/dev/null 2>&1" \
-        && ok "Server: started." || warn "Server: failed to start."
+    local result
+    result=$(ssh "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=unless-stopped syncthing 2>&1; sudo docker start syncthing 2>&1" 2>/dev/null)
+    if [[ $? -eq 0 ]]; then
+        ok "Server: started."
+    else
+        warn "Server: failed to start."
+        [[ -n "$result" ]] && echo -e "    ${DIM}$result${NC}"
+        info "If the container has bad config, remove and reinstall: federver → 14"
+    fi
 }
 
 _syncthing_restart_both() {

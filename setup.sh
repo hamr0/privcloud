@@ -2976,7 +2976,9 @@ _sync_show_status() {
 
     # Server-side crons (read-only)
     local server_crons
-    server_crons=$(ssh "$SERVER_USER@$SERVER_IP" 'sudo crontab -l 2>/dev/null' 2>/dev/null) || server_crons=""
+    # ssh -t allocates a TTY so sudo can prompt for the password. Without
+    # it, sudo fails silently and the backup/disk-check crons don't show.
+    server_crons=$(ssh -t "$SERVER_USER@$SERVER_IP" 'sudo crontab -l 2>/dev/null' 2>/dev/null) || server_crons=""
 
     local found_any=false
 

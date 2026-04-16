@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **Code review sweep (9 findings).** Replaced all 6 remaining `source .env` calls with the safe `_env_get` reader (prevents breakage on unquoted values with spaces). Replaced `eval` with `bash -c` in sync command execution (removes injection surface). Added `sudo -v` SSH pre-auth before heredoc captures in save-to-pass and uninstall functions. Removed hardcoded `/home/ahassan` (→ `$SERVER_USER`) and `/home/hamr` (→ `$HOME`). Fixed `_cron_to_english` to handle PM hours, midnight, and noon. Removed dead `found_any` subshell variable and unreachable code in sync job list. Optimized `_pick_container` from N+1 docker calls to a single batch query.
+
 ### Changed
 - **Unified service management (`federver` → 7).** Start/Stop/Restart now show a unified picker with laptop services (Tailscale, Syncthing) and server containers in one list. Both-sides services appear once and control both laptop + server when picked. Stopped and removed ("not created") containers always visible. "Not created" entries redirect to their install option (12/14). Status view (7→1) renders with ✓/✗ icons + CPU/mem stats matching the top-level Status screen, includes laptop services above server containers. Stop All requires confirmation.
 - **Emergency restart on server menu.** New `e) Emergency: restart all services` on the server's reduced menu. Restores systemd-resolved DNS fallback, starts all Docker containers (compose + standalone), re-disables stub once AdGuard is back. Works without SSH/internet/DNS — the "ER lever" for when AdGuard goes down and DNS breaks.

@@ -119,6 +119,55 @@ _on_laptop() {
     fi
 }
 
+step_emergency() {
+    warn "Emergency restart — this will restart ALL containers and restore DNS."
+    echo ""
+    info "Actions:"
+    info "  1. Re-enable systemd-resolved stub (restores local DNS if AdGuard is broken)"
+    info "  2. Start all Docker containers (compose stack + AdGuard + Syncthing)"
+    info "  3. Restart systemd-resolved"
+    echo ""
+    read -p "  Continue? [Y/n] " -n 1 -r
+    echo ""
+    [[ "$REPLY" =~ ^[Nn]$ ]] && { info "Cancelled."; return 0; }
+
+    # Step 1: Ensure systemd-resolved stub is available as fallback DNS
+    # (AdGuard disables it; if AdGuard is down, nothing resolves)
+    info "Restoring systemd-resolved stub listener as DNS fallback..."
+    sudo rm -f /etc/systemd/resolved.conf.d/disable-stub.conf
+    sudo systemctl restart systemd-resolved > /dev/null 2>&1
+    ok "systemd-resolved restored (port 53 available as fallback)."
+
+    # Step 2: Start all containers
+    local SCRIPT_DIR
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    cd "$SCRIPT_DIR"
+    info "Starting compose stack..."
+    sg docker -c "docker compose up -d" 2>&1 | grep -v "^$" || true
+    info "Starting standalone containers..."
+    for c in adguard syncthing; do
+        sudo docker update --restart=unless-stopped "$c" > /dev/null 2>&1 || true
+        sudo docker start "$c" > /dev/null 2>&1 || true
+    done
+
+    # Step 3: Once AdGuard is back, re-disable the stub so AdGuard can bind 53
+    sleep 2
+    if sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^adguard$'; then
+        info "AdGuard is back — re-disabling systemd-resolved stub..."
+        sudo mkdir -p /etc/systemd/resolved.conf.d
+        printf '[Resolve]\nDNSStubListener=no\n' | sudo tee /etc/systemd/resolved.conf.d/disable-stub.conf > /dev/null
+        sudo systemctl restart systemd-resolved > /dev/null 2>&1
+        ok "AdGuard has port 53 back."
+    else
+        warn "AdGuard didn't start. systemd-resolved stub stays active as DNS fallback."
+        warn "Check: sudo docker logs adguard"
+    fi
+
+    echo ""
+    ok "Emergency restart complete."
+    info "Check: docker ps -a"
+}
+
 _show_menu_header() {
     clear
     echo ""
@@ -146,6 +195,7 @@ _show_server_menu() {
     echo -e "  ${BOLD}1)${NC}  Enable SSH + auto-login + hostname  ${YELLOW}← bootstrap (needs monitor)${NC}"
     echo -e "  ${BOLD}s)${NC}  Status"
     echo -e "  ${BOLD}p)${NC}  Power (shutdown / restart)"
+    echo -e "  ${BOLD}e)${NC}  ${RED}Emergency: restart all services${NC}      ${DIM}← fixes DNS/container outages${NC}"
     echo -e "  ${BOLD}0)${NC}  Exit"
     echo ""
 }
@@ -1142,7 +1192,7 @@ _pick_container() {
         return 1
     fi
     echo "" >&2
-    echo -e "  ${BOLD}0)${NC} ${BOLD}All${NC}" >&2
+    echo -e "  ${BOLD}a)${NC} ${BOLD}All${NC}" >&2
     local idx=1
     declare -a arr
     while IFS= read -r n; do
@@ -1152,10 +1202,13 @@ _pick_container() {
         arr[$idx]="$n"
         idx=$((idx + 1))
     done <<< "$names"
+    echo -e "  ${BOLD}0)${NC} Cancel" >&2
     echo "" >&2
     read -p "  Choose: " pick >&2
-    if [[ "$pick" == "0" ]]; then
+    if [[ "$pick" == "a" || "$pick" == "A" ]]; then
         echo "all"; return 0
+    elif [[ "$pick" == "0" || -z "$pick" ]]; then
+        return 1
     elif [[ -n "${arr[$pick]:-}" ]]; then
         echo "${arr[$pick]}"; return 0
     fi
@@ -1186,6 +1239,10 @@ _services_action() {
                     sudo docker update --restart=unless-stopped "$c" > /dev/null 2>&1 || true
                 done
                 sg docker -c "docker compose up -d"
+                # Also start standalone containers (not in docker-compose.yml)
+                for c in adguard syncthing; do
+                    sudo docker start "$c" > /dev/null 2>&1 || true
+                done
                 ;;
             stop)
                 for c in $(sudo docker ps --format '{{.Names}}'); do
@@ -3599,7 +3656,7 @@ step_status() {
             free -h 2>/dev/null | awk '/^Mem:/{print "mem|"$2"|"$3"|"$7} /^Swap:/{print "swap|"$2"|"$3}'
             echo "@@MEM_END@@"
             echo "@@CONTAINERS_START@@"
-            docker ps --format '{{.Names}}|{{.Status}}' 2>/dev/null
+            docker ps -a --format '{{.Names}}|{{.Status}}' 2>/dev/null
             echo "@@CONTAINERS_END@@"
             echo "@@DSTATS_START@@"
             docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null
@@ -3637,10 +3694,29 @@ REMOTE_STATUS
         UPLOAD=$(grep UPLOAD_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
         DB=$(grep DB_DATA_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
         MEM=$(free -h 2>/dev/null | awk '/^Mem:/{print "mem|"$2"|"$3"|"$7} /^Swap:/{print "swap|"$2"|"$3}')
-        CONTAINERS=$(docker ps --format '{{.Names}}|{{.Status}}' 2>/dev/null)
+        CONTAINERS=$(docker ps -a --format '{{.Names}}|{{.Status}}' 2>/dev/null)
         DSTATS=$(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null)
         USB_DISKS=$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}' | paste -sd'|' -)
         DISK=$(df -h / /home /mnt/data 2>/dev/null | tail -n +2 | awk '!seen[$1]++')
+    fi
+
+    # Laptop services (only when running from the laptop, not via --run on server)
+    if [[ "$remote" == "true" ]]; then
+        echo -e "  ${BOLD}Laptop${NC}"
+        local ts_laptop_state="${RED}stopped${NC}" st_laptop_state="${RED}stopped${NC}"
+        if command -v tailscale &>/dev/null && tailscale status &>/dev/null; then
+            local laptop_ts_ip
+            laptop_ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
+            ts_laptop_state="${GREEN}connected${NC}  ${DIM}($laptop_ts_ip)${NC}"
+        fi
+        if systemctl --user is-active syncthing &>/dev/null; then
+            st_laptop_state="${GREEN}running${NC}  ${DIM}(http://localhost:8384)${NC}"
+        elif ! command -v syncthing &>/dev/null; then
+            st_laptop_state="${DIM}not installed${NC}"
+        fi
+        echo -e "    Tailscale:  $ts_laptop_state"
+        echo -e "    Syncthing:  $st_laptop_state"
+        echo ""
     fi
 
     echo -e "  ${BOLD}Server${NC}"
@@ -4116,6 +4192,7 @@ if _is_server; then
             1)  run_step "[1] Enable SSH + auto-login + hostname" step_ssh ;;
             s)  run_step "[s] Status" step_status ;;
             p)  run_step "[p] Power" step_power ;;
+            e)  run_step "[e] Emergency restart" step_emergency ;;
             0)  echo "Bye."; exit 0 ;;
             *)  echo -e "  ${DIM}Run ${BOLD}${YELLOW}\"federver\"${NC} ${DIM}from your laptop for the full menu.${NC}"
                 read -p "  Press Enter..." -r ;;

@@ -594,9 +594,13 @@ _ts_install_laptop() {
 }
 
 _ts_stop_both() {
-    info "Disconnecting Tailscale on both laptop and server..."
+    warn "Disconnect Tailscale on both laptop and server?"
+    warn "Remote access via Tailscale will stop working."
+    read -p "  [y/N] " -n 1 -r; echo ""
+    [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
+    info "Disconnecting..."
     sudo tailscale down 2>/dev/null && ok "Laptop: disconnected." || warn "Laptop: not connected."
-    ssh "$SERVER_USER@$SERVER_IP" "sudo tailscale down 2>/dev/null" \
+    ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale down 2>/dev/null" \
         && ok "Server: disconnected." || warn "Server: not connected."
 }
 
@@ -609,7 +613,7 @@ _ts_start_both() {
 _ts_restart_both() {
     info "Restarting Tailscale on both laptop and server..."
     sudo systemctl restart tailscaled 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."
-    ssh "$SERVER_USER@$SERVER_IP" "sudo systemctl restart tailscaled 2>/dev/null" \
+    ssh -t "$SERVER_USER@$SERVER_IP" "sudo systemctl restart tailscaled 2>/dev/null" \
         && ok "Server: restarted." || warn "Server: failed."
 }
 
@@ -1591,18 +1595,24 @@ _unified_service_picker() {
         return 0
     fi
 
-    # Server container
+    # Server container — confirm before stop
+    if [[ "$action" == "stop" ]]; then
+        warn "Stop ${BOLD}$cname${NC} on the server?"
+        read -p "  [y/N] " -n 1 -r; echo ""
+        [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return 0; }
+    fi
+
     case "$action" in
         start)
-            ssh "$SERVER_USER@$SERVER_IP" \
-                "sudo docker update --restart=unless-stopped '$cname' >/dev/null 2>&1 || true; sudo docker start '$cname' >/dev/null"
+            ssh -t "$SERVER_USER@$SERVER_IP" \
+                "sudo docker update --restart=unless-stopped '$cname' >/dev/null 2>&1 || true; sudo docker start '$cname'"
             ;;
         stop)
-            ssh "$SERVER_USER@$SERVER_IP" \
-                "sudo docker update --restart=no '$cname' >/dev/null 2>&1 || true; sudo docker stop '$cname' >/dev/null"
+            ssh -t "$SERVER_USER@$SERVER_IP" \
+                "sudo docker update --restart=no '$cname' >/dev/null 2>&1 || true; sudo docker stop '$cname'"
             ;;
         restart)
-            ssh "$SERVER_USER@$SERVER_IP" "sudo docker restart '$cname' >/dev/null"
+            ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker restart '$cname'"
             ;;
     esac
     ok "${action^} complete: $cname"
@@ -2067,9 +2077,12 @@ _syncthing_install_laptop() {
 }
 
 _syncthing_stop_both() {
-    info "Stopping Syncthing on both laptop and server..."
+    warn "Stop Syncthing on both laptop and server?"
+    read -p "  [y/N] " -n 1 -r; echo ""
+    [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
+    info "Stopping..."
     systemctl --user stop syncthing 2>/dev/null && ok "Laptop: stopped." || warn "Laptop: not running."
-    ssh "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=no syncthing 2>&1 >/dev/null; sudo docker stop syncthing 2>&1 >/dev/null" \
+    ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=no syncthing >/dev/null 2>&1; sudo docker stop syncthing >/dev/null 2>&1" \
         && ok "Server: stopped." || warn "Server: not running."
 }
 
@@ -2077,7 +2090,7 @@ _syncthing_start_both() {
     info "Starting Syncthing on both laptop and server..."
     systemctl --user start syncthing 2>/dev/null && ok "Laptop: started." || warn "Laptop: failed to start."
     local result
-    result=$(ssh "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=unless-stopped syncthing 2>&1; sudo docker start syncthing 2>&1" 2>/dev/null)
+    result=$(ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=unless-stopped syncthing 2>&1; sudo docker start syncthing 2>&1" 2>/dev/null)
     if [[ $? -eq 0 ]]; then
         ok "Server: started."
     else
@@ -2090,7 +2103,7 @@ _syncthing_start_both() {
 _syncthing_restart_both() {
     info "Restarting Syncthing on both laptop and server..."
     systemctl --user restart syncthing 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."
-    ssh "$SERVER_USER@$SERVER_IP" "sudo docker restart syncthing >/dev/null 2>&1" \
+    ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker restart syncthing >/dev/null 2>&1" \
         && ok "Server: restarted." || warn "Server: failed."
 }
 

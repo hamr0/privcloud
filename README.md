@@ -28,10 +28,10 @@ Back up phone photos locally on any machine. Start when you need it, stop when d
 
 ```bash
 git clone https://github.com/hamr0/privcloud.git && cd privcloud
-federver      # pick 1 with monitor, then run the rest from anywhere
+federver      # step 1 with monitor on server, then everything from laptop
 ```
 
-One script sets up everything from a fresh Fedora XFCE install. Run from either machine — server commands auto-route via SSH. See [customer guide](customer-guide.md) for full walkthrough.
+One script sets up everything from a fresh Fedora XFCE install. **Always run from the laptop** (except step 1 which needs a monitor). Server commands auto-route via SSH. See [customer guide](customer-guide.md) for full walkthrough.
 
 ## Services
 
@@ -82,7 +82,7 @@ One script sets up everything from a fresh Fedora XFCE install. Run from either 
   -- Immich photo management --
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
-  -- Tools (from laptop, exit SSH first) --
+  -- Tools --
   16) Manage sync                          ← transfer, schedule, cron jobs
   17) Save to pass                        ← from laptop, backup everything to pass
 
@@ -104,7 +104,7 @@ One script sets up everything from a fresh Fedora XFCE install. Run from either 
   0) exit
 ```
 
-Both commands work from anywhere on the server. Clone the repo on **both laptop and server** — several features (file sync, backups, password reset) run from the laptop and SSH into the server. First run `federver` → step 1 to register the commands.
+**Always run `federver` from your laptop.** Step 1 (Enable SSH) is the only step that runs on the server with a physical monitor — after that, everything runs from the laptop. Server commands auto-SSH in; laptop commands run locally. Clone the repo on **both** machines. First run `federver` → step 1 on the server to register the commands and enable SSH.
 
 **Dry run mode:** `./setup.sh --dry-run` walks the menu and prints each state-changing command instead of executing it. Safe way to review the flow of any option without touching the system. Propagates across the laptop→server SSH hop.
 

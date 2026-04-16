@@ -124,7 +124,7 @@ Dedicated always-on machine running Immich + music streaming + file management +
   -- Immich photo management --
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
-  -- Tools (from laptop, exit SSH first) --
+  -- Tools --
   16) Manage sync                          ← transfer, schedule, cron jobs
   17) Save to pass                        ← from laptop, backup everything to pass
 
@@ -617,9 +617,9 @@ federver
 
 **Step 1 (with monitor):** Pick option 1. Enables SSH, sets hostname, auto-login. Note the IP. Unplug the monitor.
 
-**Step 2 (from laptop, not SSH):** Clone privcloud on the laptop too (`git clone https://github.com/hamr0/privcloud.git`). Run `federver` → 2. Copies SSH key, disables password login. Back up the key in `pass`. Several features (file sync, backups, password reset) run from the laptop and SSH into the server — both machines need the repo.
+**Step 2 and everything after:** Always run `federver` from **your laptop**. Clone privcloud on the laptop too (`git clone https://github.com/hamr0/privcloud.git`). Run `federver` → 2 first (copies SSH key, disables password login). Back up the key in `pass`. After that, every step runs from the laptop — server commands auto-SSH to the server, laptop commands run locally. Both machines need the repo.
 
-**Steps 3-9 + Extras:** Run `federver` from either machine — server commands auto-SSH to the server when run from the laptop. Go through each step:
+**Steps 3-9 + Extras:** Go through each step:
 
 - **3-4:** System update + auto-updates (userspace security only — kernel is excluded so the server never auto-reboots into an untested kernel while you're away; update kernels manually with `sudo dnf upgrade kernel` + reboot when you're home)
 - **5:** Docker — **log out and SSH back in after this** (docker group)

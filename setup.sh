@@ -2,21 +2,19 @@
 # Federver — Fedora XFCE server setup & management menu
 #
 # HOW TO USE:
-#   1. On the server (with monitor + keyboard):
+#   Always run from your LAPTOP. Server commands auto-route via SSH.
+#
+#   1. On the server (with monitor + keyboard) — the ONLY server step:
 #      git clone https://github.com/hamr0/privcloud.git
 #      cd privcloud && ./setup.sh
-#      Pick option 1 — this enables SSH so you can go remote.
+#      Pick option 1 — enables SSH. Then unplug the monitor.
 #
-#   2. From your laptop (not SSH):
+#   2. From your laptop (everything else):
 #      cd ~/PycharmProjects/privcloud && ./setup.sh
-#      Pick option 2 — copies SSH key and disables password login.
+#      Pick option 2 first (SSH key auth), then any step in any order.
+#      Server-side steps SSH in automatically. Laptop-side steps run locally.
 #
-#   3. From your laptop (over SSH):
-#      ssh ahassan@<ip-from-step-1>
-#      cd privcloud && ./setup.sh
-#      Run steps 3-11 in order, or 'a' for all.
-#
-#   4. After step 5 (Docker), log out and SSH back in before continuing.
+#   After step 5 (Docker), log out and SSH back in before continuing.
 #
 #   You can re-run any step safely — they're idempotent.
 #
@@ -114,15 +112,7 @@ _on_server() {
 _on_laptop() {
     local step="$1"
     if _is_server; then
-        warn "This step runs from your laptop, not the server."
-        echo ""
-        info "It needs resources that only exist on the laptop:"
-        info "  • Sync / Save to pass — laptop's SSH keys + pass + GPG keyring"
-        info "  • SSH key auth        — installs the laptop's public key onto the server"
-        echo ""
-        info "Exit this SSH session (${BOLD}exit${NC}) and run from your laptop:"
-        info "  ${BOLD}cd ~/PycharmProjects/privcloud && ./setup.sh${NC}"
-        info "Then pick the same menu option."
+        warn "Runs from laptop. Exit SSH, then: ${BOLD}federver${NC}"
         return 0
     else
         "$step"
@@ -139,14 +129,18 @@ show_menu() {
     fi
     echo -e "${BOLD}========================================"
     echo -e "  Federver — Fedora XFCE Server Manager"
-    echo -e "  Running from: ${YELLOW}${location}${NC}"
+    if [[ "$location" == "server" ]]; then
+        echo -e "  ${RED}Running from: server${NC} ${DIM}— run from your laptop instead${NC}"
+    else
+        echo -e "  Running from: ${GREEN}laptop${NC}"
+    fi
     if [[ "$DRY_RUN" == "1" ]]; then
         echo -e "  ${YELLOW}DRY RUN${NC} ${DIM}— no commands will be executed${NC}"
     fi
     echo -e "${BOLD}========================================${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Initial setup (run once, in order) --${NC}"
-    echo -e "  ${BOLD}1)${NC}  Enable SSH + auto-login + hostname  ${YELLOW}← with monitor${NC}"
+    echo -e "  ${BOLD}1)${NC}  Enable SSH + auto-login + hostname  ${YELLOW}← only step on server with monitor${NC}"
     echo -e "  ${BOLD}2)${NC}  SSH key auth                        ${YELLOW}← from laptop, exit SSH first${NC}"
     echo -e "  ${BOLD}3)${NC}  System update"
     echo -e "  ${BOLD}4)${NC}  Enable auto-updates                 ${YELLOW}← security only, kernel excluded${NC}"
@@ -169,7 +163,7 @@ show_menu() {
     echo -e "  ${DIM}-- Immich photo management --${NC}"
     echo -e "  ${BOLD}i)${NC}  Immich (privcloud)                  ${DIM}← start/stop/status/update/backup${NC}"
     echo ""
-    echo -e "  ${YELLOW}-- Tools (from laptop, exit SSH first) --${NC}"
+    echo -e "  ${DIM}-- Tools --${NC}"
     echo -e "  ${BOLD}16)${NC} Manage sync                         ${DIM}← transfer, schedule, cron jobs${NC}"
     echo -e "  ${BOLD}17)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
     echo ""

@@ -2967,11 +2967,32 @@ SYNCSCRIPT
     esac
 }
 
+# Translate a 5-field cron expression into short plain English.
+_cron_to_english() {
+    local expr="$1"
+    case "$expr" in
+        "* * * * *")        echo "every minute" ;;
+        "*/5 * * * *")      echo "every 5 min" ;;
+        "*/10 * * * *")     echo "every 10 min" ;;
+        "*/15 * * * *")     echo "every 15 min" ;;
+        "*/30 * * * *")     echo "every 30 min" ;;
+        "0 * * * *")        echo "every hour" ;;
+        "0 */2 * * *")      echo "every 2 hours" ;;
+        "0 */3 * * *")      echo "every 3 hours" ;;
+        "0 */6 * * *")      echo "every 6 hours" ;;
+        "0 */12 * * *")     echo "every 12 hours" ;;
+        0\ [0-9]\ \*\ \*\ \*)   echo "daily at $(echo "$expr" | awk '{print $2}')am" ;;
+        0\ [0-1][0-9]\ \*\ \*\ \*) echo "daily at $(echo "$expr" | awk '{print $2}'):00" ;;
+        0\ [2][0-3]\ \*\ \*\ \*)   echo "daily at $(echo "$expr" | awk '{print $2}'):00" ;;
+        *)                  echo "$expr" ;;
+    esac
+}
+
 _sync_show_status() {
     echo ""
     echo -e "  ${BOLD}Scheduled tasks${NC}"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    printf "  ${BOLD}%-20s %-18s %-10s %s${NC}\n" "Name" "Schedule" "Type" "Note"
+    printf "  ${BOLD}%-20s %-18s %-16s %-10s %s${NC}\n" "Name" "Schedule" "When" "Type" "Note"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     # Server-side crons (read-only)
@@ -2986,14 +3007,16 @@ _sync_show_status() {
         echo "$server_crons" | while IFS= read -r line; do
             [[ "$line" =~ ^#|^$ ]] && continue
             if echo "$line" | grep -q "immich-backup"; then
-                local sched
+                local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
-                printf "  %-20s %-18s %-10s %s\n" "immich-backup" "$sched" "backup" "(managed by step 8)"
+                when=$(_cron_to_english "$sched")
+                printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$sched" "$when" "backup" "(step 8)"
                 found_any=true
             elif echo "$line" | grep -q "disk-check"; then
-                local sched
+                local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
-                printf "  %-20s %-18s %-10s %s\n" "disk-check" "$sched" "monitor" "(managed by step 8)"
+                when=$(_cron_to_english "$sched")
+                printf "  %-20s %-18s %-16s %-10s %s\n" "disk-check" "$sched" "$when" "monitor" "(step 8)"
                 found_any=true
             fi
         done
@@ -3027,7 +3050,9 @@ _sync_show_status() {
                         [[ -z "$direction" ]] && direction="sync"
                     fi
                 fi
-                printf "  %-20s %-18s %-10s " "$name" "$sched" "$direction"
+                local when
+                when=$(_cron_to_english "$sched")
+                printf "  %-20s %-18s %-16s %-10s " "$name" "$sched" "$when" "$direction"
                 [[ -n "$status" ]] && echo -e "$status" || echo ""
                 found_any=true
             fi

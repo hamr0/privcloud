@@ -1173,8 +1173,6 @@ _services_status() {
         [[ "$has_syncthing" == 1 ]] && echo -e "    Syncthing:    ${BLUE}http://$HOST:8384${NC}"
         echo -e "    ${DIM}(MagicDNS resolves '$HOST' on any Tailscale device — or use IP $TS_IP)${NC}"
     fi
-    echo ""
-    echo -e "  ${DIM}Laptop services (Tailscale, Syncthing): run ${BOLD}s${NC} ${DIM}for full status.${NC}"
 }
 
 # Show a numbered list of containers (running or all) + an "All" option,
@@ -1310,6 +1308,53 @@ _services_logs() {
     echo ""
     info "Last 50 lines from $name (Ctrl+C to exit follow mode)..."
     sg docker -c "docker logs --tail 50 -f '$name'" || true
+}
+
+# Shared helper: print laptop Tailscale + Syncthing state. Runs locally on
+# the laptop, used by step_status and step_services_wrapper.
+_show_laptop_services() {
+    echo -e "  ${BOLD}Laptop services${NC}"
+    local ts_state="${RED}stopped${NC}" st_state="${RED}stopped${NC}"
+    if command -v tailscale &>/dev/null && tailscale status &>/dev/null; then
+        local ip
+        ip=$(tailscale ip -4 2>/dev/null || echo "")
+        ts_state="${GREEN}connected${NC}  ${DIM}($ip)${NC}"
+    fi
+    if systemctl --user is-active syncthing &>/dev/null; then
+        st_state="${GREEN}running${NC}  ${DIM}(http://localhost:8384)${NC}"
+    elif ! command -v syncthing &>/dev/null; then
+        st_state="${DIM}not installed${NC}"
+    fi
+    echo -e "    Tailscale:  $ts_state"
+    echo -e "    Syncthing:  $st_state"
+    echo ""
+}
+
+# Laptop-side wrapper for option 7. Shows the submenu locally, collects
+# laptop service info for Status, and SSHes to the server for everything else.
+step_services_wrapper() {
+    echo -e "  ${BOLD}1)${NC} Status                     ${DIM}<- running containers + URLs${NC}"
+    echo -e "  ${BOLD}2)${NC} Start                      ${DIM}<- pick one or All (re-enables autostart)${NC}"
+    echo -e "  ${BOLD}3)${NC} Stop                       ${DIM}<- pick one or All (stays off across reboots)${NC}"
+    echo -e "  ${BOLD}4)${NC} Restart                    ${DIM}<- pick one or All${NC}"
+    echo -e "  ${BOLD}5)${NC} Logs                       ${DIM}<- tail -f a container${NC}"
+    echo -e "  ${BOLD}6)${NC} Deploy / redeploy          ${DIM}<- first install or change data paths${NC}"
+    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Choose: " svc_choice
+    case $svc_choice in
+        1)
+            # Status: show laptop services locally, then SSH for server status
+            _show_laptop_services
+            _on_server _services_status
+            ;;
+        2) _on_server "_services_action start" ;;
+        3) _on_server "_services_action stop" ;;
+        4) _on_server "_services_action restart" ;;
+        5) _on_server _services_logs ;;
+        6) _on_server step_deploy ;;
+        0|*) return ;;
+    esac
 }
 
 step_services() {
@@ -3702,25 +3747,6 @@ REMOTE_STATUS
         DISK=$(df -h / /home /mnt/data 2>/dev/null | tail -n +2 | awk '!seen[$1]++')
     fi
 
-    # Laptop services (only when running from the laptop, not via --run on server)
-    if [[ "$remote" == "true" ]]; then
-        echo -e "  ${BOLD}Laptop${NC}"
-        local ts_laptop_state="${RED}stopped${NC}" st_laptop_state="${RED}stopped${NC}"
-        if command -v tailscale &>/dev/null && tailscale status &>/dev/null; then
-            local laptop_ts_ip
-            laptop_ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
-            ts_laptop_state="${GREEN}connected${NC}  ${DIM}($laptop_ts_ip)${NC}"
-        fi
-        if systemctl --user is-active syncthing &>/dev/null; then
-            st_laptop_state="${GREEN}running${NC}  ${DIM}(http://localhost:8384)${NC}"
-        elif ! command -v syncthing &>/dev/null; then
-            st_laptop_state="${DIM}not installed${NC}"
-        fi
-        echo -e "    Tailscale:  $ts_laptop_state"
-        echo -e "    Syncthing:  $st_laptop_state"
-        echo ""
-    fi
-
     echo -e "  ${BOLD}Server${NC}"
     echo -e "    Hostname:   $HOSTNAME"
     echo -e "    Local IP:   $IP"
@@ -3781,8 +3807,11 @@ REMOTE_STATUS
     fi
     echo ""
 
-    # Containers + per-container CPU/MEM from docker stats
-    echo -e "  ${BOLD}Containers${NC}"
+    # Laptop services (only when running from the laptop)
+    [[ "$remote" == "true" ]] && _show_laptop_services
+
+    # Server containers + per-container CPU/MEM from docker stats
+    echo -e "  ${BOLD}Server containers${NC}"
     if [[ -n "$CONTAINERS" ]]; then
         echo "$CONTAINERS" | while IFS='|' read -r name status; do
             local cpu="" mem=""
@@ -4211,7 +4240,7 @@ else
             4)  run_step "[4] Auto-updates" "_on_server step_autoupdates" ;;
             5)  run_step "[5] Install Docker" "_on_server step_docker" ;;
             6)  run_step "[6] Manage firewall" "_on_server step_firewall" ;;
-            7)  run_step "[7] Manage services" "_on_server step_services" ;;
+            7)  run_step "[7] Manage services" step_services_wrapper ;;
             8)  run_step "[8] Setup backups + disk monitoring" "_on_server step_backup" ;;
             9)  run_step "[9] Log rotation" "_on_server step_logrotation" ;;
             10) run_step "[10] Manage Tailscale" step_tailscale ;;

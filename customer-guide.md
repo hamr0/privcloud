@@ -619,6 +619,8 @@ federver
 
 **Step 2 and everything after:** Always run `federver` from **your laptop**. Clone privcloud on the laptop too (`git clone https://github.com/hamr0/privcloud.git`). Run `federver` → 2 first (copies SSH key, disables password login). Back up the key in `pass`. After that, every step runs from the laptop — server commands auto-SSH to the server, laptop commands run locally. Both machines need the repo.
 
+If you run `federver` on the server by mistake, it shows a reduced menu with only step 1 (bootstrap), Status, and Power — and a note to run from the laptop for the full menu. No errors, just a redirect.
+
 **Steps 3-9 + Extras:** Go through each step:
 
 - **3-4:** System update + auto-updates (userspace security only — kernel is excluded so the server never auto-reboots into an untested kernel while you're away; update kernels manually with `sudo dnf upgrade kernel` + reboot when you're home)

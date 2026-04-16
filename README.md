@@ -52,6 +52,8 @@ One script sets up everything from a fresh Fedora XFCE install. **Always run fro
 
 ### `federver` — Fedora XFCE server manager
 
+On the **laptop** (full menu):
+
 ```
 ========================================
   Federver — Fedora XFCE Server Manager
@@ -59,8 +61,8 @@ One script sets up everything from a fresh Fedora XFCE install. **Always run fro
 ========================================
 
   -- Initial setup (run once, in order) --
-  1)  Enable SSH + auto-login + hostname    ← with monitor
-  2)  SSH key auth                          ← from laptop, exit SSH first
+  1)  Enable SSH + auto-login + hostname    ← only step on server with monitor
+  2)  SSH key auth
   3)  System update
   4)  Enable auto-updates                   ← security only, kernel excluded
   5)  Install Docker                        ← log out & SSH back in after
@@ -83,10 +85,25 @@ One script sets up everything from a fresh Fedora XFCE install. **Always run fro
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools --
-  16) Manage sync                          ← transfer, schedule, cron jobs
-  17) Save to pass                        ← from laptop, backup everything to pass
+  16) Manage sync                           ← transfer, schedule, cron jobs
+  17) Save to pass                          ← backup everything to pass
 
-  s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-9)   0)  Exit
+  s) Status  i) Immich  p) Power  r) Reset password  a) Run all (3-9)  0) Exit
+```
+
+On the **server** (reduced — bootstrap, status, power only):
+
+```
+========================================
+  Federver — Fedora XFCE Server Manager
+  Running from: server
+  For the full menu, run federver from your laptop.
+========================================
+
+  1)  Enable SSH + auto-login + hostname    ← bootstrap (needs monitor)
+  s)  Status
+  p)  Power (shutdown / restart)
+  0)  Exit
 ```
 
 ### `privcloud` — Immich photo manager

@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Changed
+- **Split menu: server shows 3 options, laptop shows everything.** Running federver on the server now shows only step 1 (Enable SSH), Status, and Power — the three things you'd actually do at the server console. Any other input prints "Run federver from your laptop for the full menu." Running from the laptop shows the full menu as before. Replaces every `_on_laptop` redirect message, every "use option 14 instead" special case, and every FAILED banner when picking a laptop-only option on the server. One structural decision at the top instead of dozens of guardrails scattered through submenus.
 - **Syncthing + Tailscale lifecycle actions now affect both sides.** If the install touched both laptop and server, Start/Stop/Restart/Uninstall do too. Syncthing submenu (from laptop): Start/Stop/Restart both = laptop systemd service + server Docker container in one action. Uninstall both = laptop `dnf remove` + server container removal + firewall cleanup, with typed-name confirmation. Tailscale submenu (from laptop): Connect/Disconnect/Restart both = `tailscale up`/`down`/`systemctl restart tailscaled` on both sides. Uninstall both = logout + disable + remove on both, phones untouched. When run directly on the server, both fall through to server-only submenus (unchanged). WireGuard stays server-only — server-only install, server-only lifecycle.
 
 ## v0.3.0 — 2026-04-16

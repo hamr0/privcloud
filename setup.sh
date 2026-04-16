@@ -114,17 +114,16 @@ _on_server() {
 _on_laptop() {
     local step="$1"
     if _is_server; then
-        fail "This step must run from your laptop, not the server."
+        warn "This step runs from your laptop, not the server."
         echo ""
         info "It needs resources that only exist on the laptop:"
-        info "  • Sync files      — laptop's SSH keys to push/pull files"
-        info "  • Save to pass    — pass + GPG keyring live on the laptop"
-        info "  • SSH key auth    — installs the laptop's public key onto the server"
+        info "  • Sync / Save to pass — laptop's SSH keys + pass + GPG keyring"
+        info "  • SSH key auth        — installs the laptop's public key onto the server"
         echo ""
         info "Exit this SSH session (${BOLD}exit${NC}) and run from your laptop:"
         info "  ${BOLD}cd ~/PycharmProjects/privcloud && ./setup.sh${NC}"
         info "Then pick the same menu option."
-        return 1
+        return 0
     else
         "$step"
     fi
@@ -4024,16 +4023,19 @@ step_reset_password() {
 
 # ── CLI argument handling (used by SSH routing) ─────
 if [[ "${1:-}" == "--run" && -n "${2:-}" ]]; then
-    # Guard against stale checkouts: when --run gets a step name the local
-    # setup.sh doesn't define, assume the remote copy is behind main and
-    # print an actionable fix instead of "command not found".
+    # Guard against stale checkouts: if the requested function doesn't exist
+    # in this copy of setup.sh, auto-pull from main and re-exec. One retry
+    # only — if it's still missing after pull, the function genuinely doesn't
+    # exist and we bail with an error.
     if ! declare -F "$2" >/dev/null; then
-        fail "Step '$2' is not defined in this copy of setup.sh."
-        echo ""
-        info "The server's checkout is probably behind main. On the server:"
-        info "  ${BOLD}cd ~/privcloud && git pull${NC}"
-        info "Then re-run the menu option from your laptop."
-        exit 1
+        if [[ "${_SETUP_RETRIED:-}" == "1" ]]; then
+            fail "Step '$2' is not defined even after git pull."
+            exit 1
+        fi
+        info "Step '$2' not found — pulling latest from main..."
+        git pull --ff-only > /dev/null 2>&1 || true
+        export _SETUP_RETRIED=1
+        exec "$0" "$@"
     fi
     "$2"
     exit $?

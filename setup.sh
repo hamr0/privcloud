@@ -1178,6 +1178,19 @@ _services_action() {
             restart) sg docker -c "docker compose restart" ;;
         esac
     else
+        # Extras with both-sides lifecycle have their own submenus.
+        # Redirect so the laptop side is handled too.
+        case "$target" in
+            syncthing)
+                warn "Syncthing has a laptop + server instance."
+                info "Use ${BOLD}federver → 14${NC} to ${action} both sides."
+                return 0
+                ;;
+            adguard)
+                info "Use ${BOLD}federver → 12${NC} to manage AdGuard."
+                return 0
+                ;;
+        esac
         case "$action" in
             start)
                 sudo docker update --restart=unless-stopped "$target" > /dev/null 2>&1 || true

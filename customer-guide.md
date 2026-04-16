@@ -109,7 +109,7 @@ Dedicated always-on machine running Immich + music streaming + file management +
 
   -- Services --
   6)  Manage firewall                       ← status, add/remove ports, defaults
-  7)  Manage services                       ← deploy, status, start/stop/restart, logs
+  7)  Manage services                       ← unified laptop + server, start/stop/restart
   8)  Setup backups + disk monitoring
   9)  Configure log rotation
 
@@ -619,7 +619,9 @@ federver
 
 **Step 2 and everything after:** Always run `federver` from **your laptop**. Clone privcloud on the laptop too (`git clone https://github.com/hamr0/privcloud.git`). Run `federver` → 2 first (copies SSH key, disables password login). Back up the key in `pass`. After that, every step runs from the laptop — server commands auto-SSH to the server, laptop commands run locally. Both machines need the repo.
 
-If you run `federver` on the server by mistake, it shows a reduced menu with only step 1 (bootstrap), Status, and Power — and a note to run from the laptop for the full menu. No errors, just a redirect.
+If you run `federver` on the server by mistake, it shows a reduced menu with only step 1 (bootstrap), Status, Power, and Emergency restart — and a note to run from the laptop for the full menu. No errors, just a redirect.
+
+**Emergency restart (`e` on the server menu):** if DNS breaks because AdGuard stopped (you can't SSH from the laptop because domain names don't resolve), walk to the server, open a terminal, run `federver`, pick `e`. It restores systemd-resolved as a DNS fallback, starts all containers (compose stack + standalone AdGuard/Syncthing), and re-disables the stub once AdGuard is back. One action, everything recovers. Confirms with `[Y/n]` before proceeding.
 
 **Steps 3-9 + Extras:** Go through each step:
 

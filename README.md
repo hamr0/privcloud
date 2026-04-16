@@ -69,7 +69,7 @@ On the **laptop** (full menu):
 
   -- Services --
   6)  Manage firewall                       ← status, add/remove ports, defaults
-  7)  Manage services                       ← deploy, status, start/stop/restart, logs
+  7)  Manage services                       ← unified laptop + server, start/stop/restart
   8)  Setup backups + disk monitoring
   9)  Configure log rotation
 
@@ -103,6 +103,7 @@ On the **server** (reduced — bootstrap, status, power only):
   1)  Enable SSH + auto-login + hostname    ← bootstrap (needs monitor)
   s)  Status
   p)  Power (shutdown / restart)
+  e)  Emergency: restart all services      ← fixes DNS/container outages
   0)  Exit
 ```
 

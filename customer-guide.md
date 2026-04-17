@@ -888,6 +888,28 @@ Every tailnet device now uses AdGuard automatically. Roaming too — works from 
 - **Container is restarting** — something else is holding port 53. Run `sudo ss -tulpn | grep ':53 '` to find it. Usually systemd-resolved; the install step should have disabled it.
 - **Still seeing ads on Reddit/YouTube** — expected, these are first-party ads. DNS can't block them. Use uBlock / ReVanced / SmartTube.
 
+### Upstream + fallback DNS (resilience)
+
+After install, set AdGuard's upstream and fallback DNS so traffic still resolves if the primary upstream fails. Open [http://federver](http://federver) → **Settings → DNS settings** and paste these:
+
+| Field | Value |
+|---|---|
+| Upstream DNS servers | `https://cloudflare-dns.com/dns-query` <br> `https://dns.quad9.net/dns-query` |
+| Bootstrap DNS servers | `1.1.1.1` <br> `9.9.9.9` |
+| Fallback DNS servers | `8.8.8.8` <br> `8.8.4.4` |
+| Load balancing | **Parallel requests** |
+
+Click **Apply** at the bottom. Three independent providers (Cloudflare, Quad9, Google) over encrypted DoH — ISP can't snoop DNS, and no single provider failing takes you offline. Same guide is available anytime in `federver → 12 → 2`.
+
+**What each field does and why these values:**
+
+| Field | Purpose | Why these values |
+|---|---|---|
+| Upstream | Where DNS queries actually go | DoH = encrypted, privacy from ISP. Cloudflare = fast. Quad9 = malware filter. |
+| Bootstrap | How to reach the upstream first time (chicken-and-egg: can't resolve `cloudflare-dns.com` by name before DNS works) | Plain IPs of Cloudflare + Quad9, matches upstream providers |
+| Fallback | Used if both upstreams are unreachable | Different company (Google) — a single-provider outage doesn't kill DNS |
+| Load balancing (Parallel requests) | Queries both upstreams at the same time, uses whichever answers first | Lowest latency + automatic failover |
+
 ---
 
 ## Syncthing real-time folder sync

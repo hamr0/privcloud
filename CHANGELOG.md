@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Added
+- **AdGuard upstream + fallback DNS guide (`federver` → 12 → 2).** New submenu option on the AdGuard management screen prints a recommended DNS config table: upstream = Cloudflare + Quad9 DoH, bootstrap = 1.1.1.1 + 9.9.9.9, fallback = Google 8.8.8.8 + 8.8.4.4, load balancing = parallel requests. Same block also auto-prints at the end of a successful fresh install (after the Tailscale guide). Point is resilience — three independent providers over encrypted DoH, so if AdGuard's primary upstream flakes the fallback catches it and traffic keeps resolving. Same table added to the AdGuard section in `customer-guide.md`.
+
 ### Fixed
 - **Sync job name parsing.** The status table showed job names on two lines because the regex matched both the script path (`sync-pycharmprojects.sh`) and the log path (`sync-jobs/pycharmprojects.log`). Added a `(?=\.sh)` lookahead so only the script filename is captured.
 - **Copy mode clarity.** The folder/contents picker now shows the actual resulting path layout for each option, plus a tip: "if your destination already ends with /FolderName, pick Copy contents."

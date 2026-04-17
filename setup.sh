@@ -2956,17 +2956,19 @@ step_adguard() {
         echo -e "  Dashboard: ${BLUE}http://$IP${NC}"
         echo ""
         echo -e "  ${BOLD}1)${NC} Show Tailscale DNS guide"
-        echo -e "  ${BOLD}2)${NC} Restart container"
-        echo -e "  ${BOLD}3)${NC} Logs"
-        echo -e "  ${BOLD}4)${NC} ${RED}Uninstall${NC}"
+        echo -e "  ${BOLD}2)${NC} Show upstream + fallback DNS guide"
+        echo -e "  ${BOLD}3)${NC} Restart container"
+        echo -e "  ${BOLD}4)${NC} Logs"
+        echo -e "  ${BOLD}5)${NC} ${RED}Uninstall${NC}"
         echo -e "  ${BOLD}0)${NC} Cancel"
         echo ""
         read -p "  Choose: " ag_choice
         case "$ag_choice" in
             1) [[ -n "$TS_IP" ]] && _adguard_tailscale_guide "$TS_IP" || warn "Tailscale not detected." ;;
-            2) info "Restarting..."; sudo docker restart adguard > /dev/null && ok "Restarted." ;;
-            3) sudo docker logs --tail 50 -f adguard || true ;;
-            4) _adguard_uninstall ;;
+            2) _adguard_dns_upstream_guide ;;
+            3) info "Restarting..."; sudo docker restart adguard > /dev/null && ok "Restarted." ;;
+            4) sudo docker logs --tail 50 -f adguard || true ;;
+            5) _adguard_uninstall ;;
             0|*) return ;;
         esac
         return 0
@@ -3070,6 +3072,8 @@ ADGUARDEOF
     echo ""
     if [[ -n "$TS_IP" ]]; then
         _adguard_tailscale_guide "$TS_IP"
+        echo ""
+        _adguard_dns_upstream_guide
     else
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "  ${YELLOW}AdGuard is running, but no devices are pointed at it yet.${NC}"
@@ -3172,6 +3176,31 @@ _adguard_tailscale_guide() {
     echo -e "  3. IP: ${BOLD}$ts_ip${NC}"
     echo -e "  4. Save"
     echo -e "  5. Toggle ${BOLD}Override local DNS${NC} ON"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# Prints the recommended AdGuard upstream + fallback DNS config. Displayed
+# after install (post Tailscale guide) and available from the manage menu.
+# Point: resilience. If AdGuard's primary upstream flakes, the fallback
+# catches it — your traffic keeps resolving instead of dying on DNS.
+_adguard_dns_upstream_guide() {
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}RECOMMENDED: AdGuard upstream + fallback DNS${NC}"
+    echo ""
+    echo -e "  Make sure if AdGuard's primary upstream fails, traffic still"
+    echo -e "  resolves through a fallback. Open ${BLUE}http://federver${NC} →"
+    echo -e "  ${BOLD}Settings → DNS settings${NC}, and paste these:"
+    echo ""
+    echo -e "  ${BOLD}Field                Value${NC}"
+    echo -e "  ────────────────     ────────────────────────────────────────"
+    echo -e "  Upstream DNS         ${BOLD}https://cloudflare-dns.com/dns-query${NC}"
+    echo -e "                       ${BOLD}https://dns.quad9.net/dns-query${NC}"
+    echo -e "  Bootstrap DNS        ${BOLD}1.1.1.1${NC}  ${BOLD}9.9.9.9${NC}"
+    echo -e "  Fallback DNS         ${BOLD}8.8.8.8${NC}  ${BOLD}8.8.4.4${NC}"
+    echo -e "  Load balancing       ${BOLD}Parallel requests${NC}"
+    echo ""
+    echo -e "  Click ${BOLD}Apply${NC} at the bottom. Three providers (Cloudflare,"
+    echo -e "  Quad9, Google) over encrypted DoH — no single failure cuts DNS."
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 

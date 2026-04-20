@@ -71,14 +71,22 @@ if [[ "$DRY_RUN" == "1" ]]; then
     }
 fi
 
-# Run a step with clear screen and success/fail banner
+# Run a step with clear screen and success/fail banner.
+# Convention: a step that returns 2 means "user picked Back before doing
+# anything" — skip the banner and the Press-Enter prompt so it feels like
+# a clean return to the main menu instead of "DONE" for a no-op.
 run_step() {
     local step_name="$1"
     local step_func="$2"
     clear
     echo -e "${BOLD}${BLUE}=== $step_name ===${NC}"
     echo ""
-    if $step_func; then
+    local rc=0
+    $step_func || rc=$?
+    if (( rc == 2 )); then
+        return
+    fi
+    if (( rc == 0 )); then
         echo ""
         echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "  ${GREEN}✓ $step_name — DONE${NC}"
@@ -2613,7 +2621,7 @@ step_wireguard() {
         read -p "  Choose [1/2/3/4/5/6/0]: " wg_action
 
         case $wg_action in
-            0) return ;;
+            0) return 2 ;;
             1)
                 echo ""
                 if sudo wg show wg0 &>/dev/null; then
@@ -3361,10 +3369,7 @@ _sync_execute_or_schedule() {
     echo ""
     read -p "  Choice [1/2/0]: " action
     case $action in
-        0)
-            info "Cancelled."
-            return
-            ;;
+        0) return 2 ;;
         1)
             [[ -n "$pre_cmd" ]] && bash -c "$pre_cmd"
             bash -c "$rsync_cmd" || { fail "Sync failed."; return 1; }
@@ -4049,7 +4054,7 @@ step_manage_sync() {
         2) step_sync ;;
         3) _sync_edit_job ;;
         4) _sync_delete_job ;;
-        0) return ;;
+        0) return 2 ;;
         *) fail "Invalid choice." ;;
     esac
 }
@@ -4066,7 +4071,7 @@ step_sync() {
         echo -e "  ${BOLD}0)${NC} Back"
         echo ""
         read -p "  Choice [1/2/3/0]: " direction
-        [[ "$direction" == "0" ]] && return
+        [[ "$direction" == "0" ]] && return 2
         [[ "$direction" =~ ^[123]$ ]] && break
         ((dir_attempts++))
         if (( dir_attempts < 3 )); then
@@ -4296,7 +4301,7 @@ step_sync() {
             echo -e "    ${BOLD}0)${NC} Back"
             echo ""
             read -p "  Where [0/1/2]: " del_where
-            [[ -z "$del_where" || "$del_where" == "0" ]] && return
+            [[ -z "$del_where" || "$del_where" == "0" ]] && return 2
 
             case $del_where in
                 1)

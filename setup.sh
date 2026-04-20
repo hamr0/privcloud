@@ -3372,60 +3372,10 @@ _sync_execute_or_schedule() {
             ok "Sync complete."
             ;;
         2)
-            echo ""
-            echo -e "  ${BOLD}Schedule:${NC}"
-            echo -e "  ${DIM}(After scheduling, runs once immediately to confirm it works.)${NC}"
-            echo ""
-            echo -e "    ${BOLD}1)${NC} Every hour"
-            echo -e "    ${BOLD}2)${NC} Every 6 hours"
-            echo -e "    ${BOLD}3)${NC} Daily at 2am"
-            echo -e "    ${BOLD}4)${NC} Custom cron expression"
-            echo ""
-            read -p "  Schedule [1/2/3/4]: " sched_choice
-            local schedule
-            case $sched_choice in
-                1) schedule="0 * * * *" ;;
-                2) schedule="0 */6 * * *" ;;
-                3) schedule="0 2 * * *" ;;
-                4)
-                    echo ""
-                    echo -e "  ${DIM}Cron format: 5 fields separated by spaces${NC}"
-                    echo -e "  ${DIM}┌───── minute (0-59)${NC}"
-                    echo -e "  ${DIM}│ ┌───── hour (0-23)${NC}"
-                    echo -e "  ${DIM}│ │ ┌───── day of month (1-31)${NC}"
-                    echo -e "  ${DIM}│ │ │ ┌───── month (1-12)${NC}"
-                    echo -e "  ${DIM}│ │ │ │ ┌───── day of week (0-6, Sun=0)${NC}"
-                    echo -e "  ${DIM}│ │ │ │ │${NC}"
-                    echo -e "  ${DIM}* * * * *    * = every, /N = every N, number = at exactly${NC}"
-                    echo ""
-                    echo -e "  ${DIM}Examples: */30 * * * * = every 30 min${NC}"
-                    echo -e "  ${DIM}          0 9,18 * * * = twice a day at 9am and 6pm${NC}"
-                    echo -e "  ${DIM}          0 2 * * 1    = every Monday at 2am${NC}"
-                    echo ""
-                    local attempts=0
-                    while (( attempts < 3 )); do
-                        read -p "  Cron expression: " schedule
-                        if [[ -z "$schedule" ]]; then
-                            fail "Empty schedule. Aborting."
-                            return 1
-                        fi
-                        local human
-                        human=$(_cron_to_english "$schedule")
-                        echo ""
-                        echo -e "  That means: ${BOLD}$human${NC}"
-                        read -p "  Correct? [Y/n] " -n 1 -r; echo ""
-                        [[ ! "$REPLY" =~ ^[Nn]$ ]] && break
-                        attempts=$((attempts + 1))
-                        if (( attempts >= 3 )); then
-                            fail "3 attempts. Aborting."
-                            return 1
-                        fi
-                        echo ""
-                        info "Try again:"
-                    done
-                    ;;
-                *) fail "Invalid choice."; return 1 ;;
-            esac
+            local sched_out sched_kind sched_spec
+            sched_out=$(_sync_pick_schedule) || return 1
+            sched_kind="${sched_out%% *}"
+            sched_spec="${sched_out#* }"
 
             local default_name
             default_name=$(basename "$src_path" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
@@ -3438,6 +3388,7 @@ _sync_execute_or_schedule() {
             mkdir -p "$script_dir" "$log_dir"
 
             local script_path="$script_dir/sync-${job_name}.sh"
+            local log_path="$log_dir/${job_name}.log"
             cat > "$script_path" <<SYNCSCRIPT
 #!/bin/bash
 # Sync job: ${job_name}
@@ -3445,6 +3396,7 @@ _sync_execute_or_schedule() {
 # Source: ${src_path}
 # Destination: ${dest_path}
 # Created: $(date '+%Y-%m-%d %H:%M')
+exec >>"${log_path}" 2>&1
 
 SERVER_USER="$SERVER_USER"
 SERVER_IP="$SERVER_IP"
@@ -3456,12 +3408,20 @@ echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: ${job_name} (exit \$?)"
 SYNCSCRIPT
             chmod +x "$script_path"
 
-            (crontab -l 2>/dev/null | grep -v "sync-${job_name}.sh"; echo "$schedule $script_path >> $log_dir/${job_name}.log 2>&1") | crontab -
-
-            ok "Scheduled sync job '${job_name}'"
-            info "Script: $script_path"
-            info "Log:    $log_dir/${job_name}.log"
-            info "Schedule: $schedule"
+            if [[ "$sched_kind" == "timer" ]]; then
+                _sync_install_timer "$job_name" "$script_path" "$sched_spec"
+                ok "Scheduled sync job '${job_name}' (systemd timer)"
+                info "Timer:  ~/.config/systemd/user/sync-${job_name}.timer"
+                info "Script: $script_path"
+                info "Log:    $log_path"
+                info "Schedule: weekly (${sched_spec}), catches missed runs"
+            else
+                (crontab -l 2>/dev/null | grep -v "sync-${job_name}.sh"; echo "$sched_spec $script_path") | crontab -
+                ok "Scheduled sync job '${job_name}' (cron)"
+                info "Script: $script_path"
+                info "Log:    $log_path"
+                info "Schedule: $sched_spec"
+            fi
             echo ""
             info "Running once now to verify..."
             [[ -n "$pre_cmd" ]] && bash -c "$pre_cmd"
@@ -3540,6 +3500,311 @@ _cron_to_english() {
     echo "$expr"
 }
 
+# Prompt the user for a schedule. Echoes one of the following to stdout:
+#   cron <5-field expression>
+#   timer <OnCalendar spec>         (jitter is always 6h, applied at install)
+# All UI goes to stderr so callers can capture the result cleanly.
+_sync_pick_schedule() {
+    {
+        echo ""
+        echo -e "  ${BOLD}Schedule:${NC}"
+        echo ""
+        echo -e "    ${BOLD}1)${NC} Every hour"
+        echo -e "    ${BOLD}2)${NC} Every 6 hours"
+        echo -e "    ${BOLD}3)${NC} Daily at 2am"
+        echo -e "    ${BOLD}4)${NC} Once a week, any time   ${DIM}(systemd timer, catches missed runs)${NC}"
+        echo -e "    ${BOLD}5)${NC} Custom cron expression"
+        echo ""
+    } >&2
+    local sched_choice schedule
+    read -p "  Schedule [1-5]: " sched_choice >&2
+    case $sched_choice in
+        1) echo "cron 0 * * * *"; return ;;
+        2) echo "cron 0 */6 * * *"; return ;;
+        3) echo "cron 0 2 * * *"; return ;;
+        4)
+            {
+                echo ""
+                echo -e "  ${BOLD}Which day?${NC}"
+                echo ""
+                echo -e "    ${BOLD}1)${NC} Saturday"
+                echo -e "    ${BOLD}2)${NC} Sunday"
+                echo -e "    ${BOLD}3)${NC} Any day this week"
+                echo ""
+            } >&2
+            local day_choice oncal
+            read -p "  Day [1/2/3]: " day_choice >&2
+            case $day_choice in
+                1) oncal="Sat" ;;
+                2) oncal="Sun" ;;
+                3) oncal="weekly" ;;
+                *) fail "Invalid choice." >&2; return 1 ;;
+            esac
+            echo "timer ${oncal}"
+            return
+            ;;
+        5)
+            {
+                echo ""
+                echo -e "  ${DIM}Cron format: 5 fields separated by spaces${NC}"
+                echo -e "  ${DIM}┌───── minute (0-59)${NC}"
+                echo -e "  ${DIM}│ ┌───── hour (0-23)${NC}"
+                echo -e "  ${DIM}│ │ ┌───── day of month (1-31)${NC}"
+                echo -e "  ${DIM}│ │ │ ┌───── month (1-12)${NC}"
+                echo -e "  ${DIM}│ │ │ │ ┌───── day of week (0-6, Sun=0)${NC}"
+                echo -e "  ${DIM}│ │ │ │ │${NC}"
+                echo -e "  ${DIM}* * * * *    * = every, /N = every N, number = at exactly${NC}"
+                echo ""
+                echo -e "  ${DIM}Examples: */30 * * * * = every 30 min${NC}"
+                echo -e "  ${DIM}          0 9,18 * * * = twice a day at 9am and 6pm${NC}"
+                echo -e "  ${DIM}          0 2 * * 1    = every Monday at 2am${NC}"
+                echo ""
+            } >&2
+            local attempts=0
+            while (( attempts < 3 )); do
+                read -p "  Cron expression: " schedule >&2
+                if [[ -z "$schedule" ]]; then
+                    fail "Empty schedule. Aborting." >&2
+                    return 1
+                fi
+                local human
+                human=$(_cron_to_english "$schedule")
+                echo "" >&2
+                echo -e "  That means: ${BOLD}$human${NC}" >&2
+                read -p "  Correct? [Y/n] " -n 1 -r >&2; echo "" >&2
+                [[ ! "$REPLY" =~ ^[Nn]$ ]] && break
+                attempts=$((attempts + 1))
+                if (( attempts >= 3 )); then
+                    fail "3 attempts. Aborting." >&2
+                    return 1
+                fi
+                echo "" >&2
+                info "Try again:" >&2
+            done
+            ;;
+        *) fail "Invalid choice." >&2; return 1 ;;
+    esac
+    echo "cron $schedule"
+}
+
+# Install (or rewrite) a systemd --user timer for a sync job.
+#   $1 = job name        (e.g. photos)
+#   $2 = script path     (e.g. /home/hamr/.local/bin/sync-photos.sh)
+#   $3 = OnCalendar spec (e.g. "Sat", "Sun", "weekly")
+_sync_install_timer() {
+    local job_name="$1" script_path="$2" oncal="$3"
+    local unit_dir="$HOME/.config/systemd/user"
+    mkdir -p "$unit_dir"
+
+    cat > "$unit_dir/sync-${job_name}.service" <<UNIT
+[Unit]
+Description=Sync job: ${job_name}
+
+[Service]
+Type=oneshot
+ExecStart=${script_path}
+UNIT
+
+    cat > "$unit_dir/sync-${job_name}.timer" <<UNIT
+[Unit]
+Description=Sync job timer: ${job_name}
+
+[Timer]
+OnCalendar=${oncal}
+Persistent=true
+RandomizedDelaySec=6h
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+    # Ensure user services run when logged out. Idempotent.
+    loginctl enable-linger "$USER" >/dev/null 2>&1 || true
+    systemctl --user daemon-reload
+    systemctl --user enable --now "sync-${job_name}.timer" >/dev/null
+}
+
+# Remove a systemd --user timer + service for a sync job.
+_sync_remove_timer() {
+    local job_name="$1"
+    local unit_dir="$HOME/.config/systemd/user"
+    systemctl --user disable --now "sync-${job_name}.timer" >/dev/null 2>&1 || true
+    rm -f "$unit_dir/sync-${job_name}.service" "$unit_dir/sync-${job_name}.timer"
+    systemctl --user daemon-reload
+}
+
+_sync_edit_job() {
+    echo ""
+    echo -e "  ${BOLD}Edit a sync job${NC}"
+    echo ""
+
+    if ! _sync_list_jobs "all"; then
+        info "No sync jobs to edit."
+        return
+    fi
+
+    echo ""
+    read -p "  Pick a job [number]: " pick
+    if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#_sync_jobs[@]} )); then
+        fail "Invalid choice."
+        return
+    fi
+
+    local job_name="${_sync_jobs[$((pick-1))]}"
+    local old_line="${_sync_job_lines[$((pick-1))]}"
+    local job_type="${_sync_job_types[$((pick-1))]}"
+    local is_paused=false sched human
+    if [[ "$job_type" == "cron" ]]; then
+        echo "$old_line" | grep -q "^#PAUSED#" && is_paused=true
+        sched=$(echo "$old_line" | sed 's/^#PAUSED#//' | awk '{print $1,$2,$3,$4,$5}')
+        human=$(_cron_to_english "$sched")
+    else
+        [[ "$(systemctl --user is-enabled "sync-${job_name}.timer" 2>/dev/null)" != "enabled" ]] && is_paused=true
+        sched="$old_line"
+        human="weekly (${sched}), catches missed runs"
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}${job_name}${NC}  [${sched}] — ${human}  ${DIM}(${job_type})${NC}$($is_paused && echo " ${YELLOW}(paused)${NC}")"
+    echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "    ${BOLD}1)${NC} Change schedule"
+    if $is_paused; then
+        echo -e "    ${BOLD}2)${NC} Resume"
+    else
+        echo -e "    ${BOLD}2)${NC} Pause"
+    fi
+    echo -e "    ${BOLD}3)${NC} Run now"
+    echo -e "    ${BOLD}4)${NC} View last log"
+    echo -e "    ${BOLD}5)${NC} Delete"
+    echo -e "    ${BOLD}0)${NC} Cancel"
+    echo ""
+    read -p "  Choice [0-5]: " action
+    case $action in
+        1) _sync_change_schedule "$job_name" "$old_line" "$job_type" ;;
+        2)
+            if [[ "$job_type" == "cron" ]]; then
+                local new_line
+                if $is_paused; then
+                    new_line=$(echo "$old_line" | sed 's/^#PAUSED#//')
+                    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
+                    ok "Resumed '${job_name}'"
+                else
+                    new_line="#PAUSED#${old_line}"
+                    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
+                    ok "Paused '${job_name}'"
+                fi
+            else
+                if $is_paused; then
+                    systemctl --user enable --now "sync-${job_name}.timer" >/dev/null
+                    ok "Resumed '${job_name}'"
+                else
+                    systemctl --user disable --now "sync-${job_name}.timer" >/dev/null
+                    ok "Paused '${job_name}'"
+                fi
+            fi
+            ;;
+        3)
+            local script_path="$HOME/.local/bin/sync-${job_name}.sh"
+            if [[ ! -x "$script_path" ]]; then
+                fail "Script not found: $script_path"
+                return
+            fi
+            echo ""
+            info "Running ${job_name}..."
+            if [[ "$job_type" == "timer" ]]; then
+                systemctl --user start "sync-${job_name}.service" || { fail "Service failed."; return; }
+            else
+                bash "$script_path" || { fail "Sync job failed."; return; }
+            fi
+            ok "'${job_name}' completed."
+            ;;
+        4)
+            local log_path="$HOME/.local/share/sync-jobs/${job_name}.log"
+            if [[ ! -f "$log_path" ]]; then
+                if [[ "$job_type" == "timer" ]]; then
+                    echo ""
+                    echo -e "  ${DIM}Journal for sync-${job_name}.service:${NC}"
+                    echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                    journalctl --user -u "sync-${job_name}.service" -n 30 --no-pager 2>/dev/null | sed 's/^/  /'
+                else
+                    info "No log yet at $log_path"
+                fi
+                return
+            fi
+            echo ""
+            echo -e "  ${DIM}Last 30 lines of ${log_path}:${NC}"
+            echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            tail -n 30 "$log_path" | sed 's/^/  /'
+            ;;
+        5)
+            echo ""
+            _confirm_delete "sync-${job_name}" || return 0
+            if [[ "$job_type" == "cron" ]]; then
+                (crontab -l 2>/dev/null | grep -vF "$old_line") | crontab -
+            else
+                _sync_remove_timer "$job_name"
+            fi
+            local script_path="$HOME/.local/bin/sync-${job_name}.sh"
+            local log_path="$HOME/.local/share/sync-jobs/${job_name}.log"
+            rm -f "$script_path" "$log_path"
+            ok "Deleted '${job_name}'"
+            ;;
+        0) return ;;
+        *) fail "Invalid choice." ;;
+    esac
+}
+
+_sync_change_schedule() {
+    local job_name="$1"
+    local old_line="$2"
+    local old_type="$3"
+    local sched_out sched_kind sched_spec
+    sched_out=$(_sync_pick_schedule) || return 1
+    sched_kind="${sched_out%% *}"
+    sched_spec="${sched_out#* }"
+
+    local script_path="$HOME/.local/bin/sync-${job_name}.sh"
+
+    # If the job type is changing (cron ↔ timer), tear down the old side
+    # before installing the new one.
+    if [[ "$old_type" == "cron" && "$sched_kind" == "timer" ]]; then
+        (crontab -l 2>/dev/null | grep -vF "$old_line") | crontab -
+        _sync_install_timer "$job_name" "$script_path" "$sched_spec"
+        ok "Schedule updated for '${job_name}' → timer (${sched_spec})"
+        return
+    fi
+    if [[ "$old_type" == "timer" && "$sched_kind" == "cron" ]]; then
+        _sync_remove_timer "$job_name"
+        (crontab -l 2>/dev/null | grep -v "sync-${job_name}.sh"; echo "$sched_spec $script_path") | crontab -
+        local human; human=$(_cron_to_english "$sched_spec")
+        ok "Schedule updated for '${job_name}' → ${human}"
+        return
+    fi
+
+    if [[ "$sched_kind" == "timer" ]]; then
+        # Same-type rewrite: just reinstall the timer with the new OnCalendar.
+        _sync_install_timer "$job_name" "$script_path" "$sched_spec"
+        ok "Schedule updated for '${job_name}' → timer (${sched_spec})"
+        return
+    fi
+
+    # Cron → cron: preserve #PAUSED# prefix and the script path field.
+    local prefix="" rest
+    if echo "$old_line" | grep -q "^#PAUSED#"; then
+        prefix="#PAUSED#"
+        rest=$(echo "$old_line" | sed 's/^#PAUSED#//' | awk '{for(i=6;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":"")}')
+    else
+        rest=$(echo "$old_line" | awk '{for(i=6;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":"")}')
+    fi
+
+    local new_line="${prefix}${sched_spec} ${rest}"
+    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
+
+    local human
+    human=$(_cron_to_english "$sched_spec")
+    ok "Schedule updated for '${job_name}' → ${human}"
+}
+
 _sync_show_status() {
     # Fetch server-side crons FIRST (may prompt for sudo password) so the
     # password prompt appears before any table rendering.
@@ -3613,10 +3878,34 @@ _sync_show_status() {
         done
     fi
 
+    # Laptop-side sync timers (systemd --user)
+    local unit_dir="$HOME/.config/systemd/user" has_timer=false
+    if [[ -d "$unit_dir" ]]; then
+        local timer_file
+        for timer_file in "$unit_dir"/sync-*.timer; do
+            [[ -f "$timer_file" ]] || continue
+            has_timer=true
+            local tname oncal status script_path direction
+            tname=$(basename "$timer_file" .timer); tname="${tname#sync-}"
+            oncal=$(awk -F= '/^OnCalendar=/{print $2; exit}' "$timer_file")
+            status=""
+            [[ "$(systemctl --user is-enabled "sync-${tname}.timer" 2>/dev/null)" != "enabled" ]] && status="${YELLOW}(paused)${NC}"
+            script_path="$HOME/.local/bin/sync-${tname}.sh"
+            direction="sync"
+            if [[ -f "$script_path" ]]; then
+                direction=$(grep '^# Direction:' "$script_path" 2>/dev/null | sed 's/# Direction: //')
+                [[ -z "$direction" ]] && direction="sync"
+            fi
+            printf "  %-20s %-18s %-16s %-10s " "$tname" "$oncal" "weekly" "$direction"
+            [[ -n "$status" ]] && echo -e "$status" || echo -e "${DIM}timer${NC}"
+        done
+    fi
+
     # Check outside subshells (pipe subshells can't propagate state)
     local has_server=false has_laptop=false
     [[ -n "$server_crons" ]] && echo "$server_crons" | grep -qE "immich-backup|disk-check" && has_server=true
     [[ -n "$laptop_crons" ]] && echo "$laptop_crons" | grep -q "sync-.*\.sh" && has_laptop=true
+    $has_timer && has_laptop=true
     if [[ "$has_server" == "false" && "$has_laptop" == "false" ]]; then
         echo ""
         info "No scheduled tasks found."
@@ -3632,8 +3921,10 @@ _sync_list_jobs() {
 
     _sync_jobs=()
     _sync_job_lines=()
+    _sync_job_types=()     # "cron" | "timer"
     local i=1
 
+    # Cron-backed jobs
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
         case "$filter" in
@@ -3657,67 +3948,44 @@ _sync_list_jobs() {
         status_tag=""
         echo "$line" | grep -q "^#PAUSED#" && status_tag=" ${YELLOW}(paused)${NC}"
 
-        echo -e "    ${BOLD}${i})${NC} ${name}  [${sched}]${status_tag}"
+        echo -e "    ${BOLD}${i})${NC} ${name}  [${sched}]  ${DIM}cron${NC}${status_tag}"
         _sync_jobs+=("$name")
         _sync_job_lines+=("$line")
+        _sync_job_types+=("cron")
         ((i++))
     done <<< "$laptop_crons"
+
+    # Timer-backed jobs
+    local unit_dir="$HOME/.config/systemd/user"
+    if [[ -d "$unit_dir" ]]; then
+        local timer_file
+        for timer_file in "$unit_dir"/sync-*.timer; do
+            [[ -f "$timer_file" ]] || continue
+            local tname oncal is_enabled paused=false status_tag=""
+            tname=$(basename "$timer_file" .timer)
+            tname="${tname#sync-}"
+            oncal=$(awk -F= '/^OnCalendar=/{print $2; exit}' "$timer_file")
+            is_enabled=$(systemctl --user is-enabled "sync-${tname}.timer" 2>/dev/null)
+            [[ "$is_enabled" != "enabled" ]] && paused=true
+
+            case "$filter" in
+                active) $paused && continue ;;
+                paused) $paused || continue ;;
+            esac
+
+            $paused && status_tag=" ${YELLOW}(paused)${NC}"
+            echo -e "    ${BOLD}${i})${NC} ${tname}  [${oncal}]  ${DIM}timer${NC}${status_tag}"
+            _sync_jobs+=("$tname")
+            _sync_job_lines+=("$oncal")     # for timer, "line" holds the OnCalendar spec
+            _sync_job_types+=("timer")
+            ((i++))
+        done
+    fi
 
     if [[ ${#_sync_jobs[@]} -eq 0 ]]; then
         return 1
     fi
     return 0
-}
-
-_sync_pause_job() {
-    echo ""
-    echo -e "  ${BOLD}Pause a sync job${NC}"
-    echo ""
-
-    if ! _sync_list_jobs "active"; then
-        info "No active sync jobs to pause."
-        return
-    fi
-
-    echo ""
-    read -p "  Pick a job [number]: " pick
-    if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#_sync_jobs[@]} )); then
-        fail "Invalid choice."
-        return
-    fi
-
-    local job_name="${_sync_jobs[$((pick-1))]}"
-    local old_line="${_sync_job_lines[$((pick-1))]}"
-    local new_line="#PAUSED#${old_line}"
-
-    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
-    ok "Paused sync job '${job_name}'"
-}
-
-_sync_resume_job() {
-    echo ""
-    echo -e "  ${BOLD}Resume a sync job${NC}"
-    echo ""
-
-    if ! _sync_list_jobs "paused"; then
-        info "No paused sync jobs to resume."
-        return
-    fi
-
-    echo ""
-    read -p "  Pick a job [number]: " pick
-    if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#_sync_jobs[@]} )); then
-        fail "Invalid choice."
-        return
-    fi
-
-    local job_name="${_sync_jobs[$((pick-1))]}"
-    local old_line="${_sync_job_lines[$((pick-1))]}"
-    local new_line
-    new_line=$(echo "$old_line" | sed 's/^#PAUSED#//')
-
-    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
-    ok "Resumed sync job '${job_name}'"
 }
 
 _sync_delete_job() {
@@ -3738,73 +4006,38 @@ _sync_delete_job() {
     fi
 
     local job_name="${_sync_jobs[$((pick-1))]}"
+    local old_line="${_sync_job_lines[$((pick-1))]}"
+    local job_type="${_sync_job_types[$((pick-1))]}"
     echo ""
     _confirm_delete "sync-${job_name}" || return 0
 
-    # Remove cron line
-    local old_line="${_sync_job_lines[$((pick-1))]}"
-    (crontab -l 2>/dev/null | grep -vF "$old_line") | crontab -
+    if [[ "$job_type" == "cron" ]]; then
+        (crontab -l 2>/dev/null | grep -vF "$old_line") | crontab -
+    else
+        _sync_remove_timer "$job_name"
+    fi
 
-    # Remove script and log
     local script_path="$HOME/.local/bin/sync-${job_name}.sh"
     local log_path="$HOME/.local/share/sync-jobs/${job_name}.log"
     rm -f "$script_path" "$log_path"
 
     ok "Deleted sync job '${job_name}'"
-    [[ -f "$script_path" ]] || info "Removed $script_path"
-    [[ -f "$log_path" ]] || info "Removed $log_path"
-}
-
-_sync_run_now() {
-    echo ""
-    echo -e "  ${BOLD}Run a sync job now${NC}"
-    echo ""
-
-    if ! _sync_list_jobs "active"; then
-        info "No active sync jobs to run."
-        return
-    fi
-
-    echo ""
-    read -p "  Pick a job [number]: " pick
-    if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#_sync_jobs[@]} )); then
-        fail "Invalid choice."
-        return
-    fi
-
-    local job_name="${_sync_jobs[$((pick-1))]}"
-    local script_path="$HOME/.local/bin/sync-${job_name}.sh"
-
-    if [[ ! -x "$script_path" ]]; then
-        fail "Script not found or not executable: $script_path"
-        return 1
-    fi
-
-    info "Running sync-${job_name}..."
-    echo ""
-    bash "$script_path" || { fail "Sync job failed."; return 1; }
-    echo ""
-    ok "Sync job '${job_name}' completed."
 }
 
 step_manage_sync() {
     echo ""
     echo -e "  ${BOLD}1)${NC} Status                    ${DIM}← all scheduled tasks${NC}"
     echo -e "  ${BOLD}2)${NC} New sync                  ${DIM}← transfer files, run now or schedule${NC}"
-    echo -e "  ${BOLD}3)${NC} Pause a sync job"
-    echo -e "  ${BOLD}4)${NC} Resume a sync job"
-    echo -e "  ${BOLD}5)${NC} Delete a sync job"
-    echo -e "  ${BOLD}6)${NC} Run a sync job now"
+    echo -e "  ${BOLD}3)${NC} Edit sync job             ${DIM}← schedule, pause, run, log, delete${NC}"
+    echo -e "  ${BOLD}4)${NC} Delete a sync job"
     echo -e "  ${BOLD}0)${NC} Cancel"
     echo ""
-    read -p "  Choice [0-6]: " sync_choice
+    read -p "  Choice [0-4]: " sync_choice
     case $sync_choice in
         1) _sync_show_status ;;
         2) step_sync ;;
-        3) _sync_pause_job ;;
-        4) _sync_resume_job ;;
-        5) _sync_delete_job ;;
-        6) _sync_run_now ;;
+        3) _sync_edit_job ;;
+        4) _sync_delete_job ;;
         0) return ;;
         *) fail "Invalid choice." ;;
     esac

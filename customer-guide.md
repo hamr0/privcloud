@@ -125,7 +125,7 @@ Dedicated always-on machine running Immich + music streaming + file management +
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools --
-  16) Manage sync                          ← transfer, schedule, cron jobs
+  16) Manage sync                          ← transfer, schedule (cron or timer), edit jobs
   17) Save to pass                        ← from laptop, backup everything to pass
 
   s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-9)   0)  Exit
@@ -1049,14 +1049,18 @@ When run directly on the server, option 14 opens a server-only submenu instead.
 
 - **Transfer files** — upload or download files and directories between laptop and server. Accepts files and directories, strips quotes and trailing slashes, handles folder-vs-contents mode (with a visual preview of the result path + a tip to avoid accidental nesting). Cancel at every step, 3-attempt retry on invalid input. At the end you choose: run now or schedule as a recurring job.
 - **Delete files** — remove files on the laptop or server side.
-- **Scheduled sync jobs** — set up cron-based rsync jobs that run automatically on a schedule. Pick source and destination, choose from presets (hourly, every 6h, daily at 2am) or enter a custom cron expression with a built-in cheat sheet showing what each field means + English translation + confirmation before saving. Jobs run once immediately after creation to confirm they work. Scripts saved to `~/.local/bin/sync-*.sh`, logs to `~/.local/share/sync-jobs/*.log`.
-- **View all scheduled tasks** — unified table showing server cron jobs (immich-backup, disk-check) alongside your laptop sync jobs, with schedule, English translation, type, and status.
+- **Scheduled sync jobs** — set up rsync jobs that run automatically. Two schedule kinds, picked during creation:
+  - **Cron** (presets: every hour, every 6h, daily at 2am, or custom expression with built-in cheat sheet + English translation). Simple, exact-time. If the laptop is off at the scheduled minute, that run is lost.
+  - **Systemd timer** (once a week, any time — Sat / Sun / any day). Uses `Persistent=true` + 6h randomized delay so a missed run is caught on next boot. The right pick for weekly jobs on a laptop that might be off at a specific hour.
+  Scripts saved to `~/.local/bin/sync-*.sh`, logs to `~/.local/share/sync-jobs/*.log`; timer units to `~/.config/systemd/user/sync-*.{service,timer}`. Linger is enabled automatically on first timer so jobs fire when you're not logged in.
+- **Edit a sync job** — pick an existing job and: change its schedule (switches freely between cron and timer), pause / resume (toggles based on current state), run now, view the last 30 lines of the log, or delete. Renames or script-path changes: delete and recreate.
+- **View all scheduled tasks** — unified table showing server cron jobs (immich-backup, disk-check) alongside your laptop sync jobs (both cron and timer), with schedule, English translation, type, and status.
 
 ### When to use it vs Syncthing
 
 | | Manage sync (option 16) | Syncthing (option 14) |
 |---|---|---|
-| **Mode** | One-shot or scheduled cron | Always-on real-time |
+| **Mode** | One-shot, cron, or systemd timer | Always-on real-time |
 | **Direction** | One-way per transfer | Bidirectional |
 | **Runs from** | Laptop (SSHes to server) | Both sides independently |
 | **Good for** | Bulk transfers, scheduled backups, cleanup | Live working folders, notes, code drafts |

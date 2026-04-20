@@ -85,7 +85,7 @@ On the **laptop** (full menu):
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools --
-  16) Manage sync                           ← transfer, schedule, cron jobs
+  16) Manage sync                           ← transfer, schedule (cron or systemd timer), edit jobs
   17) Save to pass                          ← backup everything to pass
 
   s) Status  i) Immich  p) Power  r) Reset password  a) Run all (3-9)  0) Exit

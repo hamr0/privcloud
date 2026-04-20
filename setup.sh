@@ -3514,10 +3514,12 @@ _sync_pick_schedule() {
         echo -e "    ${BOLD}3)${NC} Daily at 2am"
         echo -e "    ${BOLD}4)${NC} Once a week, any time   ${DIM}(systemd timer, catches missed runs)${NC}"
         echo -e "    ${BOLD}5)${NC} Custom cron expression"
+        echo -e "    ${BOLD}0)${NC} Cancel"
         echo ""
     } >&2
     local sched_choice schedule
-    read -p "  Schedule [1-5]: " sched_choice >&2
+    read -p "  Schedule [0-5]: " sched_choice >&2
+    [[ -z "$sched_choice" || "$sched_choice" == "0" ]] && return 1
     case $sched_choice in
         1) echo "cron 0 * * * *"; return ;;
         2) echo "cron 0 */6 * * *"; return ;;
@@ -3530,10 +3532,12 @@ _sync_pick_schedule() {
                 echo -e "    ${BOLD}1)${NC} Saturday"
                 echo -e "    ${BOLD}2)${NC} Sunday"
                 echo -e "    ${BOLD}3)${NC} Any day this week"
+                echo -e "    ${BOLD}0)${NC} Cancel"
                 echo ""
             } >&2
             local day_choice oncal
-            read -p "  Day [1/2/3]: " day_choice >&2
+            read -p "  Day [0-3]: " day_choice >&2
+            [[ -z "$day_choice" || "$day_choice" == "0" ]] && return 1
             case $day_choice in
                 1) oncal="Sat" ;;
                 2) oncal="Sun" ;;
@@ -3644,7 +3648,10 @@ _sync_edit_job() {
     fi
 
     echo ""
+    echo -e "    ${BOLD}0)${NC} Cancel"
+    echo ""
     read -p "  Pick a job [number]: " pick
+    [[ -z "$pick" || "$pick" == "0" ]] && return
     if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#_sync_jobs[@]} )); then
         fail "Invalid choice."
         return
@@ -3999,7 +4006,10 @@ _sync_delete_job() {
     fi
 
     echo ""
+    echo -e "    ${BOLD}0)${NC} Cancel"
+    echo ""
     read -p "  Pick a job [number]: " pick
+    [[ -z "$pick" || "$pick" == "0" ]] && return
     if [[ ! "$pick" =~ ^[0-9]+$ ]] || (( pick < 1 || pick > ${#_sync_jobs[@]} )); then
         fail "Invalid choice."
         return

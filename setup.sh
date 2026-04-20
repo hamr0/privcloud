@@ -3379,7 +3379,8 @@ _sync_execute_or_schedule() {
 
             local default_name
             default_name=$(basename "$src_path" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
-            read -p "  Name for this job [${default_name}]: " job_name
+            read -p "  Name for this job [${default_name}, q=back]: " job_name
+            [[ "$job_name" == "q" ]] && return
             job_name="${job_name:-$default_name}"
             job_name=$(echo "$job_name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
 
@@ -4117,14 +4118,16 @@ step_sync() {
         while (( attempts < 3 )); do
             if [[ "$show_presets" == "true" ]]; then
                 _list_local_sources
-                read -p "  Choose [number or path]: " choice
+                read -p "  Choose [number, path, q=back]: " choice
+                [[ "$choice" == "q" ]] && return 2
                 if [[ "$choice" =~ ^[0-9]+$ ]]; then
                     local_path="${sources[$choice]}"
                 else
                     local_path="$choice"
                 fi
             else
-                read -p "  Absolute path: " choice
+                read -p "  Absolute path [q=back]: " choice
+                [[ "$choice" == "q" ]] && return 2
                 local_path="$choice"
             fi
 
@@ -4167,14 +4170,16 @@ step_sync() {
         local attempts=0
         while (( attempts < 3 )); do
             if [[ "$show_presets" == "true" ]]; then
-                read -p "  Choose [number or path]: " choice
+                read -p "  Choose [number, path, q=back]: " choice
+                [[ "$choice" == "q" ]] && return 2
                 case $choice in
                     1) server_path="/home/$SERVER_USER/data" ;;
                     2) server_path="/mnt/data" ;;
                     *) server_path="$choice" ;;
                 esac
             else
-                read -p "  Absolute path: " choice
+                read -p "  Absolute path [q=back]: " choice
+                [[ "$choice" == "q" ]] && return 2
                 server_path="$choice"
             fi
 
@@ -4214,8 +4219,10 @@ step_sync() {
             echo -e "    ${BOLD}2)${NC} Copy contents   ${DIM}destination/files...              (files go directly in)${NC}"
             echo ""
             echo -e "  ${YELLOW}Tip: if your destination path already ends with /${src_name}, pick 2.${NC}"
+            echo -e "    ${BOLD}0)${NC} Back"
             echo ""
-            read -p "  Mode [1/2]: " mode
+            read -p "  Mode [0/1/2]: " mode
+            [[ -z "$mode" || "$mode" == "0" ]] && return 2
             [[ "$mode" == "2" ]] && copy_mode="contents" || copy_mode="folder"
         fi
     }
@@ -4224,13 +4231,13 @@ step_sync() {
         1)
             echo ""
             echo -e "  ${BOLD}-- Source (laptop) --${NC}"
-            _pick_local_path true
+            _pick_local_path true || return
             echo ""
             echo -e "  ${BOLD}-- Destination (server) --${NC}"
-            _pick_server_path false
+            _pick_server_path false || return
 
             [[ -d "$local_path" ]] && local is_dir="true" || local is_dir="false"
-            _pick_copy_mode "$local_path" "$is_dir"
+            _pick_copy_mode "$local_path" "$is_dir" || return
             local rsync_src="$local_path/"
             local dest_display="$server_path"
             if [[ "$copy_mode" == "folder" ]]; then
@@ -4254,14 +4261,14 @@ step_sync() {
         2)
             echo ""
             echo -e "  ${BOLD}-- Source (server) --${NC}"
-            _pick_server_path true
+            _pick_server_path true || return
             echo ""
             echo -e "  ${BOLD}-- Destination (laptop) --${NC}"
-            _pick_local_path false
+            _pick_local_path false || return
 
             local is_dir="false"
             ssh "$SERVER_USER@$SERVER_IP" "test -d '$server_path'" 2>/dev/null && is_dir="true"
-            _pick_copy_mode "$server_path" "$is_dir"
+            _pick_copy_mode "$server_path" "$is_dir" || return
             local rsync_src="$server_path/"
             local dest_display="$local_path"
             if [[ "$copy_mode" == "folder" ]]; then
@@ -4286,13 +4293,15 @@ step_sync() {
             echo -e "  ${BOLD}Delete from:${NC}"
             echo -e "    ${BOLD}1)${NC} Laptop"
             echo -e "    ${BOLD}2)${NC} Server"
+            echo -e "    ${BOLD}0)${NC} Back"
             echo ""
-            read -p "  Where [1/2]: " del_where
+            read -p "  Where [0/1/2]: " del_where
+            [[ -z "$del_where" || "$del_where" == "0" ]] && return
 
             case $del_where in
                 1)
                     echo ""
-                    _pick_local_path true false
+                    _pick_local_path true false || return
                     local del_path="$local_path"
                     if [[ "$del_path" == "/" ]]; then fail "Invalid path."; return 1; fi
                     echo ""
@@ -4304,7 +4313,7 @@ step_sync() {
                     ;;
                 2)
                     echo ""
-                    _pick_server_path true false
+                    _pick_server_path true false || return
                     local del_path="$server_path"
                     if [[ "$del_path" == "/" ]]; then fail "Invalid path."; return 1; fi
                     echo ""

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Changed
+- **Wizard exits: `0) Back` in menus, `q` in text prompts.** Every numbered menu now shows `0) Back` as the last item (was `0) Cancel`); the 0 value is handled explicitly instead of falling through to "Invalid choice." Free-text prompts inside multi-step flows (New sync path pickers, copy-mode picker, job-name prompt) accept `q` to bail out — hint is printed inline, e.g. `Choose [number, path, q=back]`. Return codes propagate up so the whole wizard exits cleanly in one keystroke. Exit is one-shot (drops back to the main federver menu, not one step up) because these wizards are shallow and users want out, not to navigate. Replaces Ctrl+C as the only escape hatch mid-flow.
+
 ### Added
 - **Edit sync job + systemd-timer schedule option (`federver` → 16 → 3).** Manage-sync menu reshaped to four top-level items: Status, New sync, **Edit sync job**, Delete. Picking Edit lists all jobs (cron + timer, active + paused) and opens a per-job submenu: change schedule, pause/resume (toggle adapts to current state), run now, view last log (tail 30 or `journalctl --user` for timers), delete. Changing schedule re-enters the same picker used at creation — switching between cron and systemd-timer flavors in place is supported (the old side is torn down first). The schedule picker gained option **4) Once a week, any time** which creates a `~/.config/systemd/user/sync-*.{service,timer}` pair with `OnCalendar=Sat|Sun|weekly`, `Persistent=true`, and `RandomizedDelaySec=6h`. `loginctl enable-linger` runs automatically so timers fire when you're not logged in. This is the right pick for weekly laptop jobs that shouldn't be lost if the machine was off at the specific cron minute — cron has no catch-up semantics; systemd timers do. Status screen now also lists timer-backed laptop jobs alongside cron ones. Old standalone Pause/Resume/Run-now entries removed from the top-level menu since Edit subsumes them.
 

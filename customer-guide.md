@@ -131,6 +131,8 @@ Dedicated always-on machine running Immich + music streaming + file management +
   s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-9)   0)  Exit
 ```
 
+**Wizard exits:** inside any option, press `0` in a numbered menu or type `q` at a text prompt to drop back to this main menu. No need for Ctrl+C.
+
 ### From Immich (the photo server)
 
 - **Face recognition** — automatically detects and groups faces across your entire library
@@ -1047,7 +1049,7 @@ When run directly on the server, option 14 opens a server-only submenu instead.
 
 ### What it does
 
-- **Transfer files** — upload or download files and directories between laptop and server. Accepts files and directories, strips quotes and trailing slashes, handles folder-vs-contents mode (with a visual preview of the result path + a tip to avoid accidental nesting). Cancel at every step, 3-attempt retry on invalid input. At the end you choose: run now or schedule as a recurring job.
+- **Transfer files** — upload or download files and directories between laptop and server. Accepts files and directories, strips quotes and trailing slashes, handles folder-vs-contents mode (with a visual preview of the result path + a tip to avoid accidental nesting). Exit any step with `0` in menus or `q` in text prompts (no Ctrl+C needed), 3-attempt retry on invalid input. At the end you choose: run now or schedule as a recurring job.
 - **Delete files** — remove files on the laptop or server side.
 - **Scheduled sync jobs** — set up rsync jobs that run automatically. Two schedule kinds, picked during creation:
   - **Cron** (presets: every hour, every 6h, daily at 2am, or custom expression with built-in cheat sheet + English translation). Simple, exact-time. If the laptop is off at the scheduled minute, that run is lost.
@@ -1337,7 +1339,7 @@ If services aren't running: `cd ~/privcloud && docker compose up -d && privcloud
 4) Change music location      <- Navidrome
 5) Change data location       <- FileBrowser root
 6) Change Immich location     <- Immich photos + database
-0) Cancel
+0) Back
 ```
 
 ### Mounting a USB drive

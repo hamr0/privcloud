@@ -439,7 +439,7 @@ step_firewall() {
     echo -e "  ${BOLD}2)${NC} Add port or service"
     echo -e "  ${BOLD}3)${NC} Remove port or service"
     echo -e "  ${BOLD}4)${NC} Apply defaults                ${DIM}(SSH + service ports + trust Tailscale)${NC}"
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choose: " fw_choice
     case $fw_choice in
@@ -710,7 +710,7 @@ REMOTE_TS_STATUS
     echo -e "  ${BOLD}4)${NC} Restart both             ${DIM}<- restart tailscaled service${NC}"
     echo -e "  ${BOLD}5)${NC} Re-authenticate server   ${DIM}<- new login URL${NC}"
     echo -e "  ${BOLD}6)${NC} ${RED}Uninstall both${NC}           ${DIM}<- remove from laptop + server${NC}"
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choose: " ts_choice
     case $ts_choice in
@@ -737,7 +737,7 @@ _ts_server_step() {
     echo -e "  ${BOLD}3)${NC} Disconnect           ${DIM}<- tailscale down${NC}"
     echo -e "  ${BOLD}4)${NC} Re-authenticate      ${DIM}<- new login URL${NC}"
     echo -e "  ${BOLD}5)${NC} ${RED}Uninstall${NC}            ${DIM}<- remove tailscaled + package${NC}"
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choose: " ts_choice
     case $ts_choice in
@@ -759,7 +759,7 @@ step_storage() {
     echo -e "  ${BOLD}4)${NC} Change music location      ${DIM}<- Navidrome${NC}"
     echo -e "  ${BOLD}5)${NC} Change data location       ${DIM}<- FileBrowser root${NC}"
     echo -e "  ${BOLD}6)${NC} Change Immich location     ${DIM}<- Immich photos + database${NC}"
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choose: " storage_choice
 
@@ -1250,7 +1250,7 @@ _pick_container() {
         arr[$idx]="$n"
         idx=$((idx + 1))
     done <<< "$names"
-    echo -e "  ${BOLD}0)${NC} Cancel" >&2
+    echo -e "  ${BOLD}0)${NC} Back" >&2
     echo "" >&2
     read -p "  Choose: " pick >&2
     if [[ "$pick" == "a" || "$pick" == "A" ]]; then
@@ -1524,7 +1524,7 @@ _unified_service_picker() {
         display_idx=$((display_idx + 1))
     done
 
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choose: " pick
 
@@ -1638,7 +1638,7 @@ step_services_wrapper() {
     echo -e "  ${BOLD}4)${NC} Restart                    ${DIM}<- pick one or All${NC}"
     echo -e "  ${BOLD}5)${NC} Logs                       ${DIM}<- tail -f a container${NC}"
     echo -e "  ${BOLD}6)${NC} Deploy / redeploy          ${DIM}<- first install or change data paths${NC}"
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choose: " svc_choice
     case $svc_choice in
@@ -1663,7 +1663,7 @@ step_services() {
     echo -e "  ${BOLD}4)${NC} Restart                    ${DIM}<- pick one or All${NC}"
     echo -e "  ${BOLD}5)${NC} Logs                       ${DIM}<- tail -f a container${NC}"
     echo -e "  ${BOLD}6)${NC} Deploy / redeploy          ${DIM}<- first install or change data paths${NC}"
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choose: " svc_choice
     case $svc_choice in
@@ -2223,7 +2223,7 @@ REMOTE_STATUS
     echo -e "  ${BOLD}7)${NC} Reapply paths from .env    ${DIM}<- recreate server container${NC}"
     echo -e "  ${BOLD}8)${NC} Logs (server)              ${DIM}<- tail -f syncthing logs${NC}"
     echo -e "  ${BOLD}9)${NC} ${RED}Uninstall both${NC}             ${DIM}<- remove from laptop + server${NC}"
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choose: " st_choice
     case $st_choice in
@@ -2272,7 +2272,7 @@ _syncthing_server_step() {
     echo -e "  ${BOLD}7)${NC} Restart"
     echo -e "  ${BOLD}8)${NC} Logs                       ${DIM}<- tail -f syncthing logs${NC}"
     echo -e "  ${BOLD}9)${NC} ${RED}Uninstall${NC}                  ${DIM}<- stop + remove container, keep /opt/syncthing${NC}"
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choose: " st_choice
     case $st_choice in
@@ -2340,7 +2340,7 @@ step_remotedesktop() {
         echo ""
         echo -e "  ${BOLD}1)${NC} Restart xrdp"
         echo -e "  ${BOLD}2)${NC} ${RED}Uninstall${NC}                ${DIM}<- removes xrdp, re-enables lightdm${NC}"
-        echo -e "  ${BOLD}0)${NC} Cancel"
+        echo -e "  ${BOLD}0)${NC} Back"
         echo ""
         read -p "  Choose: " rdp_choice
         case "$rdp_choice" in
@@ -2608,7 +2608,7 @@ step_wireguard() {
         echo -e "  ${BOLD}4)${NC} Remove peer"
         echo -e "  ${BOLD}5)${NC} Reinstall (regenerate all keys — existing peers stop working)"
         echo -e "  ${BOLD}6)${NC} ${RED}Uninstall${NC}                  ${DIM}<- remove wg-quick + package${NC}"
-        echo -e "  ${BOLD}0)${NC} Cancel"
+        echo -e "  ${BOLD}0)${NC} Back"
         echo ""
         read -p "  Choose [1/2/3/4/5/6/0]: " wg_action
 
@@ -2940,7 +2940,7 @@ step_adguard() {
         echo ""
         echo -e "  ${BOLD}1)${NC} Cancel and install Tailscale first (step 10)  ${DIM}← recommended${NC}"
         echo -e "  ${BOLD}2)${NC} Continue anyway (I'll set DNS manually per device)"
-        echo -e "  ${BOLD}0)${NC} Cancel"
+        echo -e "  ${BOLD}0)${NC} Back"
         echo ""
         read -p "  Choose [1/2/0]: " ts_choice
         case "$ts_choice" in
@@ -2960,7 +2960,7 @@ step_adguard() {
         echo -e "  ${BOLD}3)${NC} Restart container"
         echo -e "  ${BOLD}4)${NC} Logs"
         echo -e "  ${BOLD}5)${NC} ${RED}Uninstall${NC}"
-        echo -e "  ${BOLD}0)${NC} Cancel"
+        echo -e "  ${BOLD}0)${NC} Back"
         echo ""
         read -p "  Choose: " ag_choice
         case "$ag_choice" in
@@ -3357,7 +3357,7 @@ _sync_execute_or_schedule() {
     echo ""
     echo -e "  ${BOLD}1)${NC} Run now"
     echo -e "  ${BOLD}2)${NC} Schedule as recurring job"
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choice [1/2/0]: " action
     case $action in
@@ -3514,7 +3514,7 @@ _sync_pick_schedule() {
         echo -e "    ${BOLD}3)${NC} Daily at 2am"
         echo -e "    ${BOLD}4)${NC} Once a week, any time   ${DIM}(systemd timer, catches missed runs)${NC}"
         echo -e "    ${BOLD}5)${NC} Custom cron expression"
-        echo -e "    ${BOLD}0)${NC} Cancel"
+        echo -e "    ${BOLD}0)${NC} Back"
         echo ""
     } >&2
     local sched_choice schedule
@@ -3532,7 +3532,7 @@ _sync_pick_schedule() {
                 echo -e "    ${BOLD}1)${NC} Saturday"
                 echo -e "    ${BOLD}2)${NC} Sunday"
                 echo -e "    ${BOLD}3)${NC} Any day this week"
-                echo -e "    ${BOLD}0)${NC} Cancel"
+                echo -e "    ${BOLD}0)${NC} Back"
                 echo ""
             } >&2
             local day_choice oncal
@@ -3648,7 +3648,7 @@ _sync_edit_job() {
     fi
 
     echo ""
-    echo -e "    ${BOLD}0)${NC} Cancel"
+    echo -e "    ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Pick a job [number]: " pick
     [[ -z "$pick" || "$pick" == "0" ]] && return
@@ -3683,7 +3683,7 @@ _sync_edit_job() {
     echo -e "    ${BOLD}3)${NC} Run now"
     echo -e "    ${BOLD}4)${NC} View last log"
     echo -e "    ${BOLD}5)${NC} Delete"
-    echo -e "    ${BOLD}0)${NC} Cancel"
+    echo -e "    ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choice [0-5]: " action
     case $action in
@@ -4006,7 +4006,7 @@ _sync_delete_job() {
     fi
 
     echo ""
-    echo -e "    ${BOLD}0)${NC} Cancel"
+    echo -e "    ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Pick a job [number]: " pick
     [[ -z "$pick" || "$pick" == "0" ]] && return
@@ -4040,7 +4040,7 @@ step_manage_sync() {
     echo -e "  ${BOLD}2)${NC} New sync                  ${DIM}← transfer files, run now or schedule${NC}"
     echo -e "  ${BOLD}3)${NC} Edit sync job             ${DIM}← schedule, pause, run, log, delete${NC}"
     echo -e "  ${BOLD}4)${NC} Delete a sync job"
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Choice [0-4]: " sync_choice
     case $sync_choice in
@@ -4062,7 +4062,7 @@ step_sync() {
         echo -e "  ${BOLD}1)${NC} Upload:   laptop → server"
         echo -e "  ${BOLD}2)${NC} Download: server → laptop"
         echo -e "  ${BOLD}3)${NC} Delete:   remove files"
-        echo -e "  ${BOLD}0)${NC} Cancel"
+        echo -e "  ${BOLD}0)${NC} Back"
         echo ""
         read -p "  Choice [1/2/3/0]: " direction
         [[ "$direction" == "0" ]] && return
@@ -4764,7 +4764,7 @@ step_reset_password() {
     echo -e "  ${BOLD}2)${NC} Immich          ${DIM}(port 2283)${NC}"
     echo -e "  ${BOLD}3)${NC} Navidrome       ${DIM}(port 4533)${NC}"
     echo -e "  ${BOLD}4)${NC} Uptime Kuma     ${DIM}(port 3001)${NC}"
-    echo -e "  ${BOLD}0)${NC} Cancel"
+    echo -e "  ${BOLD}0)${NC} Back"
     echo ""
     read -p "  Which service? " reset_choice
 

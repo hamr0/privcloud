@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.0 — 2026-05-05
+
+### Changed
+- **Menu reshape: steps 8 + 9 folded, "Manage sync" → "Manage sync and backups" (`federver` → 14).** Steps 8 (Setup backups + disk monitoring) and 9 (Configure log rotation) removed from the main menu. Top-level entries drop from 17 → 15. Renumbered: Tailscale 10→8, WireGuard 11→9, AdGuard 12→10, storage 13→11, Syncthing 14→12, remote desktop 15→13, Manage sync 16→14, Save to pass 17→15. "Run all (3-9)" becomes "Run all (3-7)". The two halves of step 8 — Immich DB backup and disk-space monitor — are now wizards inside #14 (options 5 and 6), so they live next to the sync jobs they conceptually belong with and show up in the same Scheduled tasks + Last runs tables. Step 9 (log rotation) is now invoked automatically at the end of step 7's deploy flow — it's Docker hygiene, not a user choice. README.md and customer-guide.md updated for new numbering throughout.
+- **Immich DB backup migrated from cron to systemd timer (`federver` → 14 → 5).** New wizard: pick destination (default unchanged), pick cadence (daily → keep 7 / weekly + day → keep 21 = 3 weeks). Generates `/etc/systemd/system/immich-backup.{service,timer}` with `Persistent=true` (catches up missed runs after a server-off window — the key gain over cron, which silently skips them), `Restart=on-failure` with `RestartSec=30min` and `StartLimitBurst=3` (3 retries within 3h before giving up until next scheduled fire), and `RandomizedDelaySec=15min` to avoid all-at-once load. The script's `pg_dumpall | gzip` core is unchanged; output still goes to `/var/log/immich-backup.log` so the Last-runs parser keeps working. Re-running the wizard tears down any legacy step-8 cron line first, so users migrate cleanly. The Scheduled tasks table now reads `OnCalendar` from the timer when present, falls back to the cron line tagged "(legacy cron)" otherwise.
+- **Disk-space monitor wizard (`federver` → 14 → 6) refuses silent-fail installs.** Old step 8 always installed the cron line, even when the user pressed Enter on the Kuma URL prompt — leaving `/usr/local/bin/disk-check.sh` without `PUSH_URL`, so cron ran every 5 min but Kuma never got a heartbeat (monitor stayed dead, no error visible). New wizard: if the URL is skipped, it removes any half-installed state (cron line + script) and tells you to come back when you have one. If provided, it installs script + cron + fires an immediate heartbeat so Kuma turns green within ~6 min. The pre-existing Kuma "Disk Space" monitor setup instructions move into the wizard intro.
+
+### Fixed
+- **Last-runs server-log SSH had no tty, sudo silently failed.** The non-tty SSH I added in v0.4.0 used `sudo test`/`stat`/`tail` on `/var/log/*.log`, but with no tty sudo can't prompt and exits non-zero. Every server row rendered as "never" — masking real state (a healthy immich-backup looked dead; a disk-check with no `PUSH_URL` looked green via the "no alerts" branch). Logs are mode 644 root-owned by default, so the unprivileged SSH user can read them directly. Dropped sudo from the test/stat/tail calls. (Already shipped in c3be917.)
+
 ## v0.4.0 — 2026-05-05
 
 ### Added

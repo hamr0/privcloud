@@ -109,26 +109,24 @@ Dedicated always-on machine running Immich + music streaming + file management +
 
   -- Services --
   6)  Manage firewall                       ← status, add/remove ports, defaults
-  7)  Manage services                       ← unified laptop + server, start/stop/restart
-  8)  Setup backups + disk monitoring
-  9)  Configure log rotation
+  7)  Manage services                       ← unified laptop + server, start/stop/restart, deploy + log rotation
 
   -- Extras (optional, run anytime) --
-  10) Manage Tailscale                      ← install, status, up/down
-  11) Manage WireGuard                      ← install, peers, QR, remove
-  12) Manage AdGuard                        ← install DNS ad blocker, uses Tailscale
-  13) Manage storage                        ← USB drives, media/data/Immich paths
-  14) Manage Syncthing                      ← real-time bidirectional file sync
-  15) Manage remote desktop                 ← install, access XFCE via RDP
+  8)  Manage Tailscale                      ← install, status, up/down
+  9)  Manage WireGuard                      ← install, peers, QR, remove
+  10) Manage AdGuard                        ← install DNS ad blocker, uses Tailscale
+  11) Manage storage                        ← USB drives, media/data/Immich paths
+  12) Manage Syncthing                      ← real-time bidirectional file sync
+  13) Manage remote desktop                 ← install, access XFCE via RDP
 
   -- Immich photo management --
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools --
-  16) Manage sync                          ← transfer, schedule (cron or timer), edit jobs
-  17) Save to pass                        ← from laptop, backup everything to pass
+  14) Manage sync and backups               ← sync jobs, Immich DB backup, disk-space monitor
+  15) Save to pass                          ← from laptop, backup everything to pass
 
-  s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-9)   0)  Exit
+  s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-7)   0)  Exit
 ```
 
 **Wizard exits:** inside any option, press `0` in a numbered menu or type `q` at a text prompt to drop back to this main menu. No need for Ctrl+C.
@@ -644,7 +642,7 @@ After setup, enter BIOS (F10 on HP) and set **After Power Loss → Power On**. N
 
 ## Service setup
 
-After step 9, configure each service in your browser. Run `federver` → **s** for URLs.
+After step 7 (services deploy), configure each service in your browser. Run `federver` → **s** for URLs.
 
 ### Immich (port 2283)
 
@@ -745,9 +743,9 @@ Each device that needs remote access needs Tailscale installed and logged into t
 
 Tailscale only routes traffic to your server — it does NOT route all their internet through a VPN. Normal browsing, apps, everything else goes through their regular connection.
 
-### Submenu (`federver` → 10 after install)
+### Submenu (`federver` → 8 after install)
 
-Re-running option 10 from the laptop once both sides are installed shows a unified status (laptop IP + server IP/hostname) and a both-sides management submenu:
+Re-running option 8 from the laptop once both sides are installed shows a unified status (laptop IP + server IP/hostname) and a both-sides management submenu:
 
 1. **Refresh status** — both sides
 2. **Connect both** — `tailscale up` on laptop + server
@@ -756,7 +754,7 @@ Re-running option 10 from the laptop once both sides are installed shows a unifi
 5. **Re-authenticate server** — SSHes to server and runs `tailscale up` with a new login URL
 6. **Uninstall both** — removes Tailscale from laptop + server. Typed-name confirmation. Phones untouched.
 
-When run directly on the server, option 10 opens a server-only submenu instead.
+When run directly on the server, option 8 opens a server-only submenu instead.
 
 ---
 
@@ -853,7 +851,7 @@ Network-wide DNS ad and tracker blocker. Runs in Docker on the server, catches a
 
 The step flow:
 
-1. **Tailscale pre-check.** If Tailscale isn't installed, the step stops and offers to send you to step 10 first (recommended) or continue anyway for manual per-device DNS.
+1. **Tailscale pre-check.** If Tailscale isn't installed, the step stops and offers to send you to step 8 first (recommended) or continue anyway for manual per-device DNS.
 2. **systemd-resolved cleanup.** Fedora binds port 53 to `systemd-resolved`'s stub listener by default. The step explains exactly what it's going to change (`DNSStubListener=no` drop-in, `resolv.conf` symlink, `systemd-resolved` restart) and asks `Disable the stub listener and continue? [Y/n]` before touching anything. Local name resolution keeps working afterward — just not on port 53.
 3. **Firewall.** Opens 53/udp, 53/tcp, 80/tcp.
 4. **Minimal config pre-seed.** Writes a three-line `/opt/adguard/conf/AdGuardHome.yaml` that sets `http.address: 0.0.0.0:80`. AdGuard's own first-run wizard then runs on port 80 instead of its hardcoded default of port 3000 — so there's no port-3000 detour.
@@ -916,7 +914,7 @@ Click **Apply** at the bottom. Three independent providers (Cloudflare, Quad9, G
 
 ## Syncthing real-time folder sync
 
-Continuous bidirectional file sync between devices. Peer-to-peer — no central cloud, changes propagate in seconds. Good for folders you actively edit on multiple devices (notes, code, documents, obsidian vault). Complements Manage sync (`federver` → 16), which handles one-shot transfers and scheduled jobs; Syncthing is always-on.
+Continuous bidirectional file sync between devices. Peer-to-peer — no central cloud, changes propagate in seconds. Good for folders you actively edit on multiple devices (notes, code, documents, obsidian vault). Complements Manage sync (`federver` → 14), which handles one-shot transfers and scheduled jobs; Syncthing is always-on.
 
 ### What it's good for
 
@@ -925,7 +923,7 @@ Continuous bidirectional file sync between devices. Peer-to-peer — no central 
 - **Code drafts** — small repos you're hacking on from multiple machines
 - **Photos from camera SD** — drop in a folder, server auto-picks them up
 
-Not the tool for: photo backup (use Immich), music library (use Navidrome), or one-shot transfers (use Manage sync, option 16).
+Not the tool for: photo backup (use Immich), music library (use Navidrome), or one-shot transfers (use Manage sync, option 14).
 
 ### Install
 
@@ -1017,9 +1015,9 @@ No port forwarding, no DDNS, no VPN required. Device IDs are location-independen
 
 First visit to each dashboard prompts you to set a GUI username and password. Set them — both web UIs are reachable from the LAN (and over Tailscale), so they need credentials. After that, run `federver → 17 (Save to pass)` to back up the server's `device_id`, `config.xml`, `cert.pem`, and `key.pem` into `pass`. The cert/key pair is the node's cryptographic identity — losing it means re-pairing every client.
 
-### Submenu (`federver` → 14 after install)
+### Submenu (`federver` → 12 after install)
 
-Re-running option 14 from the laptop once both sides are installed opens a unified submenu that **controls both laptop and server together**:
+Re-running option 12 from the laptop once both sides are installed opens a unified submenu that **controls both laptop and server together**:
 
 1. **Refresh status** — both sides: laptop service state + server container state, both dashboard URLs, both Device IDs
 2. **Show Device IDs** — laptop + server IDs for pairing new clients
@@ -1031,13 +1029,13 @@ Re-running option 14 from the laptop once both sides are installed opens a unifi
 8. **Logs (server)** — `docker logs -f syncthing` via SSH
 9. **Uninstall both** — removes from laptop (`dnf remove`) + server (container + firewall). Typed-name confirm. Config kept on both sides.
 
-When run directly on the server, option 14 opens a server-only submenu instead.
+When run directly on the server, option 12 opens a server-only submenu instead.
 
 ### Troubleshooting
 
 - **Devices don't discover each other on LAN** — port 21027/udp blocked somewhere. Check firewall on both sides.
 - **Sync is slow from off-site** — check Syncthing dashboard → peer details. If the connection shows "Relay" it's using Syncthing's public relays (slower, bandwidth-limited). If both peers are on Tailscale, the tailnet connection should be direct — check Tailscale is up on both sides.
-- **Device ID unavailable** — container still starting up or Syncthing 2.x CLI couldn't be read. Wait 10 seconds and re-run option 14 → 2. The helper tries several CLI shapes and falls back to reading `config.xml` directly.
+- **Device ID unavailable** — container still starting up or Syncthing 2.x CLI couldn't be read. Wait 10 seconds and re-run option 12 → 2. The helper tries several CLI shapes and falls back to reading `config.xml` directly.
 - **"Remote expects to exchange plain data, but local data is encrypted"** — Folder Type mismatch. One side set `Receive Encrypted`, the other didn't set an encryption password. Either set a password on the trusted side's Sharing tab, or change the untrusted side's Folder Type to `Send & Receive`.
 - **Forgot the GUI password** — stop the container (`federver → 14 → 6`), delete `/opt/syncthing/config/config.xml`, restart. Regenerates clean. Pairings are lost (they lived in config.xml).
 
@@ -1060,7 +1058,7 @@ When run directly on the server, option 14 opens a server-only submenu instead.
 
 ### When to use it vs Syncthing
 
-| | Manage sync (option 16) | Syncthing (option 14) |
+| | Manage sync (option 14) | Syncthing (option 12) |
 |---|---|---|
 | **Mode** | One-shot, cron, or systemd timer | Always-on real-time |
 | **Direction** | One-way per transfer | Bidirectional |
@@ -1146,8 +1144,8 @@ pass show privcloud/ssh/private_key        # SSH key
 
 ### Daily (automated)
 
-- **Hourly** — Disk space check (alerts if any mount exceeds 85%)
-- **3:00am** — Immich database backup (cron)
+- **Every 5 min** — Disk space heartbeat to Uptime Kuma (alerts if any mount exceeds 85%)
+- **3:00am daily or weekly** — Immich database backup (systemd timer, set up via `federver` → 14 → 5)
 - **4:00am** — Watchtower checks for container updates
 
 ### Monitoring
@@ -1157,7 +1155,7 @@ pass show privcloud/ssh/private_key        # SSH key
 | Service health | Uptime Kuma monitors | `http://<server-ip>:3001` |
 | Server online | Ping monitor in Uptime Kuma | Type: Ping → server IP |
 | Disk space | Every-5-min cron + Kuma Push | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
-| Backup status | Check log | `cat /var/log/immich-backup.log` |
+| Backup status | Last runs table | `federver` → 14 → 1 (or `cat /var/log/immich-backup.log`) |
 | Container errors | `privcloud status` | Shows recent errors per container |
 
 **Uptime Kuma monitors to add:**
@@ -1171,7 +1169,9 @@ pass show privcloud/ssh/private_key        # SSH key
 
 Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 
-**Disk space alert:** Step 8 in `federver` sets this up automatically. It walks you through creating a Push monitor in Uptime Kuma (Heartbeat Interval `360`, Retry Interval `60`, Max Retries `2`), you paste the URL back into the terminal, and it installs `/usr/local/bin/disk-check.sh` with a 5-minute cron. The script sends `status=up` when all mounts are under 85%, or `status=down` when any mount exceeds 85%. The first heartbeat is sent immediately at install time so the Kuma monitor goes green before you even leave the step. Uptime Kuma then alerts you via Telegram/email if configured.
+**Disk space alert:** `federver` → 14 → 6 sets this up. It walks you through creating a Push monitor in Uptime Kuma (Heartbeat Interval `360`, Retry Interval `60`, Max Retries `2`), you paste the URL back into the terminal, and it installs `/usr/local/bin/disk-check.sh` with a 5-minute cron. The script sends `status=up` when all mounts are under 85%, or `status=down` when any mount exceeds 85%. The first heartbeat is sent immediately at install time so the Kuma monitor goes green before you even leave the step. Uptime Kuma then alerts you via Telegram/email if configured. **If you skip the Kuma URL prompt the wizard installs nothing** — earlier versions installed the cron line anyway, leaving a silently-dead monitor.
+
+**Immich DB backup:** `federver` → 14 → 5 sets up a systemd timer (not cron) that runs `pg_dumpall` daily at 3am (keeps 7 days) or weekly (keeps 3 weeks of dumps), with `Persistent=true` so a missed run after server-off catches up at boot, and `Restart=on-failure` for 3 retries 30 min apart. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. The dumps are plain `.sql.gz` — `gunzip | psql` to restore.
 
 ### Periodic (manual)
 
@@ -1185,7 +1185,7 @@ Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 | Check disk space | `df -h` | Monthly |
 | Check disk alerts | `cat /var/log/disk-check.log` | After alerts |
 | Check backup logs | `cat /var/log/immich-backup.log` | After issues |
-| Manage sync | `federver` → **16** (from laptop) | As needed |
+| Manage sync and backups | `federver` → **14** (from laptop) | As needed |
 
 ### Kernel updates
 

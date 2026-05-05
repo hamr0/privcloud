@@ -69,26 +69,24 @@ On the **laptop** (full menu):
 
   -- Services --
   6)  Manage firewall                       ← status, add/remove ports, defaults
-  7)  Manage services                       ← unified laptop + server, start/stop/restart
-  8)  Setup backups + disk monitoring
-  9)  Configure log rotation
+  7)  Manage services                       ← unified laptop + server, start/stop/restart, deploy + log rotation
 
   -- Extras (optional, run anytime) --
-  10) Manage Tailscale                      ← install, status, up/down
-  11) Manage WireGuard                      ← install, peers, QR, remove
-  12) Manage AdGuard                        ← install DNS ad blocker, uses Tailscale
-  13) Manage storage                        ← USB drives, media/data/Immich paths
-  14) Manage Syncthing                      ← real-time bidirectional file sync
-  15) Manage remote desktop                 ← install, access XFCE via RDP
+  8)  Manage Tailscale                      ← install, status, up/down
+  9)  Manage WireGuard                      ← install, peers, QR, remove
+  10) Manage AdGuard                        ← install DNS ad blocker, uses Tailscale
+  11) Manage storage                        ← USB drives, media/data/Immich paths
+  12) Manage Syncthing                      ← real-time bidirectional file sync
+  13) Manage remote desktop                 ← install, access XFCE via RDP
 
   -- Immich photo management --
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools --
-  16) Manage sync                           ← transfer, schedule (cron or systemd timer), edit jobs
-  17) Save to pass                          ← backup everything to pass
+  14) Manage sync and backups               ← sync jobs, Immich DB backup, disk-space monitor
+  15) Save to pass                          ← backup everything to pass
 
-  s) Status  i) Immich  p) Power  r) Reset password  a) Run all (3-9)  0) Exit
+  s) Status  i) Immich  p) Power  r) Reset password  a) Run all (3-7)  0) Exit
 ```
 
 On the **server** (reduced — bootstrap, status, power only):
@@ -160,9 +158,10 @@ Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
 | Update all containers | `docker compose pull && docker compose up -d` |
 | Update system | `sudo dnf upgrade` |
 | Remote desktop | RDP client → server IP port 3389 |
-| Backup | `privcloud backup` or `sudo /usr/local/bin/immich-backup.sh` |
+| Backup | `privcloud backup` or `sudo systemctl start immich-backup.service` |
+| Schedule backup | `federver` → **14** → **5** (Setup Immich backup) |
 | Disk alerts | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
-| Backup to pass | `federver` → **17** (from laptop) |
+| Backup to pass | `federver` → **15** (from laptop) |
 | Reset password | `federver` → **r** (FileBrowser, Immich, Navidrome, Uptime Kuma) |
 | Shutdown | `federver` → **p** |
 

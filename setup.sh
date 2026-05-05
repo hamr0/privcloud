@@ -1,6 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.4.0"
+FEDERVER_VERSION="0.5.0"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.
@@ -227,25 +227,23 @@ _show_laptop_menu() {
     echo -e "  ${DIM}-- Services --${NC}"
     echo -e "  ${BOLD}6)${NC}  Manage firewall                     ${DIM}← status, add/remove ports, defaults${NC}"
     echo -e "  ${BOLD}7)${NC}  Manage services                     ${DIM}← deploy, status, start/stop/restart, logs${NC}"
-    echo -e "  ${BOLD}8)${NC}  Setup backups + disk monitoring"
-    echo -e "  ${BOLD}9)${NC}  Configure log rotation"
     echo ""
     echo -e "  ${DIM}-- Extras (optional, run anytime) --${NC}"
-    echo -e "  ${BOLD}10)${NC} Manage Tailscale                    ${DIM}← install, status, up/down${NC}"
-    echo -e "  ${BOLD}11)${NC} Manage WireGuard                    ${DIM}← install, peers, QR, remove${NC}"
-    echo -e "  ${BOLD}12)${NC} Manage AdGuard                      ${DIM}← install DNS ad blocker, uses Tailscale${NC}"
-    echo -e "  ${BOLD}13)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
-    echo -e "  ${BOLD}14)${NC} Manage Syncthing                    ${DIM}← real-time bidirectional file sync${NC}"
-    echo -e "  ${BOLD}15)${NC} Manage remote desktop               ${DIM}← install, access XFCE via RDP${NC}"
+    echo -e "  ${BOLD}8)${NC}  Manage Tailscale                    ${DIM}← install, status, up/down${NC}"
+    echo -e "  ${BOLD}9)${NC}  Manage WireGuard                    ${DIM}← install, peers, QR, remove${NC}"
+    echo -e "  ${BOLD}10)${NC} Manage AdGuard                      ${DIM}← install DNS ad blocker, uses Tailscale${NC}"
+    echo -e "  ${BOLD}11)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
+    echo -e "  ${BOLD}12)${NC} Manage Syncthing                    ${DIM}← real-time bidirectional file sync${NC}"
+    echo -e "  ${BOLD}13)${NC} Manage remote desktop               ${DIM}← install, access XFCE via RDP${NC}"
     echo ""
     echo -e "  ${DIM}-- Immich photo management --${NC}"
     echo -e "  ${BOLD}i)${NC}  Immich (privcloud)                  ${DIM}← start/stop/status/update/backup${NC}"
     echo ""
     echo -e "  ${DIM}-- Tools --${NC}"
-    echo -e "  ${BOLD}16)${NC} Manage sync                         ${DIM}← transfer, schedule, cron jobs${NC}"
-    echo -e "  ${BOLD}17)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
+    echo -e "  ${BOLD}14)${NC} Manage sync and backups             ${DIM}← sync jobs, Immich backup, disk monitor${NC}"
+    echo -e "  ${BOLD}15)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
     echo ""
-    echo -e "  ${BOLD}s)${NC}  Status     ${BOLD}i)${NC}  Immich     ${BOLD}p)${NC}  Power     ${BOLD}r)${NC}  Reset password     ${BOLD}a)${NC}  Run all (3-9)     ${BOLD}0)${NC}  Exit"
+    echo -e "  ${BOLD}s)${NC}  Status     ${BOLD}i)${NC}  Immich     ${BOLD}p)${NC}  Power     ${BOLD}r)${NC}  Reset password     ${BOLD}a)${NC}  Run all (3-7)     ${BOLD}0)${NC}  Exit"
     echo ""
 }
 
@@ -1197,10 +1195,10 @@ _services_status() {
     local all_names
     all_names=$(echo "$CONTAINERS" | cut -d'|' -f1)
     if ! echo "$all_names" | grep -q '^adguard$'; then
-        echo -e "    ${RED}✗${NC} $(printf '%-24s' "adguard")  ${RED}not created${NC} ${DIM}(install: federver → 12)${NC}"
+        echo -e "    ${RED}✗${NC} $(printf '%-24s' "adguard")  ${RED}not created${NC} ${DIM}(install: federver → 10)${NC}"
     fi
     if ! echo "$all_names" | grep -q '^syncthing$'; then
-        echo -e "    ${RED}✗${NC} $(printf '%-24s' "syncthing")  ${RED}not created${NC} ${DIM}(install: federver → 14)${NC}"
+        echo -e "    ${RED}✗${NC} $(printf '%-24s' "syncthing")  ${RED}not created${NC} ${DIM}(install: federver → 12)${NC}"
     fi
 
     echo ""
@@ -1322,11 +1320,11 @@ _services_action() {
         case "$target" in
             syncthing)
                 warn "Syncthing has a laptop + server instance."
-                info "Use ${BOLD}federver → 14${NC} to ${action} both sides."
+                info "Use ${BOLD}federver → 12${NC} to ${action} both sides."
                 return 0
                 ;;
             adguard)
-                info "Use ${BOLD}federver → 12${NC} to manage AdGuard."
+                info "Use ${BOLD}federver → 10${NC} to manage AdGuard."
                 return 0
                 ;;
         esac
@@ -1602,8 +1600,8 @@ _unified_service_picker() {
     # Handle "not created" containers
     if [[ "$state_text" == "not created" ]]; then
         case "$cname" in
-            adguard)   warn "Container doesn't exist. Use ${BOLD}federver → 12${NC} to install it." ;;
-            syncthing) warn "Container doesn't exist. Use ${BOLD}federver → 14${NC} to install it." ;;
+            adguard)   warn "Container doesn't exist. Use ${BOLD}federver → 10${NC} to install it." ;;
+            syncthing) warn "Container doesn't exist. Use ${BOLD}federver → 12${NC} to install it." ;;
             *)         warn "Container '$cname' doesn't exist." ;;
         esac
         return 0
@@ -1768,6 +1766,11 @@ step_deploy() {
     echo ""
     echo -e "  See README or run ${BOLD}s)${NC} for full setup details."
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    # Docker container log rotation — disk-fill prevention. Idempotent: the
+    # function no-ops when daemon.json already has max-size set.
+    echo ""
+    step_logrotation
 }
 
 # Read a single KEY from .env without sourcing the file. `source` trips
@@ -2048,7 +2051,7 @@ _syncthing_install() {
     echo ""
     echo -e "  ${DIM}First-time server dashboard visit will prompt for GUI username${NC}"
     echo -e "  ${DIM}+ password — set them (the UI is LAN-reachable). After that,${NC}"
-    echo -e "  ${DIM}run federver → 17 (Save to pass) to back up the device identity${NC}"
+    echo -e "  ${DIM}run federver → 15 (Save to pass) to back up the device identity${NC}"
     echo -e "  ${DIM}— losing cert.pem/key.pem means re-pairing every client.${NC}"
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
@@ -2118,7 +2121,7 @@ _syncthing_start_both() {
     # ssh -t for sudo TTY. NOT inside $() — that captures the prompt.
     ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=unless-stopped syncthing >/dev/null 2>&1; sudo docker start syncthing >/dev/null 2>&1" \
         && ok "Server: started." \
-        || { warn "Server: failed to start."; info "If container has bad config: federver → 14 to reinstall."; }
+        || { warn "Server: failed to start."; info "If container has bad config: federver → 12 to reinstall."; }
 }
 
 _syncthing_restart_both() {
@@ -2950,14 +2953,14 @@ step_adguard() {
         echo -e "  which is fragile on Linux (IPv6 RA leaks) and iOS (Private Relay)."
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo ""
-        echo -e "  ${BOLD}1)${NC} Cancel and install Tailscale first (step 10)  ${DIM}← recommended${NC}"
+        echo -e "  ${BOLD}1)${NC} Cancel and install Tailscale first (step 8)   ${DIM}← recommended${NC}"
         echo -e "  ${BOLD}2)${NC} Continue anyway (I'll set DNS manually per device)"
         echo -e "  ${BOLD}0)${NC} Back"
         echo ""
         read -p "  Choose [1/2/0]: " ts_choice
         case "$ts_choice" in
             2) info "Continuing without Tailscale — manual per-device DNS on you." ;;
-            *) info "Cancelled. Run step 10 to install Tailscale, then come back."; return 0 ;;
+            *) info "Cancelled. Run step 8 to install Tailscale, then come back."; return 0 ;;
         esac
         echo ""
     fi
@@ -3099,8 +3102,8 @@ ADGUARDEOF
         echo -e "    ${BOLD}Query Log${NC} tab — you should see entries streaming in."
         echo ""
         echo -e "  ${BOLD}Real rollout (all devices, at home + roaming):${NC}"
-        echo -e "    1. Run ${BOLD}federver → 10${NC} to install Tailscale"
-        echo -e "    2. Re-run ${BOLD}federver → 12${NC} — this time it'll detect Tailscale"
+        echo -e "    1. Run ${BOLD}federver → 8${NC} to install Tailscale"
+        echo -e "    2. Re-run ${BOLD}federver → 10${NC} — this time it'll detect Tailscale"
         echo -e "       and print the admin-console steps to route every tailnet device"
         echo -e "       through AdGuard in one shot."
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -3216,53 +3219,142 @@ _adguard_dns_upstream_guide() {
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
-step_backup() {
-    info "Creates a daily cron job to back up the Immich database."
+step_immich_backup() {
+    info "Schedules a Postgres dump of the Immich DB."
     info "The DB contains your albums, face data, and metadata — hard to recreate."
+    info "Photo files themselves live in UPLOAD_LOCATION; back them up via Manage sync."
     echo ""
 
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local DB_DATA_LOCATION
+    local DB_DATA_LOCATION default_dir
     DB_DATA_LOCATION=$(_env_get DB_DATA_LOCATION "$SCRIPT_DIR/.env")
+    default_dir="${DB_DATA_LOCATION:-/home/$SERVER_USER/data/immich/postgres}/../backups"
+    default_dir=$(realpath -m "$default_dir")
 
-    BACKUP_DIR="${DB_DATA_LOCATION:-/home/$SERVER_USER/data/immich/postgres}/../backups"
+    read -p "  Backup destination [${default_dir}, q=back]: " BACKUP_DIR
+    [[ "$BACKUP_DIR" == "q" ]] && return 2
+    BACKUP_DIR="${BACKUP_DIR:-$default_dir}"
     BACKUP_DIR=$(realpath -m "$BACKUP_DIR")
     sudo mkdir -p "$BACKUP_DIR"
 
+    echo ""
+    echo -e "  ${BOLD}Cadence:${NC}"
+    echo -e "    ${BOLD}1)${NC} Daily at 3am          ${DIM}← keeps last 7 days${NC}"
+    echo -e "    ${BOLD}2)${NC} Weekly                ${DIM}← keeps last 3 weeks${NC}"
+    echo -e "    ${BOLD}0)${NC} Back"
+    echo ""
+    local cadence oncal retention_days
+    read -p "  Choice [0-2]: " cadence
+    case $cadence in
+        0|"") return 2 ;;
+        1) oncal="*-*-* 03:00:00"; retention_days=7 ;;
+        2)
+            echo ""
+            echo -e "  ${BOLD}Which day?${NC}"
+            echo -e "    ${BOLD}1)${NC} Sunday  ${BOLD}2)${NC} Monday  ${BOLD}3)${NC} Saturday"
+            echo -e "    ${BOLD}0)${NC} Back"
+            echo ""
+            local day; read -p "  Choice [0-3]: " day
+            case $day in
+                0|"") return 2 ;;
+                1) oncal="Sun *-*-* 03:00:00" ;;
+                2) oncal="Mon *-*-* 03:00:00" ;;
+                3) oncal="Sat *-*-* 03:00:00" ;;
+                *) fail "Invalid choice."; return 1 ;;
+            esac
+            retention_days=21   # 3 weeks of weekly dumps
+            ;;
+        *) fail "Invalid choice."; return 1 ;;
+    esac
+
+    # Tear down the legacy step-8 cron line if it exists, so we don't double-run.
+    if sudo crontab -l 2>/dev/null | grep -q immich-backup; then
+        info "Removing legacy cron entry (replaced by systemd timer)..."
+        (sudo crontab -l 2>/dev/null | grep -v immich-backup) | sudo crontab -
+    fi
+
+    # Install/refresh the script. Logs go to /var/log/immich-backup.log so the
+    # Last-runs table parser keeps working unchanged.
     sudo tee /usr/local/bin/immich-backup.sh > /dev/null <<'BACKUPEOF'
 #!/bin/bash
 BACKUP_DIR="__BACKUP_DIR__"
+RETENTION_DAYS=__RETENTION__
+LOG="/var/log/immich-backup.log"
+exec >>"$LOG" 2>&1
+
 TIMESTAMP=$(date +%Y%m%d-%H%M)
 mkdir -p "$BACKUP_DIR"
-docker exec immich_postgres pg_dumpall -U postgres | gzip > "$BACKUP_DIR/immich-db-$TIMESTAMP.sql.gz"
-find "$BACKUP_DIR" -name "immich-db-*.sql.gz" -mtime +7 -delete
-echo "$(date): Backup complete → $BACKUP_DIR/immich-db-$TIMESTAMP.sql.gz"
+if docker exec immich_postgres pg_dumpall -U postgres | gzip > "$BACKUP_DIR/immich-db-$TIMESTAMP.sql.gz"; then
+    find "$BACKUP_DIR" -name "immich-db-*.sql.gz" -mtime +"$RETENTION_DAYS" -delete
+    echo "$(date): Backup complete → $BACKUP_DIR/immich-db-$TIMESTAMP.sql.gz"
+    exit 0
+else
+    rc=$?
+    rm -f "$BACKUP_DIR/immich-db-$TIMESTAMP.sql.gz"
+    echo "$(date): Backup FAILED (exit $rc) — systemd will retry"
+    exit "$rc"
+fi
 BACKUPEOF
-
-    sudo sed -i "s|__BACKUP_DIR__|$BACKUP_DIR|g" /usr/local/bin/immich-backup.sh
+    sudo sed -i "s|__BACKUP_DIR__|$BACKUP_DIR|g; s|__RETENTION__|$retention_days|g" /usr/local/bin/immich-backup.sh
     sudo chmod +x /usr/local/bin/immich-backup.sh
 
-    (sudo crontab -l 2>/dev/null | grep -v immich-backup; echo "0 3 * * * /usr/local/bin/immich-backup.sh >> /var/log/immich-backup.log 2>&1") | sudo crontab -
+    # systemd unit: Type=oneshot with Restart=on-failure gives us 3 retries
+    # ~30 min apart. Persistent=true on the timer catches up missed runs after
+    # a server-off window — the key gain over cron.
+    sudo tee /etc/systemd/system/immich-backup.service > /dev/null <<'UNITEOF'
+[Unit]
+Description=Immich Postgres backup
+Wants=docker.service
+After=docker.service
 
-    ok "Daily backup configured:"
-    echo -e "    Time:     ${BOLD}3am daily${NC}"
-    echo -e "    Location: ${BOLD}$BACKUP_DIR${NC}"
-    echo -e "    Keeps:    ${BOLD}last 7 days${NC}"
-    echo ""
-    info "Run manually: sudo /usr/local/bin/immich-backup.sh"
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/immich-backup.sh
+Restart=on-failure
+RestartSec=30min
+StartLimitBurst=3
+StartLimitIntervalSec=3h
+UNITEOF
 
-    # ── Disk space monitoring ──
+    sudo tee /etc/systemd/system/immich-backup.timer > /dev/null <<TIMEREOF
+[Unit]
+Description=Immich Postgres backup schedule
+
+[Timer]
+OnCalendar=${oncal}
+Persistent=true
+RandomizedDelaySec=15min
+
+[Install]
+WantedBy=timers.target
+TIMEREOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now immich-backup.timer >/dev/null
+
     echo ""
-    echo -e "  ${BOLD}Disk space monitor${NC}"
-    info "Alerts when disk usage exceeds 85%."
+    ok "Immich backup configured (systemd timer):"
+    echo -e "    Schedule:   ${BOLD}${oncal}${NC}"
+    echo -e "    Destination: ${BOLD}$BACKUP_DIR${NC}"
+    echo -e "    Retention:  ${BOLD}${retention_days} days${NC}"
+    echo -e "    Persistent: ${BOLD}yes${NC} ${DIM}(catches up missed runs)${NC}"
+    echo -e "    On failure: ${BOLD}3 retries 30min apart${NC}"
+    echo ""
+    info "Run manually:  sudo systemctl start immich-backup.service"
+    info "Check status:  systemctl status immich-backup.timer"
+    info "View log:      sudo tail /var/log/immich-backup.log"
+}
+
+step_disk_monitor() {
+    info "Configures a 5-minute heartbeat to your Uptime Kuma 'Disk Space' monitor."
+    info "Without a Push URL the monitor stays dead — skip cleanly if Kuma isn't set up yet."
     echo ""
 
-    # ── Uptime Kuma push URL ──
     local IP
     IP=$(hostname -I | awk '{print $1}')
-    echo ""
+
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${YELLOW}ACTION NEEDED — Uptime Kuma disk alert${NC}"
+    echo -e "  ${YELLOW}Set up the Kuma monitor first${NC}"
     echo ""
     echo -e "  1. Open ${BLUE}http://$IP:3001${NC}"
     echo -e "  2. Add New Monitor → Monitor Type: ${BOLD}Push${NC}"
@@ -3273,10 +3365,21 @@ BACKUPEOF
     echo -e "  7. Click ${BOLD}Save${NC}, then copy the ${BOLD}Push URL${NC} from the monitor page"
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    read -p "  Paste the Push URL here (or Enter to skip): " push_url
+    read -p "  Paste the Push URL (q=back, Enter=skip): " push_url
+    [[ "$push_url" == "q" ]] && return 2
 
-    if [[ -n "$push_url" ]]; then
-        sudo tee /usr/local/bin/disk-check.sh > /dev/null <<DISKEOF
+    if [[ -z "$push_url" ]]; then
+        # Don't install a half-broken state. If a stale install exists, remove it.
+        if sudo crontab -l 2>/dev/null | grep -q disk-check; then
+            warn "Removing existing disk-check cron — no Kuma URL provided."
+            (sudo crontab -l 2>/dev/null | grep -v 'disk-check') | sudo crontab -
+            sudo rm -f /usr/local/bin/disk-check.sh
+        fi
+        info "Skipped. Re-run when you have a Kuma Push URL."
+        return 0
+    fi
+
+    sudo tee /usr/local/bin/disk-check.sh > /dev/null <<DISKEOF
 #!/bin/bash
 THRESHOLD=85
 LOG="/var/log/disk-check.log"
@@ -3299,39 +3402,13 @@ else
     curl -s "\$PUSH_URL?status=up&msg=OK" > /dev/null 2>&1
 fi
 DISKEOF
-        ok "Disk monitor with Uptime Kuma alerts configured."
-    else
-        sudo tee /usr/local/bin/disk-check.sh > /dev/null <<'DISKEOF'
-#!/bin/bash
-THRESHOLD=85
-LOG="/var/log/disk-check.log"
-
-for mount in / /home /mnt/data; do
-    if mountpoint -q "$mount" 2>/dev/null || [ "$mount" = "/" ]; then
-        USAGE=$(df "$mount" 2>/dev/null | awk 'NR==2 {gsub("%",""); print $5}')
-        if [ -n "$USAGE" ] && [ "$USAGE" -gt "$THRESHOLD" ]; then
-            echo "$(date): WARNING — $mount is ${USAGE}% full" >> "$LOG"
-        fi
-    fi
-done
-DISKEOF
-        ok "Disk monitor configured (log only, no Kuma alerts)."
-        info "Run step 11 again to add Kuma alerts later."
-    fi
-
     sudo chmod +x /usr/local/bin/disk-check.sh
 
-    # Install (or migrate) the cron job — every 5 minutes. Drops any existing
-    # disk-check line so re-running step 8 upgrades old hourly installs.
     (sudo crontab -l 2>/dev/null | grep -v 'disk-check'; echo "*/5 * * * * /usr/local/bin/disk-check.sh") | sudo crontab -
 
-    # Fire it once immediately so the Kuma monitor turns green straight away
-    # instead of waiting up to 5 minutes for the first cron tick.
-    if [[ -n "$push_url" ]]; then
-        info "Sending first heartbeat to Kuma..."
-        sudo /usr/local/bin/disk-check.sh && ok "Heartbeat sent — Kuma monitor should be green."
-    fi
-
+    info "Sending first heartbeat to Kuma..."
+    sudo /usr/local/bin/disk-check.sh && ok "Heartbeat sent — Kuma monitor should turn green within ~6 min."
+    echo ""
     ok "Disk space check runs every 5 minutes (alerts above 85%)."
     info "Check log: cat /var/log/disk-check.log"
 }
@@ -3825,8 +3902,8 @@ _sync_change_schedule() {
 _sync_show_status() {
     # Fetch server-side crons FIRST (may prompt for sudo password) so the
     # password prompt appears before any table rendering.
-    local server_crons=""
-    info "Fetching server cron jobs..."
+    local server_crons="" server_timer_oncal=""
+    info "Fetching server scheduled tasks..."
     ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
     server_crons=$(ssh "$SERVER_USER@$SERVER_IP" 'sudo crontab -l 2>/dev/null' 2>/dev/null) || true
     if [[ -z "$server_crons" ]] || ! echo "$server_crons" | grep -qE "immich-backup|disk-check"; then
@@ -3835,6 +3912,9 @@ _sync_show_status() {
             [[ -x /usr/local/bin/disk-check.sh ]]    && echo "*/5 * * * * /usr/local/bin/disk-check.sh"
         ' 2>/dev/null) || server_crons=""
     fi
+    # immich-backup migrated from cron to systemd timer (federver → 14 → 5).
+    # If the timer is present, prefer its OnCalendar over any legacy cron line.
+    server_timer_oncal=$(ssh "$SERVER_USER@$SERVER_IP" 'systemctl show immich-backup.timer -p OnCalendar --value 2>/dev/null' 2>/dev/null) || server_timer_oncal=""
 
     echo ""
     echo -e "  ${BOLD}Scheduled tasks${NC}"
@@ -3842,19 +3922,24 @@ _sync_show_status() {
     printf "  ${BOLD}%-20s %-18s %-16s %-10s %s${NC}\n" "Name" "Schedule" "When" "Type" "Note"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
+    # Render immich-backup from systemd timer if available, else fall back
+    # to the legacy cron line.
+    if [[ -n "$server_timer_oncal" ]]; then
+        printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$server_timer_oncal" "systemd" "backup" "(14 → 5)"
+    fi
     if [[ -n "$server_crons" ]]; then
         echo "$server_crons" | while IFS= read -r line; do
             [[ "$line" =~ ^#|^$ ]] && continue
-            if echo "$line" | grep -q "immich-backup"; then
+            if echo "$line" | grep -q "immich-backup" && [[ -z "$server_timer_oncal" ]]; then
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
                 when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$sched" "$when" "backup" "(step 8)"
+                printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$sched" "$when" "backup" "(14 → 5, legacy cron)"
             elif echo "$line" | grep -q "disk-check"; then
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
                 when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %s\n" "disk-check" "$sched" "$when" "monitor" "(step 8)"
+                printf "  %-20s %-18s %-16s %-10s %s\n" "disk-check" "$sched" "$when" "monitor" "(14 → 6)"
             fi
         done
     fi
@@ -3920,6 +4005,7 @@ _sync_show_status() {
 
     # Check outside subshells (pipe subshells can't propagate state)
     local has_server=false has_laptop=false
+    [[ -n "$server_timer_oncal" ]] && has_server=true
     [[ -n "$server_crons" ]] && echo "$server_crons" | grep -qE "immich-backup|disk-check" && has_server=true
     [[ -n "$laptop_crons" ]] && echo "$laptop_crons" | grep -q "sync-.*\.sh" && has_laptop=true
     $has_timer && has_laptop=true
@@ -4137,14 +4223,18 @@ step_manage_sync() {
     echo -e "  ${BOLD}2)${NC} New sync                  ${DIM}← transfer files, run now or schedule${NC}"
     echo -e "  ${BOLD}3)${NC} Edit sync job             ${DIM}← schedule, pause, run, log, delete${NC}"
     echo -e "  ${BOLD}4)${NC} Delete a sync job"
+    echo -e "  ${BOLD}5)${NC} Setup Immich backup       ${DIM}← daily/weekly Postgres dump, persistent timer${NC}"
+    echo -e "  ${BOLD}6)${NC} Setup disk-space monitor  ${DIM}← Kuma heartbeat every 5 min${NC}"
     echo -e "  ${BOLD}0)${NC} Back"
     echo ""
-    read -p "  Choice [0-4]: " sync_choice
+    read -p "  Choice [0-6]: " sync_choice
     case $sync_choice in
         1) _sync_show_status ;;
         2) step_sync ;;
         3) _sync_edit_job ;;
         4) _sync_delete_job ;;
+        5) _on_server step_immich_backup ;;
+        6) _on_server step_disk_monitor ;;
         0) return 2 ;;
         *) fail "Invalid choice." ;;
     esac
@@ -4855,9 +4945,7 @@ run_all() {
     step_autoupdates
     step_docker
     _fw_defaults
-    step_deploy
-    step_backup
-    step_logrotation
+    step_deploy   # now installs log rotation as its last step
 }
 
 step_reset_password() {
@@ -4994,21 +5082,19 @@ else
             5)  run_step "[5] Install Docker" "_on_server step_docker" ;;
             6)  run_step "[6] Manage firewall" "_on_server step_firewall" ;;
             7)  run_step "[7] Manage services" step_services_wrapper ;;
-            8)  run_step "[8] Setup backups + disk monitoring" "_on_server step_backup" ;;
-            9)  run_step "[9] Log rotation" "_on_server step_logrotation" ;;
-            10) run_step "[10] Manage Tailscale" step_tailscale ;;
-            11) run_step "[11] Manage WireGuard" "_on_server step_wireguard" ;;
-            12) run_step "[12] Manage AdGuard" "_on_server step_adguard" ;;
-            13) run_step "[13] Manage storage" "_on_server step_storage" ;;
-            14) run_step "[14] Manage Syncthing" step_syncthing ;;
-            15) run_step "[15] Manage remote desktop" "_on_server step_remotedesktop" ;;
-            16) run_step "[16] Manage sync" step_manage_sync ;;
-            17) run_step "[17] Save to pass" step_save_to_pass ;;
+            8)  run_step "[8] Manage Tailscale" step_tailscale ;;
+            9)  run_step "[9] Manage WireGuard" "_on_server step_wireguard" ;;
+            10) run_step "[10] Manage AdGuard" "_on_server step_adguard" ;;
+            11) run_step "[11] Manage storage" "_on_server step_storage" ;;
+            12) run_step "[12] Manage Syncthing" step_syncthing ;;
+            13) run_step "[13] Manage remote desktop" "_on_server step_remotedesktop" ;;
+            14) run_step "[14] Manage sync and backups" step_manage_sync ;;
+            15) run_step "[15] Save to pass" step_save_to_pass ;;
             s)  run_step "[s] Status" step_status ;;
             i)  run_step "[i] Immich (privcloud)" step_immich ;;
             p)  run_step "[p] Power" step_power ;;
             r)  run_step "[r] Reset password" "_on_server step_reset_password" ;;
-            a)  run_step "Run all (3-9)" "_on_server run_all" ;;
+            a)  run_step "Run all (3-7)" "_on_server run_all" ;;
             0)  echo "Bye."; exit 0 ;;
             *)  echo -e "  ${RED}Invalid choice.${NC}" ;;
         esac

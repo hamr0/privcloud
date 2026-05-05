@@ -3936,12 +3936,16 @@ _sync_show_status() {
     # emits at exit (see _sync_show_paths/sync script template).
     local server_runs=""
     if [[ "$has_server" == "true" ]]; then
+        # Logs are root-owned but mode 644 (default cron-redirect umask), so
+        # the unprivileged SSH user can read them. Avoid sudo here — this SSH
+        # has no tty, so sudo would silently fail and every row would render
+        # as "never" (false negative, masks real failures).
         server_runs=$(ssh "$SERVER_USER@$SERVER_IP" '
             for f in /var/log/immich-backup.log /var/log/disk-check.log; do
                 name=$(basename "$f" .log)
-                if sudo test -f "$f" && sudo test -s "$f"; then
-                    mtime=$(sudo stat -c "%y" "$f" | cut -c1-16)
-                    last=$(sudo tail -n 1 "$f")
+                if [[ -r "$f" && -s "$f" ]]; then
+                    mtime=$(stat -c "%y" "$f" | cut -c1-16)
+                    last=$(tail -n 1 "$f")
                     printf "%s|%s|%s\n" "$name" "$mtime" "$last"
                 else
                     printf "%s|never|\n" "$name"

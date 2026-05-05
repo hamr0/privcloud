@@ -1,5 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
+FEDERVER_VERSION="0.4.0"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.
@@ -178,9 +179,16 @@ step_emergency() {
 
 _show_menu_header() {
     clear
+    local where_color where_label
+    if _is_server; then
+        where_color="$YELLOW"; where_label="server"
+    else
+        where_color="$GREEN"; where_label="laptop"
+    fi
     echo ""
-    echo -e "${BOLD}========================================"
-    echo -e "  Federver — Fedora XFCE Server Manager"
+    echo -e "  ${BOLD}federver${NC} ${DIM}v${FEDERVER_VERSION}${NC} — Fedora XFCE Server Manager · ${where_color}${where_label}${NC}"
+    echo -e "  ${DIM}One box. Every service. No cloud overlords.${NC}"
+    echo -e "  ${BLUE}─────────────────────────────────────────────────${NC}"
     if [[ "$DRY_RUN" == "1" ]]; then
         echo -e "  ${YELLOW}DRY RUN${NC} ${DIM}— no commands will be executed${NC}"
     fi
@@ -196,9 +204,7 @@ show_menu() {
 
 _show_server_menu() {
     _show_menu_header
-    echo -e "  Running from: ${YELLOW}server${NC}"
     echo -e "  ${DIM}For the full menu, run ${BOLD}${YELLOW}\"federver\"${NC} ${DIM}from your laptop.${NC}"
-    echo -e "${BOLD}========================================${NC}"
     echo ""
     echo -e "  ${BOLD}1)${NC}  Enable SSH + auto-login + hostname  ${YELLOW}← bootstrap (needs monitor)${NC}"
     echo -e "  ${BOLD}s)${NC}  Status"
@@ -210,8 +216,6 @@ _show_server_menu() {
 
 _show_laptop_menu() {
     _show_menu_header
-    echo -e "  Running from: ${GREEN}laptop${NC}"
-    echo -e "${BOLD}========================================${NC}"
     echo ""
     echo -e "  ${YELLOW}-- Initial setup (run once, in order) --${NC}"
     echo -e "  ${BOLD}1)${NC}  Enable SSH + auto-login + hostname  ${YELLOW}← only step on server with monitor${NC}"
@@ -3922,6 +3926,89 @@ _sync_show_status() {
     if [[ "$has_server" == "false" && "$has_laptop" == "false" ]]; then
         echo ""
         info "No scheduled tasks found."
+        echo ""
+        return
+    fi
+
+    # ── Last runs ──
+    # Server jobs: one SSH call (sudo cached above) reads mtime + last line of
+    # each known log. Laptop jobs: parse the "Sync finished" marker the script
+    # emits at exit (see _sync_show_paths/sync script template).
+    local server_runs=""
+    if [[ "$has_server" == "true" ]]; then
+        server_runs=$(ssh "$SERVER_USER@$SERVER_IP" '
+            for f in /var/log/immich-backup.log /var/log/disk-check.log; do
+                name=$(basename "$f" .log)
+                if sudo test -f "$f" && sudo test -s "$f"; then
+                    mtime=$(sudo stat -c "%y" "$f" | cut -c1-16)
+                    last=$(sudo tail -n 1 "$f")
+                    printf "%s|%s|%s\n" "$name" "$mtime" "$last"
+                else
+                    printf "%s|never|\n" "$name"
+                fi
+            done
+        ' 2>/dev/null) || server_runs=""
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Last runs${NC}"
+    echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    printf "  ${BOLD}%-20s %-20s %s${NC}\n" "Name" "Last run" "Status"
+    echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+    if [[ -n "$server_runs" ]]; then
+        while IFS='|' read -r name when last; do
+            [[ -z "$name" ]] && continue
+            local status
+            if [[ "$name" == "disk-check" ]]; then
+                # disk-check log only grows on threshold breaches; absence of
+                # entries means healthy. Don't claim it as "last run time".
+                if [[ "$when" == "never" ]]; then
+                    when="—"
+                    status="${GREEN}✓ no alerts${NC}"
+                else
+                    status="${YELLOW}⚠ last alert above${NC}"
+                fi
+            elif [[ "$when" == "never" ]]; then
+                status="${DIM}—${NC}"
+            elif [[ "$name" == "immich-backup" ]]; then
+                if echo "$last" | grep -q "Backup complete"; then
+                    status="${GREEN}✓ ok${NC}"
+                else
+                    status="${YELLOW}? check log${NC}"
+                fi
+            else
+                status="${DIM}—${NC}"
+            fi
+            printf "  %-20s %-20s " "$name" "$when"
+            echo -e "$status"
+        done <<<"$server_runs"
+    fi
+
+    # Laptop sync jobs (cron + timer share the same log file path).
+    local log_dir="$HOME/.local/share/sync-jobs"
+    if [[ -d "$log_dir" ]]; then
+        local logf
+        for logf in "$log_dir"/*.log; do
+            [[ -f "$logf" ]] || continue
+            local jname when status last_finish exitc
+            jname=$(basename "$logf" .log)
+            last_finish=$(grep "Sync finished" "$logf" 2>/dev/null | tail -n 1)
+            if [[ -n "$last_finish" ]]; then
+                when=$(echo "$last_finish" | grep -oP '\[\K[^\]]+' | cut -c1-16)
+                exitc=$(echo "$last_finish" | grep -oP 'exit \K[0-9]+')
+                if [[ "$exitc" == "0" ]]; then
+                    status="${GREEN}✓ ok${NC}"
+                else
+                    status="${RED}✗ exit ${exitc}${NC}"
+                fi
+            else
+                when=$(date -d "@$(stat -c %Y "$logf")" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?")
+                status="${YELLOW}running?${NC}"
+            fi
+            printf "  %-20s %-20s " "$jname" "$when"
+            echo -e "$status"
+        done
     fi
 
     echo ""

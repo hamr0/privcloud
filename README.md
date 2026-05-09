@@ -7,6 +7,11 @@
 |_|
 ```
 
+<p align="center">
+  <img src="https://img.shields.io/github/v/tag/hamr0/privcloud?sort=semver&label=version&color=2a4f8c" alt="version (auto from latest git tag)">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
+</p>
+
 **Your server. Your data. No cloud required.**
 
 Self-hosted home server with photo backup, music streaming, file management, and remote access.

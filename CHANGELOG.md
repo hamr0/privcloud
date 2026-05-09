@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.5.1 — 2026-05-09
+
+### Fixed
+- **USB drives no longer silently skip mounting on boot, leaving an empty stub directory that looks like data loss.** New fstab entries written by `_storage_mount` (`federver` → 11 → 2) now use `nofail,x-systemd.automount,x-systemd.device-timeout=10s` instead of `defaults,nofail`. The old options told systemd to keep going if the USB enumeration race made the drive unavailable at fstab-mount time — and never retry — so users opened `/mnt/data/media/My Music` after a reboot or runtime hot-unplug and saw an empty directory on the root NVMe disk under the unmounted stub. Looked exactly like data loss; was actually intact data on an unmounted disk. `x-systemd.automount` mounts on first access (dodging the race) and survives replug; `nofail` keeps boot resilient; `device-timeout=10s` bounds the wait. After writing the entry the script now also runs `systemctl daemon-reload` so the new automount unit registers without a reboot.
+- **Storage Status (`federver` → 11 → 1) detects fstab entries written by older versions and offers in-place repair.** New `_storage_check_fstab_options` runs at the bottom of Status. If any non-comment fstab line uses the old `defaults,nofail` options, Status appends a yellow warning naming the affected mount points and prompts `Repair now? [Y/n]`. Y backs up `/etc/fstab` to `fstab.bak.YYYYMMDD-HHMMSS`, rewrites every matching line in place, runs `daemon-reload`, unmounts the affected paths, and `mount -a`. Lets existing users (anyone running the old script) self-heal without sed surgery.
+
 ## v0.5.0 — 2026-05-05
 
 ### Changed

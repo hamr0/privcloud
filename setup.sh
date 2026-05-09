@@ -1,6 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.5.0"
+FEDERVER_VERSION="0.5.1"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.
@@ -872,6 +872,38 @@ _storage_status() {
 
     echo -e "  ${BOLD}Disk usage${NC}"
     df -h / /home /mnt/data 2>/dev/null | awk 'NR==1{printf "    %-25s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5} NR>1{printf "    %-25s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5}'
+
+    _storage_check_fstab_options
+}
+
+# Detect fstab entries written by older versions of this script (defaults,nofail)
+# and offer to upgrade them to nofail,x-systemd.automount,... — old options
+# silently skip the mount on USB enumeration races, leaving an empty stub dir
+# that looks like data loss. Status is the natural place to surface this.
+_storage_check_fstab_options() {
+    local stale
+    stale=$(grep -E '^[^#].* defaults,nofail .*' /etc/fstab 2>/dev/null | awk '{print $2}')
+    [[ -z "$stale" ]] && return 0
+
+    echo ""
+    echo -e "  ${YELLOW}⚠ fstab uses outdated mount options${NC}"
+    while IFS= read -r mp; do
+        echo -e "    $mp   ${DIM}(defaults,nofail — silent skip on USB race)${NC}"
+    done <<< "$stale"
+    echo -e "    ${DIM}Recommended:${NC} nofail,x-systemd.automount,x-systemd.device-timeout=10s"
+    echo ""
+    read -p "  Repair now? [Y/n] " -n 1 -r
+    echo ""
+    [[ "$REPLY" =~ ^[Nn]$ ]] && return 0
+
+    sudo cp /etc/fstab "/etc/fstab.bak.$(date +%Y%m%d-%H%M%S)"
+    sudo sed -i -E 's|([[:space:]])defaults,nofail([[:space:]])|\1nofail,x-systemd.automount,x-systemd.device-timeout=10s\2|g' /etc/fstab
+    sudo systemctl daemon-reload
+    while IFS= read -r mp; do
+        sudo umount "$mp" 2>/dev/null || true
+    done <<< "$stale"
+    sudo mount -a
+    ok "Repaired. Backup at /etc/fstab.bak.*"
 }
 
 _storage_mount() {
@@ -938,9 +970,10 @@ _storage_mount() {
             ok "Mounted at $mount_point."
         fi
     else
-        echo "UUID=$uuid $mount_point $fstype defaults,nofail 0 2" | sudo tee -a /etc/fstab > /dev/null
+        echo "UUID=$uuid $mount_point $fstype nofail,x-systemd.automount,x-systemd.device-timeout=10s 0 2" | sudo tee -a /etc/fstab > /dev/null
+        sudo systemctl daemon-reload
         sudo mount -a
-        ok "Mounted /dev/$partition at $mount_point (permanent via fstab)."
+        ok "Mounted /dev/$partition at $mount_point (permanent via fstab, automount)."
     fi
 
     echo ""

@@ -1320,6 +1320,16 @@ If it returns `{"res":"pong"}`, it's fine — the timeout was just too short.
 - Format to ext4 (not NTFS): `sudo mkfs.ext4 -L data /dev/sda1`
 - If the old enclosure is dying, get a new SATA-to-USB 3.0 enclosure (~€10)
 
+### Data looks gone — `/mnt/data` appears empty
+
+If music, files, or media folders look empty after a reboot, the USB drive is most likely just not mounted — you're seeing the empty stub directory on the root disk under the unmounted mount point. The files are still on the unmounted drive.
+
+1. Check: `mountpoint /mnt/data` — if it says "is not a mountpoint", that's the issue
+2. Confirm the drive is plugged in: `lsblk -f` — look for your data partition
+3. Open `federver` → **11 → 1** (Storage → Status) — if your fstab has old options, accept the in-place repair prompt; otherwise run `sudo mount -a` and verify
+
+Pre-v0.5.1 fstab entries used `defaults,nofail`, which silently skipped the mount on USB enumeration races and never retried. v0.5.1+ uses `x-systemd.automount` so first access remounts the drive.
+
 ### After power outage
 
 If BIOS is set to auto-power-on (F10 → After Power Loss → Power On), the server boots automatically. Fedora auto-logs in, Docker restarts all containers. Nothing to do.
@@ -1349,7 +1359,7 @@ If services aren't running: `cd ~/privcloud && docker compose up -d && privcloud
 3. Select the USB partition (auto-detected, internal drives filtered out)
 4. Choose mount point (default: `/mnt/data`)
 
-The drive is added to `/etc/fstab` so it auto-mounts on reboot.
+The drive is added to `/etc/fstab` with `x-systemd.automount` so it mounts on first access — survives boot-time USB enumeration races and runtime hot-unplug/replug. If you upgraded from a pre-v0.5.1 install with the old `defaults,nofail` options, the Status screen (**11 → 1**) detects this and offers an in-place repair.
 
 ### Changing music location
 

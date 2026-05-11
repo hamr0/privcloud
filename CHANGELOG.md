@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.6.0 — 2026-05-11
+
+### Added
+- **One-time backup wizard (`federver` → 14 → 5).** New menu option for ad-hoc rsync transfers that run once and disappear — no cron line, no timer unit, no job script saved to `~/.local/bin`. Three directions, labeled to match the existing "Sync - New" flow: **Upload** (laptop → server), **Download** (server → laptop), **Local** (laptop → laptop, e.g. backup to a USB drive plugged into the laptop). Reuses the same source/destination pickers as option 2 — `/run/media/hamr/*` USB mounts auto-listed with size, server's `/mnt/data` USB exposed in the server presets, plus the copy-folder-vs-contents picker so the destination path layout is explicit. Shows a preview block with source size + final destination path and asks `Proceed? [y/N]` before touching anything. Built for the "I want to back something up right now and not have it run again automatically" case — distinct from option 2's scheduled jobs.
+
+### Changed
+- **Menu #14 reorganised with category prefixes.** Entries now read `Status` (1), `Sync - New` (2), `Sync - Edit job` (3), `Sync - Delete a job` (4), `Backup - One-time` (5), `Backup - Immich DB (scheduled)` (6), `Monitor - Disk space` (7). Three categories — Sync (rsync between laptop and server), Backup (one-time rsync + scheduled Postgres dump), Monitor (heartbeat) — make the menu scannable at a glance and disambiguate the new one-time backup from the recurring Immich one. Status keeps its bare name because it spans every category. The `(scheduled)` tag on Immich DB makes the contrast with option 5's ad-hoc backup explicit without relying on the dim hint text. Dispatch functions and behavior unchanged.
+- **Path-picker helpers lifted out of `step_sync` to module scope.** `_list_local_sources`, `_pick_local_path`, `_pick_server_path`, and `_pick_copy_mode` are now top-level functions instead of nested inside the Sync - New wizard, so the new one-time backup wizard reuses them verbatim without duplicating ~140 lines. Pure refactor — behavior of option 2 is unchanged.
+
 ## v0.5.1 — 2026-05-09
 
 ### Fixed

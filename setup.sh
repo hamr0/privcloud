@@ -1,6 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.5.1"
+FEDERVER_VERSION="0.6.0"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.
@@ -4250,24 +4250,315 @@ _sync_delete_job() {
     ok "Deleted sync job '${job_name}'"
 }
 
+# Path-picker helpers shared by step_sync (recurring sync jobs) and
+# _sync_one_time_backup (ad-hoc rsync). Set globals: local_path, server_path,
+# sources, copy_mode.
+_list_local_sources() {
+    echo ""
+    echo -e "  ${BOLD}Laptop paths:${NC}"
+    echo ""
+    local i=1
+    sources=()
+
+    for mnt in $HOME/Documents $HOME/PycharmProjects /stuff; do
+        if [[ -d "$mnt" ]]; then
+            echo "    $i) $mnt"
+            sources[$i]="$mnt"
+            i=$((i + 1))
+        fi
+    done
+
+    local usb_mounts=$(ls -d /run/media/hamr/*/ 2>/dev/null || true)
+    if [[ -n "$usb_mounts" ]]; then
+        echo ""
+        echo -e "  ${BOLD}USB drives:${NC}"
+        for mnt in $usb_mounts; do
+            mnt="${mnt%/}"
+            size=$(df -h "$mnt" | tail -1 | awk '{print $3 " used / " $2}')
+            echo "    $i) $mnt  ($size)"
+            sources[$i]="$mnt"
+            i=$((i + 1))
+        done
+    fi
+
+    echo ""
+    info "Or type a path directly"
+    echo ""
+}
+
+_pick_local_path() {
+    local validate="$1"
+    local show_presets="${2:-true}"
+    local attempts=0
+    while (( attempts < 3 )); do
+        if [[ "$show_presets" == "true" ]]; then
+            _list_local_sources
+            read -p "  Choose [number, path, q=back]: " choice
+            [[ "$choice" == "q" ]] && return 2
+            if [[ "$choice" =~ ^[0-9]+$ ]]; then
+                local_path="${sources[$choice]}"
+            else
+                local_path="$choice"
+            fi
+        else
+            read -p "  Absolute path [q=back]: " choice
+            [[ "$choice" == "q" ]] && return 2
+            local_path="$choice"
+        fi
+
+        local_path="${local_path//\'/}"
+        local_path="${local_path//\"/}"
+        local_path="${local_path%/}"
+        if [[ -z "$local_path" ]]; then
+            ((attempts++))
+            (( attempts < 3 )) && fail "Empty path. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
+            continue
+        fi
+
+        if [[ "$validate" == "true" ]]; then
+            if [[ -e "$local_path" ]]; then
+                echo ""
+                echo -e "  ${BOLD}Contents of $local_path:${NC}"
+                if [[ -d "$local_path" ]]; then ls "$local_path"; else echo "  $(basename "$local_path")"; fi
+                break
+            fi
+            ((attempts++))
+            (( attempts < 3 )) && fail "'$local_path' does not exist. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
+        else
+            break
+        fi
+    done
+}
+
+_pick_server_path() {
+    local validate="$1"
+    local show_presets="${2:-true}"
+    if [[ "$show_presets" == "true" ]]; then
+        echo ""
+        echo -e "  ${BOLD}Server paths:${NC}"
+        echo "    1) /home/$SERVER_USER/data  (internal drive)"
+        echo "    2) /mnt/data           (USB drive)"
+        echo ""
+        info "Or type a path directly (e.g. /mnt/data/media/My Music)"
+        echo ""
+    fi
+    local attempts=0
+    while (( attempts < 3 )); do
+        if [[ "$show_presets" == "true" ]]; then
+            read -p "  Choose [number, path, q=back]: " choice
+            [[ "$choice" == "q" ]] && return 2
+            case $choice in
+                1) server_path="/home/$SERVER_USER/data" ;;
+                2) server_path="/mnt/data" ;;
+                *) server_path="$choice" ;;
+            esac
+        else
+            read -p "  Absolute path [q=back]: " choice
+            [[ "$choice" == "q" ]] && return 2
+            server_path="$choice"
+        fi
+
+        server_path="${server_path//\'/}"
+        server_path="${server_path//\"/}"
+        server_path="${server_path%/}"
+        if [[ -z "$server_path" ]]; then
+            ((attempts++))
+            (( attempts < 3 )) && fail "Empty path. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
+            continue
+        fi
+
+        if [[ "$validate" == "true" ]]; then
+            if ssh "$SERVER_USER@$SERVER_IP" "test -e '$server_path'" 2>/dev/null; then
+                echo ""
+                echo -e "  ${BOLD}Contents of server:$server_path:${NC}"
+                ssh "$SERVER_USER@$SERVER_IP" "if [ -d '$server_path' ]; then ls '$server_path'; else basename '$server_path'; fi"
+                break
+            fi
+            ((attempts++))
+            (( attempts < 3 )) && fail "'$server_path' does not exist on server. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
+        else
+            break
+        fi
+    done
+}
+
+_pick_copy_mode() {
+    local src_path="$1"
+    local is_dir="$2"
+    local src_name=$(basename "$src_path")
+    copy_mode="contents"
+    if [[ "$is_dir" == "true" ]]; then
+        echo ""
+        echo -e "  ${BOLD}Copy mode for ${src_name}/:${NC}"
+        echo -e "    ${BOLD}1)${NC} Copy folder     ${DIM}destination/${src_name}/files...  (creates the folder inside)${NC}"
+        echo -e "    ${BOLD}2)${NC} Copy contents   ${DIM}destination/files...              (files go directly in)${NC}"
+        echo ""
+        echo -e "  ${YELLOW}Tip: if your destination path already ends with /${src_name}, pick 2.${NC}"
+        echo -e "    ${BOLD}0)${NC} Back"
+        echo ""
+        read -p "  Mode [0/1/2]: " mode
+        [[ -z "$mode" || "$mode" == "0" ]] && return 2
+        [[ "$mode" == "2" ]] && copy_mode="contents" || copy_mode="folder"
+    fi
+}
+
+_sync_one_time_backup() {
+    info "One-time rsync. Pick source and destination; runs once, no schedule."
+    info "Run this from your LAPTOP, not over SSH."
+    echo ""
+
+    local direction
+    local dir_attempts=0
+    while (( dir_attempts < 3 )); do
+        echo -e "  ${BOLD}1)${NC} Upload:   laptop → server"
+        echo -e "  ${BOLD}2)${NC} Download: server → laptop"
+        echo -e "  ${BOLD}3)${NC} Local:    laptop → laptop    ${DIM}(e.g. backup to a USB drive)${NC}"
+        echo -e "  ${BOLD}0)${NC} Back"
+        echo ""
+        read -p "  Choice [1/2/3/0]: " direction
+        [[ "$direction" == "0" ]] && return 2
+        [[ "$direction" =~ ^[123]$ ]] && break
+        ((dir_attempts++))
+        if (( dir_attempts < 3 )); then
+            fail "Invalid choice. Try again. ($((3-dir_attempts)) attempts left)"
+            echo ""
+        else
+            fail "3 invalid attempts. Aborting."
+            return 1
+        fi
+    done
+
+    case $direction in
+        1)
+            echo ""
+            echo -e "  ${BOLD}-- Source (laptop) --${NC}"
+            _pick_local_path true || return
+            local src_path="$local_path"
+            echo ""
+            echo -e "  ${BOLD}-- Destination (server) --${NC}"
+            _pick_server_path false || return
+            local dst_path="$server_path"
+
+            local is_dir="false"
+            [[ -d "$src_path" ]] && is_dir="true"
+            _pick_copy_mode "$src_path" "$is_dir" || return
+            local rsync_src="$src_path/"
+            local dest_display="$dst_path"
+            if [[ "$copy_mode" == "folder" ]]; then
+                rsync_src="$src_path"
+                dest_display="$dst_path/$(basename "$src_path")"
+            fi
+
+            local src_size=$(du -sh "$src_path" 2>/dev/null | awk '{print $1}')
+            echo ""
+            echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "  ${BOLD}↑ One-time upload: laptop → server${NC}"
+            echo -e "  From: $src_path ($src_size)"
+            echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
+            echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+            read -p "  Proceed? [y/N] " -n 1 -r
+            echo ""
+            [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
+
+            ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$dest_display' && sudo chown $SERVER_USER:$SERVER_USER '$dest_display'" || { fail "Could not prepare destination."; return 1; }
+            rsync -avh --progress "$rsync_src" "$SERVER_USER@$SERVER_IP:$dst_path/" || { fail "Backup failed."; return 1; }
+            ;;
+        2)
+            echo ""
+            echo -e "  ${BOLD}-- Source (server) --${NC}"
+            _pick_server_path true || return
+            local src_path="$server_path"
+            echo ""
+            echo -e "  ${BOLD}-- Destination (laptop) --${NC}"
+            _pick_local_path false || return
+            local dst_path="$local_path"
+
+            local is_dir="false"
+            ssh "$SERVER_USER@$SERVER_IP" "test -d '$src_path'" 2>/dev/null && is_dir="true"
+            _pick_copy_mode "$src_path" "$is_dir" || return
+            local rsync_src="$src_path/"
+            local dest_display="$dst_path"
+            if [[ "$copy_mode" == "folder" ]]; then
+                rsync_src="$src_path"
+                dest_display="$dst_path/$(basename "$src_path")"
+            fi
+
+            echo ""
+            echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "  ${BOLD}↓ One-time download: server → laptop${NC}"
+            echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
+            echo -e "  To:   $dest_display"
+            echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+            read -p "  Proceed? [y/N] " -n 1 -r
+            echo ""
+            [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
+
+            mkdir -p "$dst_path" || { fail "Could not create destination."; return 1; }
+            rsync -avh --progress "$SERVER_USER@$SERVER_IP:$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
+            ;;
+        3)
+            echo ""
+            echo -e "  ${BOLD}-- Source (laptop) --${NC}"
+            _pick_local_path true || return
+            local src_path="$local_path"
+            echo ""
+            echo -e "  ${BOLD}-- Destination (laptop) --${NC}"
+            _pick_local_path false || return
+            local dst_path="$local_path"
+
+            local is_dir="false"
+            [[ -d "$src_path" ]] && is_dir="true"
+            _pick_copy_mode "$src_path" "$is_dir" || return
+            local rsync_src="$src_path/"
+            local dest_display="$dst_path"
+            if [[ "$copy_mode" == "folder" ]]; then
+                rsync_src="$src_path"
+                dest_display="$dst_path/$(basename "$src_path")"
+            fi
+
+            local src_size=$(du -sh "$src_path" 2>/dev/null | awk '{print $1}')
+            echo ""
+            echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "  ${BOLD}↪ One-time local copy: laptop → laptop${NC}"
+            echo -e "  From: $src_path ($src_size)"
+            echo -e "  To:   $dest_display"
+            echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+            read -p "  Proceed? [y/N] " -n 1 -r
+            echo ""
+            [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
+
+            mkdir -p "$dst_path" || { fail "Could not create destination."; return 1; }
+            rsync -avh --progress "$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
+            ;;
+    esac
+
+    echo ""
+    ok "Backup complete."
+}
+
 step_manage_sync() {
     echo ""
-    echo -e "  ${BOLD}1)${NC} Status                    ${DIM}← all scheduled tasks${NC}"
-    echo -e "  ${BOLD}2)${NC} New sync                  ${DIM}← transfer files, run now or schedule${NC}"
-    echo -e "  ${BOLD}3)${NC} Edit sync job             ${DIM}← schedule, pause, run, log, delete${NC}"
-    echo -e "  ${BOLD}4)${NC} Delete a sync job"
-    echo -e "  ${BOLD}5)${NC} Setup Immich backup       ${DIM}← daily/weekly Postgres dump, persistent timer${NC}"
-    echo -e "  ${BOLD}6)${NC} Setup disk-space monitor  ${DIM}← Kuma heartbeat every 5 min${NC}"
+    echo -e "  ${BOLD}1)${NC} Status                            ${DIM}← all scheduled tasks${NC}"
+    echo -e "  ${BOLD}2)${NC} Sync - New                        ${DIM}← transfer files, run now or schedule${NC}"
+    echo -e "  ${BOLD}3)${NC} Sync - Edit job                   ${DIM}← schedule, pause, run, log, delete${NC}"
+    echo -e "  ${BOLD}4)${NC} Sync - Delete a job"
+    echo -e "  ${BOLD}5)${NC} Backup - One-time                 ${DIM}← ad-hoc rsync, no schedule${NC}"
+    echo -e "  ${BOLD}6)${NC} Backup - Immich DB (scheduled)    ${DIM}← daily/weekly Postgres dump, persistent timer${NC}"
+    echo -e "  ${BOLD}7)${NC} Monitor - Disk space              ${DIM}← Kuma heartbeat every 5 min${NC}"
     echo -e "  ${BOLD}0)${NC} Back"
     echo ""
-    read -p "  Choice [0-6]: " sync_choice
+    read -p "  Choice [0-7]: " sync_choice
     case $sync_choice in
         1) _sync_show_status ;;
         2) step_sync ;;
         3) _sync_edit_job ;;
         4) _sync_delete_job ;;
-        5) _on_server step_immich_backup ;;
-        6) _on_server step_disk_monitor ;;
+        5) _sync_one_time_backup ;;
+        6) _on_server step_immich_backup ;;
+        7) _on_server step_disk_monitor ;;
         0) return 2 ;;
         *) fail "Invalid choice." ;;
     esac
@@ -4296,155 +4587,6 @@ step_sync() {
             return 1
         fi
     done
-
-    _list_local_sources() {
-        echo ""
-        echo -e "  ${BOLD}Laptop paths:${NC}"
-        echo ""
-        local i=1
-        sources=()
-
-        for mnt in $HOME/Documents $HOME/PycharmProjects /stuff; do
-            if [[ -d "$mnt" ]]; then
-                echo "    $i) $mnt"
-                sources[$i]="$mnt"
-                i=$((i + 1))
-            fi
-        done
-
-        local usb_mounts=$(ls -d /run/media/hamr/*/ 2>/dev/null || true)
-        if [[ -n "$usb_mounts" ]]; then
-            echo ""
-            echo -e "  ${BOLD}USB drives:${NC}"
-            for mnt in $usb_mounts; do
-                mnt="${mnt%/}"
-                size=$(df -h "$mnt" | tail -1 | awk '{print $3 " used / " $2}')
-                echo "    $i) $mnt  ($size)"
-                sources[$i]="$mnt"
-                i=$((i + 1))
-            done
-        fi
-
-        echo ""
-        info "Or type a path directly"
-        echo ""
-    }
-
-    _pick_local_path() {
-        local validate="$1"
-        local show_presets="${2:-true}"
-        local attempts=0
-        while (( attempts < 3 )); do
-            if [[ "$show_presets" == "true" ]]; then
-                _list_local_sources
-                read -p "  Choose [number, path, q=back]: " choice
-                [[ "$choice" == "q" ]] && return 2
-                if [[ "$choice" =~ ^[0-9]+$ ]]; then
-                    local_path="${sources[$choice]}"
-                else
-                    local_path="$choice"
-                fi
-            else
-                read -p "  Absolute path [q=back]: " choice
-                [[ "$choice" == "q" ]] && return 2
-                local_path="$choice"
-            fi
-
-            local_path="${local_path//\'/}"
-            local_path="${local_path//\"/}"
-            local_path="${local_path%/}"
-            if [[ -z "$local_path" ]]; then
-                ((attempts++))
-                (( attempts < 3 )) && fail "Empty path. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
-                continue
-            fi
-
-            if [[ "$validate" == "true" ]]; then
-                if [[ -e "$local_path" ]]; then
-                    echo ""
-                    echo -e "  ${BOLD}Contents of $local_path:${NC}"
-                    if [[ -d "$local_path" ]]; then ls "$local_path"; else echo "  $(basename "$local_path")"; fi
-                    break
-                fi
-                ((attempts++))
-                (( attempts < 3 )) && fail "'$local_path' does not exist. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
-            else
-                break
-            fi
-        done
-    }
-
-    _pick_server_path() {
-        local validate="$1"
-        local show_presets="${2:-true}"
-        if [[ "$show_presets" == "true" ]]; then
-            echo ""
-            echo -e "  ${BOLD}Server paths:${NC}"
-            echo "    1) /home/$SERVER_USER/data  (internal drive)"
-            echo "    2) /mnt/data           (USB drive)"
-            echo ""
-            info "Or type a path directly (e.g. /mnt/data/media/My Music)"
-            echo ""
-        fi
-        local attempts=0
-        while (( attempts < 3 )); do
-            if [[ "$show_presets" == "true" ]]; then
-                read -p "  Choose [number, path, q=back]: " choice
-                [[ "$choice" == "q" ]] && return 2
-                case $choice in
-                    1) server_path="/home/$SERVER_USER/data" ;;
-                    2) server_path="/mnt/data" ;;
-                    *) server_path="$choice" ;;
-                esac
-            else
-                read -p "  Absolute path [q=back]: " choice
-                [[ "$choice" == "q" ]] && return 2
-                server_path="$choice"
-            fi
-
-            server_path="${server_path//\'/}"
-            server_path="${server_path//\"/}"
-            server_path="${server_path%/}"
-            if [[ -z "$server_path" ]]; then
-                ((attempts++))
-                (( attempts < 3 )) && fail "Empty path. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
-                continue
-            fi
-
-            if [[ "$validate" == "true" ]]; then
-                if ssh "$SERVER_USER@$SERVER_IP" "test -e '$server_path'" 2>/dev/null; then
-                    echo ""
-                    echo -e "  ${BOLD}Contents of server:$server_path:${NC}"
-                    ssh "$SERVER_USER@$SERVER_IP" "if [ -d '$server_path' ]; then ls '$server_path'; else basename '$server_path'; fi"
-                    break
-                fi
-                ((attempts++))
-                (( attempts < 3 )) && fail "'$server_path' does not exist on server. Try again. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
-            else
-                break
-            fi
-        done
-    }
-
-    _pick_copy_mode() {
-        local src_path="$1"
-        local is_dir="$2"
-        local src_name=$(basename "$src_path")
-        copy_mode="contents"
-        if [[ "$is_dir" == "true" ]]; then
-            echo ""
-            echo -e "  ${BOLD}Copy mode for ${src_name}/:${NC}"
-            echo -e "    ${BOLD}1)${NC} Copy folder     ${DIM}destination/${src_name}/files...  (creates the folder inside)${NC}"
-            echo -e "    ${BOLD}2)${NC} Copy contents   ${DIM}destination/files...              (files go directly in)${NC}"
-            echo ""
-            echo -e "  ${YELLOW}Tip: if your destination path already ends with /${src_name}, pick 2.${NC}"
-            echo -e "    ${BOLD}0)${NC} Back"
-            echo ""
-            read -p "  Mode [0/1/2]: " mode
-            [[ -z "$mode" || "$mode" == "0" ]] && return 2
-            [[ "$mode" == "2" ]] && copy_mode="contents" || copy_mode="folder"
-        fi
-    }
 
     case $direction in
         1)

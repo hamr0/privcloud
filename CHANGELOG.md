@@ -8,6 +8,7 @@
 ### Changed
 - **Menu #14 reorganised with category prefixes.** Entries now read `Status` (1), `Sync - New` (2), `Sync - Edit job` (3), `Sync - Delete a job` (4), `Backup - One-time` (5), `Backup - Immich DB (scheduled)` (6), `Monitor - Disk space` (7). Three categories — Sync (rsync between laptop and server), Backup (one-time rsync + scheduled Postgres dump), Monitor (heartbeat) — make the menu scannable at a glance and disambiguate the new one-time backup from the recurring Immich one. Status keeps its bare name because it spans every category. The `(scheduled)` tag on Immich DB makes the contrast with option 5's ad-hoc backup explicit without relying on the dim hint text. Dispatch functions and behavior unchanged.
 - **Path-picker helpers lifted out of `step_sync` to module scope.** `_list_local_sources`, `_pick_local_path`, `_pick_server_path`, and `_pick_copy_mode` are now top-level functions instead of nested inside the Sync - New wizard, so the new one-time backup wizard reuses them verbatim without duplicating ~140 lines. Pure refactor — behavior of option 2 is unchanged.
+- **`package.json` added at repo root.** Single source of truth for the project version, license, repository URL, and keywords. README version badge re-pointed from `github/v/tag/...` to `github/package-json/v/...` so it tracks `package.json` (updates immediately on push) instead of waiting for a git tag. `setup.sh:FEDERVER_VERSION` and `package.json:version` are now both at `0.6.0`; bump both on release.
 
 ## v0.5.1 — 2026-05-09
 

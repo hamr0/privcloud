@@ -1,0 +1,28 @@
+{
+  "name": "privcloud",
+  "version": "0.6.0",
+  "description": "Self-hosted home server (federver) and Immich photo backup (privcloud). One box, every service, no cloud overlords.",
+  "homepage": "https://github.com/hamr0/privcloud",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hamr0/privcloud.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hamr0/privcloud/issues"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "self-hosted",
+    "home-server",
+    "immich",
+    "fedora",
+    "xfce",
+    "docker",
+    "photo-backup",
+    "tailscale",
+    "adguard",
+    "syncthing",
+    "rsync",
+    "backup"
+  ]
+}

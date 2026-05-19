@@ -60,19 +60,9 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 
 ## Two modes
 
-### Immich only (no server needed)
+**Immich only** — run `privcloud` on any laptop or desktop. No dedicated server, no setup script. Start when you want to sync, stop when done. Needs Docker, ~4 GB RAM, and storage. Works on Linux, macOS, or WSL.
 
-Just want photo backup? Run `privcloud` on any machine — laptop, desktop, whatever. No dedicated server, no setup script. Start it when you want to sync, stop it when done.
-
-**Good for:** backing up phone photos, replacing iCloud/Google Photos, occasional use.
-**Needs:** Docker, ~4GB RAM, storage. Linux, macOS, or WSL.
-
-### Full home server
-
-Dedicated always-on machine running Immich + music streaming + file management + monitoring + remote access. `federver` handles everything from a fresh Fedora install.
-
-**Good for:** 24/7 photo backup, streaming music to phone, accessing files from anywhere, replacing Google Drive/iCloud.
-**Needs:** a mini PC or similar, Fedora XFCE, a monitor + keyboard for initial setup (then headless).
+**Full home server** — a dedicated always-on machine running Immich + music + file management + monitoring + remote access. `federver` handles everything from a fresh Fedora install. Needs a mini PC, Fedora XFCE, and a monitor + keyboard for the very first step (headless after that).
 
 ---
 
@@ -633,6 +623,10 @@ If you run `federver` on the server by mistake, it shows a reduced menu with onl
 - **9:** Log rotation — limits Docker logs to 10MB per container
 - **10:** Manage Tailscale → install — create account at login.tailscale.com first, then approve the server. Install Tailscale on phone/laptop with same account.
 - **13:** Manage storage → 2 (Mount USB drive) — plug in first, pick the partition (ignore nvme). Or skip: data lives on the internal drive.
+
+### Dry-run mode
+
+`./setup.sh --dry-run` walks the menu and prints each state-changing command (sudo, sg, curl, rsync, tailscale up/down) instead of executing it. Safe way to review the flow of any option without touching the system. Read-only queries (hostname, `tailscale ip`, `docker ps`) still execute so display logic works. From the laptop, `--dry-run` propagates across the SSH hop to the server.
 
 ### BIOS setup
 
@@ -1407,3 +1401,47 @@ This updates `.env` and redeploys FileBrowser automatically.
 | **Immich** | Clears admin password, re-enter on next login | No |
 | **Navidrome** | Wipes data, re-register via web UI | Music library re-scanned automatically |
 | **Uptime Kuma** | Wipes data, starts fresh | Monitors need re-adding |
+
+---
+
+## Quick reference
+
+| Task | Command |
+|------|---------|
+| Server status | `federver` → **s** |
+| Immich management | `privcloud` |
+| Upload media/files | FileBrowser → `http://federver:8080` (user `admin`, password: `cat ~/.privcloud/filebrowser.pass`) |
+| Manage storage | `federver` → **13** (mount USB, change paths) |
+| VPN connect/disconnect | `fedvpn start` / `fedvpn stop` (laptop) |
+| Show WireGuard peer config | `federver` → **9** → **2** (server) |
+| Remove WireGuard peer | `federver` → **9** → **3** (server) |
+| AdGuard dashboard | `http://federver` (Query Log tab shows live blocking) |
+| Syncthing dashboard | `http://federver:8384` (server) or `http://localhost:8384` (laptop) |
+| Show Syncthing Device ID | `federver` → **12** → **2** |
+| Check containers | `docker ps` |
+| View logs | `docker logs <container>` |
+| Update Immich | `privcloud update` |
+| Update all containers | `docker compose pull && docker compose up -d` |
+| Update system | `sudo dnf upgrade` |
+| Remote desktop | RDP client → server IP port 3389 |
+| Backup | `privcloud backup` or `sudo systemctl start immich-backup.service` |
+| Schedule backup | `federver` → **14** → **5** (Setup Immich backup) |
+| Disk alerts | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
+| Backup to pass | `federver` → **15** (from laptop) |
+| Reset password | `federver` → **r** (FileBrowser, Immich, Navidrome, Uptime Kuma) |
+| Shutdown | `federver` → **p** |
+
+---
+
+## Files in the repo
+
+| File | What |
+|------|------|
+| `setup.sh` | Server manager (runs as `federver`) |
+| `privcloud` | Photo manager (runs as `privcloud`) |
+| `fedvpn` | WireGuard VPN client for laptop |
+| `docker-compose.yml` | All service definitions |
+| `.env.example` | Config template |
+| `scripts/` | Google Takeout fix, installer |
+| `tools/` | Backup utility |
+

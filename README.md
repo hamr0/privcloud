@@ -14,11 +14,15 @@
 
 **Your server. Your data. No cloud required.**
 
-Self-hosted home server with photo backup, music streaming, file management, and remote access.
+Self-hosted home server with photo backup, music streaming, file management, and remote access. Replaces iCloud, Google Photos, Google Drive — runs on a small mini PC at home and works from anywhere.
 
-## Two modes
+---
 
-### Immich only — no server needed
+## Two ways to run it
+
+### Just photo backup
+
+Run on any laptop or desktop. No dedicated server needed. Start it when you want to sync, stop it when done.
 
 ```bash
 git clone https://github.com/hamr0/privcloud.git && cd privcloud
@@ -27,148 +31,61 @@ privcloud start
 # Open http://localhost:2283
 ```
 
-Back up phone photos locally on any machine. Start when you need it, stop when done.
+![privcloud menu](docs/images/menu-privcloud.png)
 
-### Full home server — always-on
+### Full home server
+
+Always-on machine running photos, music, files, monitoring, remote access, ad blocking — all in one. One script handles everything from a fresh Fedora install.
 
 ```bash
 git clone https://github.com/hamr0/privcloud.git && cd privcloud
-federver      # step 1 with monitor on server, then everything from laptop
+./setup.sh
 ```
 
-One script sets up everything from a fresh Fedora XFCE install. **Always run from the laptop** (except step 1 which needs a monitor). Server commands auto-route via SSH. See [customer guide](customer-guide.md) for full walkthrough.
+![federver menu](docs/images/menu-federver.png)
 
-## Services
+---
 
-| Service | Port | What it does |
-|---------|------|-------------|
-| **Immich** | 2283 | Photo backup from phone, face detection, smart search |
-| **Navidrome** | 4533 | Music streaming — background playback, offline cache via Amperfy app |
-| **FileBrowser** | 8080 | Browse/download/upload files from any browser |
-| **Uptime Kuma** | 3001 | Monitoring dashboard, alerts if services go down |
-| **Watchtower** | — | Auto-updates all containers daily at 4am |
-| **Tailscale** | — | Remote access from anywhere — MagicDNS lets you use `federver` as hostname |
-| **WireGuard** | 51820 | Full VPN — route all traffic through server |
-| **AdGuard Home** | 53, 80 | Network-wide DNS ad & tracker blocker — routed via Tailscale |
-| **Syncthing** | 8384, 22000, 21027 | Real-time bidirectional folder sync between devices |
-| **Remote Desktop** | 3389 | Full XFCE desktop via RDP from any device |
+## Setting up the full server
 
-## Commands
+### What you need
 
-### `federver` — Fedora XFCE server manager
+- A **mini PC** with **Fedora XFCE 43** (8GB+ RAM, 128GB+ disk) — any small refurbished box works, e.g. HP ProDesk 400 G4 DM
+- A **laptop** on the same network — macOS, Linux, or Windows with WSL (you'll run everything from here after the first boot)
+- A **USB stick** (8GB+) for the Fedora installer, plus an **ethernet cable**
+- About **30 minutes**
+- *Optional:* a free [Tailscale](https://tailscale.com) account for remote access
 
-On the **laptop** (full menu):
+### What you'll do
 
-```
-========================================
-  Federver — Fedora XFCE Server Manager
-  Running from: laptop
-========================================
+1. Flash Fedora XFCE to USB and install it on the mini PC
+2. On the server (with a monitor): clone the repo and run `./setup.sh` → pick **1** to enable SSH
+3. Unplug the monitor — everything from here runs from your laptop
+4. On your laptop: clone the repo and run `./setup.sh` → pick **2** (SSH key), then **3 → 7** in order
+5. Open your services in the browser — Immich at `:2283`, music at `:4533`, files at `:8080`
 
-  -- Initial setup (run once, in order) --
-  1)  Enable SSH + auto-login + hostname    ← only step on server with monitor
-  2)  SSH key auth
-  3)  System update
-  4)  Enable auto-updates                   ← security only, kernel excluded
-  5)  Install Docker                        ← log out & SSH back in after
+Every step is safe to re-run. Server steps auto-route via SSH; laptop steps run locally.
 
-  -- Services --
-  6)  Manage firewall                       ← status, add/remove ports, defaults
-  7)  Manage services                       ← unified laptop + server, start/stop/restart, deploy + log rotation
+**→ Full click-by-click walkthrough: [customer-guide.md](customer-guide.md#server-setup-walkthrough)**
 
-  -- Extras (optional, run anytime) --
-  8)  Manage Tailscale                      ← install, status, up/down
-  9)  Manage WireGuard                      ← install, peers, QR, remove
-  10) Manage AdGuard                        ← install DNS ad blocker, uses Tailscale
-  11) Manage storage                        ← USB drives, media/data/Immich paths
-  12) Manage Syncthing                      ← real-time bidirectional file sync
-  13) Manage remote desktop                 ← install, access XFCE via RDP
+---
 
-  -- Immich photo management --
-  i)  Immich (privcloud)                    ← start/stop/status/update/backup
+## What you get
 
-  -- Tools --
-  14) Manage sync and backups               ← sync jobs, Immich DB backup, disk-space monitor
-  15) Save to pass                          ← backup everything to pass
+| Service | What it does |
+|---------|-------------|
+| **Immich** | Phone photo backup with face recognition and smart search — like Google Photos, but yours |
+| **Navidrome** | Stream your music to your phone, with background playback and offline cache |
+| **FileBrowser** | Drop files in, grab them from any browser |
+| **Uptime Kuma** | Tells you if anything goes down and sends a notification |
+| **Tailscale** | Reach your server from anywhere — no port forwarding, no dynamic DNS |
+| **WireGuard** | Route all your phone or laptop traffic through home — public WiFi privacy |
+| **AdGuard Home** | Network-wide ad and tracker blocker for every device |
+| **Syncthing** | Real-time folder sync between your devices |
+| **Remote Desktop** | The full Fedora desktop, from any device |
+| **Watchtower** | Keeps everything up-to-date automatically |
 
-  s) Status  i) Immich  p) Power  r) Reset password  a) Run all (3-7)  0) Exit
-```
-
-On the **server** (reduced — bootstrap, status, power only):
-
-```
-========================================
-  Federver — Fedora XFCE Server Manager
-  Running from: server
-  For the full menu, run federver from your laptop.
-========================================
-
-  1)  Enable SSH + auto-login + hostname    ← bootstrap (needs monitor)
-  s)  Status
-  p)  Power (shutdown / restart)
-  e)  Emergency: restart all services      ← fixes DNS/container outages
-  0)  Exit
-```
-
-### `privcloud` — Immich photo manager
-
-```
-  1) install   Check prerequisites, pull images, set up config
-  2) start     Start Immich
-  3) stop      Stop Immich
-  4) status    Show health, containers, recent errors
-  5) config    Change photo storage location
-  6) update    Check for updates and apply
-  7) upload    Upload photos via Immich CLI
-  8) fix-gp    Fix Google Photos metadata (Takeout export)
-  9) backup    Backup photos + database to external drive
-  0) exit
-```
-
-**Always run `federver` from your laptop.** Step 1 (Enable SSH) is the only step that runs on the server with a physical monitor — after that, everything runs from the laptop. Server commands auto-SSH in; laptop commands run locally. Clone the repo on **both** machines. First run `federver` → step 1 on the server to register the commands and enable SSH.
-
-**Dry run mode:** `./setup.sh --dry-run` walks the menu and prints each state-changing command instead of executing it. Safe way to review the flow of any option without touching the system. Propagates across the laptop→server SSH hop.
-
-### `fedvpn` — WireGuard VPN client (runs on laptop)
-
-```
-fedvpn — WireGuard VPN
-
-  1) Setup              ← first time: install + paste config
-  2) Connect
-  3) Disconnect
-  4) Status
-  0) Exit
-```
-
-Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
-
-## Quick reference
-
-| Task | Command |
-|------|---------|
-| Server status | `federver` → **s** |
-| Immich management | `privcloud` |
-| Upload media/files | FileBrowser → `http://federver:8080` (user `admin`, password: `cat ~/.privcloud/filebrowser.pass`) |
-| Manage storage | `federver` → **13** (mount USB, change paths) |
-| VPN connect/disconnect | `fedvpn start` / `fedvpn stop` (laptop) |
-| Show WireGuard peer config | `federver` → **11** → **2** (server) |
-| Remove WireGuard peer | `federver` → **11** → **3** (server) |
-| AdGuard dashboard | `http://federver` (Query Log tab shows live blocking) |
-| Syncthing dashboard | `http://federver:8384` (server) or `http://localhost:8384` (laptop) |
-| Show Syncthing Device ID | `federver` → **14** → **2** |
-| Check containers | `docker ps` |
-| View logs | `docker logs <container>` |
-| Update Immich | `privcloud update` |
-| Update all containers | `docker compose pull && docker compose up -d` |
-| Update system | `sudo dnf upgrade` |
-| Remote desktop | RDP client → server IP port 3389 |
-| Backup | `privcloud backup` or `sudo systemctl start immich-backup.service` |
-| Schedule backup | `federver` → **14** → **5** (Setup Immich backup) |
-| Disk alerts | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
-| Backup to pass | `federver` → **15** (from laptop) |
-| Reset password | `federver` → **r** (FileBrowser, Immich, Navidrome, Uptime Kuma) |
-| Shutdown | `federver` → **p** |
+---
 
 ## Docs
 
@@ -176,18 +93,6 @@ Also: `fedvpn start` / `fedvpn stop` / `fedvpn status`
 |-----|------|
 | [Customer Guide](customer-guide.md) | Full setup walkthrough, service config, troubleshooting, maintenance |
 | [Changelog](CHANGELOG.md) | Version history |
-
-## Files
-
-| File | What |
-|------|------|
-| `setup.sh` | Server manager (runs as `federver`) |
-| `privcloud` | Photo manager (runs as `privcloud`) |
-| `fedvpn` | WireGuard VPN client for laptop |
-| `docker-compose.yml` | All service definitions |
-| `.env.example` | Config template |
-| `scripts/` | Google Takeout fix, installer |
-| `tools/` | Backup utility |
 
 ## License
 

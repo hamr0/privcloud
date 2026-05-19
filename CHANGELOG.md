@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.1 — 2026-05-19
+
+### Changed
+- **README restructured for non-tech readers.** Goal: someone with no terminal experience can land on the repo and understand within one screen what they need, what they'll do, and what they'll get. Tagline + 1-line description first, then **Two ways to run it** (Immich-only vs Full home server) with the actual menu screenshots inline (`docs/images/menu-privcloud.png`, `docs/images/menu-federver.png`) instead of ASCII renderings — visuals do the orienting that 30 lines of text used to. Below that, **Setting up the full server** has a 5-bullet "What you need" prereq block (mini PC, laptop on same network with macOS/Linux/WSL, USB stick, ethernet, ~30 min, optional Tailscale) and a 5-step "What you'll do" skim that ends with a link to the customer-guide click-by-click. Service list rewritten in plain English ("Phone photo backup with face recognition" instead of `2283 — Immich`). Removed from README: the three ASCII menu blocks (laptop + server federver + privcloud), the `fedvpn` menu, the 25-row Quick reference table, the Files list, the bash/dry-run paragraph. Net: README dropped from 194 lines to ~95.
+- **customer-guide.md absorbs the relocated bits.** New **Dry-run mode** subsection under Server setup walkthrough (before BIOS setup). New **Quick reference** section at the end of the doc — menu numbers corrected from the old README table (WireGuard `11→2` and Syncthing `14→2` were stale; current menu has WireGuard at 9 and Syncthing at 12). New **Files in the repo** section at the end. The guide's existing "Two modes" framing collapsed from 15 lines to 4 (kept for direct-link readers but dropped the "Good for / Needs" detail the README's prereqs now establish). Everything else in the guide left alone — the text-form federver menu, the privcloud CLI table, the Immich feature list, and the Server setup walkthrough remain since they serve a different purpose than the README's at-a-glance framing (searchable reference vs visual skim). Clean handoff: README orients in <1 screen, guide drills in.
+
 ## v0.6.0 — 2026-05-11
 
 ### Added

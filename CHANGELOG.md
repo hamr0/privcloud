@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.7.2 — 2026-05-21
+
+### Changed
+- **Replaced Fresh Additions with year-based playlists.** Fresh Additions keyed off each file's "date added," which Navidrome derives from the file modification time — and on a static library of older files (timestamps from 1998–2007) nothing ever registers as recent, so the playlist was permanently empty. Removed it and added three `year`-tag-driven shuffles instead: **📅 90s** (1990–1999), **📅 2000s** (2000–2009), and **🕰️ Throwback** (everything before 2010). These read the song's `year` ID3 tag rather than the file date, so they suit a fixed nostalgic collection. They depend on `year` tags being present; if empty, the library needs tagging (e.g. MusicBrainz Picard). **Surprise Me** remains the tag- and history-independent always-works shuffle.
+
 ## v0.7.1 — 2026-05-21
 
 ### Changed

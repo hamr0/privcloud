@@ -28,13 +28,19 @@ Then either wait up to an hour, or trigger a scan now from the Navidrome web UI
 
 | File | What it gives you |
 |------|-------------------|
-| `daily-mix.nsp` | Loved / well-played tracks not heard in the last 7 days, shuffled |
-| `rediscover.nsp` | Stuff you used to play but haven't in 6 months |
+| `daily-mix.nsp` | Loved or already-played tracks not heard in the last 7 days, shuffled |
+| `rediscover.nsp` | Played at least once but not in the last month |
 | `on-repeat.nsp` | Your most-played tracks of the last month |
-| `fresh-additions.nsp` | Anything added to the library in the last 30 days |
-| `surprise-me.nsp` | Pure shuffle of the whole library |
+| `decade-90s.nsp` | Everything tagged 1990–1999, shuffled *(needs `year` tags)* |
+| `decade-2000s.nsp` | Everything tagged 2000–2009, shuffled *(needs `year` tags)* |
+| `throwback.nsp` | Everything tagged before 2010, shuffled *(needs `year` tags)* |
+| `surprise-me.nsp` | Pure shuffle of the whole library (no tags or history needed) |
 
-Tweak the numbers (`7`, `180`, `2`, `50`…) to taste.
+Tweak the numbers (day windows, play counts, year ranges, limits…) to taste.
+
+**Note on the year playlists:** they read each file's `year` ID3 tag, not the
+file date. If they come back empty, the files are missing year tags — tag the
+library with [MusicBrainz Picard](https://picard.musicbrainz.org/) to fix it.
 
 ## Honest caveats
 

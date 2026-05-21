@@ -1,0 +1,9 @@
+{
+  "name": "📅 90s",
+  "comment": "Everything tagged 1990–1999, shuffled.",
+  "all": [
+    { "inTheRange": { "year": [1990, 1999] } }
+  ],
+  "sort": "random",
+  "limit": 100
+}

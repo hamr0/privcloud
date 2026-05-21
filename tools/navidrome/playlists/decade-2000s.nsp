@@ -1,0 +1,9 @@
+{
+  "name": "📅 2000s",
+  "comment": "Everything tagged 2000–2009, shuffled.",
+  "all": [
+    { "inTheRange": { "year": [2000, 2009] } }
+  ],
+  "sort": "random",
+  "limit": 100
+}

@@ -1,0 +1,9 @@
+{
+  "name": "🕰️ Throwback",
+  "comment": "Everything tagged before 2010, shuffled — a nostalgic catch-all.",
+  "all": [
+    { "inTheRange": { "year": [1, 2009] } }
+  ],
+  "sort": "random",
+  "limit": 100
+}

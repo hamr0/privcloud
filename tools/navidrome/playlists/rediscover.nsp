@@ -1,9 +1,9 @@
 {
   "name": "💤 Rediscover",
-  "comment": "Songs you used to play but haven't touched in 6 months.",
+  "comment": "Songs you've played at least once but haven't touched in the last month.",
   "all": [
     { "gt": { "playCount": 0 } },
-    { "notInTheLast": { "lastPlayed": 180 } }
+    { "notInTheLast": { "lastPlayed": 30 } }
   ],
   "sort": "random",
   "limit": 50

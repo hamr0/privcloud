@@ -3,7 +3,7 @@
   "comment": "What you've been playing most over the last month.",
   "all": [
     { "inTheLast": { "lastPlayed": 30 } },
-    { "gt": { "playCount": 3 } }
+    { "gt": { "playCount": 1 } }
   ],
   "sort": "playCount",
   "order": "desc",

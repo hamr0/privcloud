@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.7.1 — 2026-05-21
+
+### Changed
+- **Loosened smart-playlist thresholds so they populate on a fresh or lightly-played library.** Daily Mix now matches loved **or** played ≥1× (was >2); On Repeat matches playCount >1 (was >3); Rediscover triggers after not-played-in-30-days (was 180); Fresh Additions widened to a 90-day window (was 30). The strict defaults left every history-based playlist empty until a library had weeks of plays. Note: Fresh Additions keys off the file's "date added," not the song's release year — a static library of older files with old timestamps may still not register as "fresh" regardless of window.
+
 ## v0.7.0 — 2026-05-21
 
 ### Added

@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.7.0 — 2026-05-21
+
+### Added
+- **Navidrome smart playlists — auto-installed, no code, no API (`tools/navidrome/playlists/*.nsp`).** Five ready-to-use `.nsp` rule files that Navidrome turns into self-updating playlists built from your own library and play history: **Daily Mix** (loved or well-played tracks not heard in the last 7 days, shuffled), **Rediscover** (stuff you used to play but haven't in 6 months), **On Repeat** (most-played of the last month), **Fresh Additions** (added in the last 30 days), and **Surprise Me** (full-library shuffle). They read data Navidrome already tracks — `playCount`, `lastPlayed`, `loved`, `dateAdded` — and re-evaluate on each scan, so no scripts or API calls are involved. New `_install_smart_playlists` helper in `setup.sh` copies them into `$MUSIC_LOCATION/Playlists/` automatically at the end of **Deploy** (seeded *before* Navidrome starts, so its startup scan finds them) and after **Storage → Change music location** (so they follow the folder when it moves — the files live inside the music folder, so a moved folder would otherwise lose them). No menu entry; it just happens. `tools/navidrome/README.md` documents the rule format; `docs/prd-music-recommendations.md` records the ListenBrainz (Tier 2) and custom-cron (Tier 3) follow-ups, plus the honest caveat that `random` sort reshuffles per load rather than producing a fixed daily set.
+
+### Changed
+- **Deploy prompt explains what it does and how to back out (`federver` → 7 → 6).** The "Base data path" step now opens with plain-language text: that it starts/updates the service containers, that it's safe to re-run and does NOT erase photos/music/files, that unchanged services are left running untouched, and what the "base data path" actually is (the one parent folder where all data lives — pick once, press Enter to keep the default). The prompt itself reads `[Enter = /mnt/data, 0 = cancel]`, and typing `0` returns cleanly to the menu. Previously the only way out was Ctrl-C, which killed the `ssh -t` session to the server and painted a misleading `✗ FAILED` banner even though nothing had broken.
+
+### Fixed
+- **Redeploy no longer silently reverts a custom music location.** `step_deploy` rewrote every location from the base data path unconditionally, so a `MUSIC_LOCATION` set via Storage → Change music location got clobbered back to `<base>/media/My Music` the next time anyone pressed Enter through Deploy — and the smart-playlist files living inside that folder would appear to vanish with it. Deploy now detects a custom music folder (comparing against both the base-derived default and the `.env.example` default, so fresh installs aren't falsely flagged) and asks `Keep it? [Enter = keep, or type 'reset']` before changing anything.
+
 ## v0.6.1 — 2026-05-19
 
 ### Changed

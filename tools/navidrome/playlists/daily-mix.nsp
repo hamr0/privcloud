@@ -1,0 +1,13 @@
+{
+  "name": "🎲 Daily Mix",
+  "comment": "Loved or well-played tracks you haven't heard in the last week, reshuffled.",
+  "all": [
+    { "any": [
+      { "is": { "loved": true } },
+      { "gt": { "playCount": 2 } }
+    ]},
+    { "notInTheLast": { "lastPlayed": 7 } }
+  ],
+  "sort": "random",
+  "limit": 50
+}

@@ -19,7 +19,7 @@ Self-hosted home server and photo backup. Two tools in one repo:
 - `federver` (setup.sh) — Fedora XFCE server setup and management. Handles SSH, Docker, firewall, Tailscale, service deployment, backups, monitoring, file sync.
 - `privcloud` (privcloud) — Immich photo management. Start/stop, status with error checking, updates, backup, upload, Google Photos migration.
 
-**Services:** Immich, Jellyfin, FileBrowser, Watchtower, Uptime Kuma, Tailscale.
+**Services:** Immich, Navidrome (music; auto-installs `.nsp` smart playlists), FileBrowser, Watchtower, Uptime Kuma, Tailscale.
 
 **Stack:** Docker Compose, bash scripts, Fedora XFCE 43.
 

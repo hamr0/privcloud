@@ -1,0 +1,9 @@
+{
+  "name": "🌀 Surprise Me",
+  "comment": "Pure shuffle across the whole library.",
+  "all": [
+    { "gt": { "playCount": -1 } }
+  ],
+  "sort": "random",
+  "limit": 100
+}

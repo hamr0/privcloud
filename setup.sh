@@ -1,6 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.6.1"
+FEDERVER_VERSION="0.7.0"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.
@@ -1053,6 +1053,24 @@ _set_env() {
     fi
 }
 
+# Copy the repo's Navidrome smart-playlist (.nsp) templates into the active
+# music folder. The files must live inside MUSIC_LOCATION (mounted as /music),
+# so this runs whenever the music folder is (re)established — on Deploy and
+# after a music-location change — to keep them following the current folder.
+_install_smart_playlists() {
+    local music_dir src dest
+    music_dir=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env")
+    src="$SCRIPT_DIR/tools/navidrome/playlists"
+    [[ -n "$music_dir" && -d "$src" ]] || return 0
+    dest="$music_dir/Playlists"
+    sudo mkdir -p "$dest" || return 0
+    if sudo cp "$src"/*.nsp "$dest"/ 2>/dev/null; then
+        ok "Smart playlists installed to: $dest"
+        info "They appear in Navidrome after its next scan (on startup, or within 1h)."
+    fi
+    return 0
+}
+
 _storage_change_music() {
     echo ""
     local MUSIC_LOCATION
@@ -1083,6 +1101,10 @@ _storage_change_music() {
 
     _set_env "MUSIC_LOCATION" "$new_path" "$SCRIPT_DIR/.env"
     ok "Updated .env: MUSIC_LOCATION=$new_path"
+
+    # Re-install smart playlists into the new folder before Navidrome restarts
+    # (they live inside the music folder, so a moved folder loses them).
+    _install_smart_playlists
 
     echo ""
     info "Redeploying Navidrome..."
@@ -1727,10 +1749,22 @@ step_deploy() {
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
     # ── Ask for base data path ──
+    info "What this does: starts (or updates) all the service containers."
+    info "It is safe to re-run — it does NOT erase your photos, music, or files,"
+    info "and services that haven't changed keep running untouched."
+    echo ""
+    info "The 'base data path' is the one parent folder where ALL your data lives"
+    info "(Immich photos, music, FileBrowser files). Pick it once; press Enter to"
+    info "keep the default on later runs."
+    echo ""
     info "Default: /mnt/data (USB drive)"
     info "Internal drive example: /home/$SERVER_USER/data"
     echo ""
-    read -p "  Base data path [/mnt/data]: " base_path
+    read -p "  Base data path [Enter = /mnt/data, 0 = cancel]: " base_path
+    if [[ "$base_path" == "0" ]]; then
+        info "Cancelled — no changes made."
+        return 0
+    fi
     base_path="${base_path:-/mnt/data}"
     base_path="${base_path/#\~/$HOME}"
 
@@ -1742,7 +1776,28 @@ step_deploy() {
     _set_env "UPLOAD_LOCATION" "${base_path}/immich/upload" "$SCRIPT_DIR/.env"
     _set_env "DB_DATA_LOCATION" "${base_path}/immich/postgres" "$SCRIPT_DIR/.env"
     _set_env "MEDIA_LOCATION" "${base_path}/media" "$SCRIPT_DIR/.env"
-    _set_env "MUSIC_LOCATION" "${base_path}/media/My Music" "$SCRIPT_DIR/.env"
+
+    # MUSIC_LOCATION: preserve a custom folder set via Storage > Change music
+    # location. Re-running Deploy used to silently revert it to the default,
+    # which would also strip out the smart-playlist (.nsp) files inside it.
+    local default_music="${base_path}/media/My Music"
+    local existing_music example_music
+    existing_music=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env")
+    example_music=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env.example")
+    if [[ -n "$existing_music" && "$existing_music" != "$default_music" \
+          && "$existing_music" != "$example_music" ]]; then
+        warn "Custom music location in use: $existing_music"
+        read -p "  Keep it? [Enter = keep, or type 'reset' to use $default_music]: " _music_reset
+        if [[ "$_music_reset" == "reset" ]]; then
+            _set_env "MUSIC_LOCATION" "$default_music" "$SCRIPT_DIR/.env"
+            ok "Music location reset to $default_music"
+        else
+            info "Keeping custom music location: $existing_music"
+        fi
+    else
+        _set_env "MUSIC_LOCATION" "$default_music" "$SCRIPT_DIR/.env"
+    fi
+
     _set_env "FILES_LOCATION" "${base_path}" "$SCRIPT_DIR/.env"
 
     UPLOAD_LOCATION=$(_env_get UPLOAD_LOCATION "$SCRIPT_DIR/.env")
@@ -1750,6 +1805,10 @@ step_deploy() {
     MEDIA_LOCATION=$(_env_get MEDIA_LOCATION "$SCRIPT_DIR/.env")
     MUSIC_LOCATION=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env")
     sudo mkdir -p "$UPLOAD_LOCATION" "$DB_DATA_LOCATION" "$MEDIA_LOCATION" "$MUSIC_LOCATION" 2>/dev/null || true
+
+    # Seed smart playlists into the music folder before Navidrome starts, so its
+    # startup scan picks them up.
+    _install_smart_playlists
 
     cd "$SCRIPT_DIR"
     sg docker -c "docker compose up -d"

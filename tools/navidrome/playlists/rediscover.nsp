@@ -1,0 +1,10 @@
+{
+  "name": "💤 Rediscover",
+  "comment": "Songs you used to play but haven't touched in 6 months.",
+  "all": [
+    { "gt": { "playCount": 0 } },
+    { "notInTheLast": { "lastPlayed": 180 } }
+  ],
+  "sort": "random",
+  "limit": 50
+}

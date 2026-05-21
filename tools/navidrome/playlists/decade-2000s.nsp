@@ -2,7 +2,8 @@
   "name": "📅 2000s",
   "comment": "Everything tagged 2000–2009, shuffled.",
   "all": [
-    { "inTheRange": { "year": [2000, 2009] } }
+    { "inTheRange": { "year": [2000, 2009] } },
+    { "notContains": { "filepath": "Holy Quraan" } }
   ],
   "sort": "random",
   "limit": 100

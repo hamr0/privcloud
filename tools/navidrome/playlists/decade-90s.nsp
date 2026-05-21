@@ -2,7 +2,8 @@
   "name": "📅 90s",
   "comment": "Everything tagged 1990–1999, shuffled.",
   "all": [
-    { "inTheRange": { "year": [1990, 1999] } }
+    { "inTheRange": { "year": [1990, 1999] } },
+    { "notContains": { "filepath": "Holy Quraan" } }
   ],
   "sort": "random",
   "limit": 100

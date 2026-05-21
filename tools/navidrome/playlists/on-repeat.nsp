@@ -3,7 +3,8 @@
   "comment": "What you've been playing most over the last month.",
   "all": [
     { "inTheLast": { "lastPlayed": 30 } },
-    { "gt": { "playCount": 1 } }
+    { "gt": { "playCount": 1 } },
+    { "notContains": { "filepath": "Holy Quraan" } }
   ],
   "sort": "playCount",
   "order": "desc",

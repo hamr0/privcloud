@@ -2,7 +2,8 @@
   "name": "🌀 Surprise Me",
   "comment": "Pure shuffle across the whole library.",
   "all": [
-    { "gt": { "playCount": -1 } }
+    { "gt": { "playCount": -1 } },
+    { "notContains": { "filepath": "Holy Quraan" } }
   ],
   "sort": "random",
   "limit": 100

@@ -2,7 +2,8 @@
   "name": "🕰️ Throwback",
   "comment": "Everything tagged before 2010, shuffled — a nostalgic catch-all.",
   "all": [
-    { "inTheRange": { "year": [1, 2009] } }
+    { "inTheRange": { "year": [1, 2009] } },
+    { "notContains": { "filepath": "Holy Quraan" } }
   ],
   "sort": "random",
   "limit": 100

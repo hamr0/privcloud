@@ -6,7 +6,8 @@
       { "is": { "loved": true } },
       { "gt": { "playCount": 0 } }
     ]},
-    { "notInTheLast": { "lastPlayed": 7 } }
+    { "notInTheLast": { "lastPlayed": 7 } },
+    { "notContains": { "filepath": "Holy Quraan" } }
   ],
   "sort": "random",
   "limit": 50

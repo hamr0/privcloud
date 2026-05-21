@@ -3,7 +3,8 @@
   "comment": "Songs you've played at least once but haven't touched in the last month.",
   "all": [
     { "gt": { "playCount": 0 } },
-    { "notInTheLast": { "lastPlayed": 30 } }
+    { "notInTheLast": { "lastPlayed": 30 } },
+    { "notContains": { "filepath": "Holy Quraan" } }
   ],
   "sort": "random",
   "limit": 50

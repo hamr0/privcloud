@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.7.3 — 2026-05-21
+
+### Changed
+- **All smart playlists now exclude the `Holy Quraan` folder.** Added `{ "notContains": { "filepath": "Holy Quraan" } }` to every `.nsp` so Quran recitations never get shuffled into the music playlists (they remain browsable/playable in Navidrome directly). Field `filepath` and operator `notContains` confirmed against Navidrome's `model/criteria` source. `tools/navidrome/README.md` documents the pattern for excluding any other folder.
+
 ## v0.7.2 — 2026-05-21
 
 ### Changed

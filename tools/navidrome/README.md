@@ -42,6 +42,17 @@ Tweak the numbers (day windows, play counts, year ranges, limits…) to taste.
 file date. If they come back empty, the files are missing year tags — tag the
 library with [MusicBrainz Picard](https://picard.musicbrainz.org/) to fix it.
 
+**Excluding a folder:** every list above excludes the `Holy Quraan` folder so
+recitations never land in a music shuffle, via this line in each `all` block:
+
+```json
+{ "notContains": { "filepath": "Holy Quraan" } }
+```
+
+`filepath` matches the file's full path, so the folder name as a substring is
+enough. Add the same line (with your own folder name) to any playlist to keep
+that folder out of it.
+
 ## Honest caveats
 
 - **"Random" reshuffles often, it's not a fixed daily set.** A `"sort": "random"` playlist

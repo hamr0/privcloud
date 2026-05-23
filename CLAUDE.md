@@ -10,6 +10,8 @@
 
 **Open-source only.** No vendor lock-in. Every line of code must have a purpose — no speculative code, no premature abstractions.
 
+**Public repo — no hardcoded config.** This repo is public. Never commit user-specific values (SSH usernames, LAN/Tailscale IPs, personal paths like `/home/<user>` or `/run/media/<user>`, secrets). Resolve them at runtime: env var → local config file outside the repo (e.g. `${XDG_CONFIG_HOME:-~/.config}/federver/config`) → interactive prompt that persists (write with `umask 077`). `setup.sh`'s `_require_server_config` is the reference pattern; use `$USER`/`$HOME` in paths.
+
 For full development and testing standards, see `.claude/memory/AGENT_RULES.md`.
 
 ## Project: privcloud

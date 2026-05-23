@@ -607,7 +607,7 @@ federver
 
 **Step 1 (with monitor):** Pick option 1. Enables SSH, sets hostname, auto-login. Note the IP. Unplug the monitor.
 
-**Step 2 and everything after:** Always run `federver` from **your laptop**. Clone privcloud on the laptop too (`git clone https://github.com/hamr0/privcloud.git`). Run `federver` → 2 first (copies SSH key, disables password login). Back up the key in `pass`. After that, every step runs from the laptop — server commands auto-SSH to the server, laptop commands run locally. Both machines need the repo.
+**Step 2 and everything after:** Always run `federver` from **your laptop**. Clone privcloud on the laptop too (`git clone https://github.com/hamr0/privcloud.git`). The first laptop run asks for your **server's username and IP** (the ones from step 1) so it knows where to SSH — these are saved to `~/.config/federver/config` and never asked again. (You can also pre-set them with `SERVER_USER` / `SERVER_IP` environment variables.) Then run `federver` → 2 first (copies SSH key, disables password login). Back up the key in `pass`. After that, every step runs from the laptop — server commands auto-SSH to the server, laptop commands run locally. Both machines need the repo.
 
 If you run `federver` on the server by mistake, it shows a reduced menu with only step 1 (bootstrap), Status, Power, and Emergency restart — and a note to run from the laptop for the full menu. No errors, just a redirect.
 
@@ -679,7 +679,7 @@ After step 7 (services deploy), configure each service in your browser. Run `fed
 | Navidrome | HTTP(s) | `http://<server-local-ip>:4533` |
 | FileBrowser | HTTP(s) | `http://<server-local-ip>:8080` |
 
-**Important:** Use the server's local IP (e.g. `192.168.178.180`), not `localhost`. Uptime Kuma runs inside Docker where `localhost` refers to the container itself, not the server.
+**Important:** Use the server's local IP (e.g. `192.168.1.50`), not `localhost`. Uptime Kuma runs inside Docker where `localhost` refers to the container itself, not the server.
 
 4. Optional: go to **Settings → Notifications** to add alerts:
    - **Telegram:** create a bot via @BotFather, get the token and chat ID
@@ -721,7 +721,7 @@ http://federver:2283   Immich
 http://federver:4533   Navidrome
 http://federver:8080   FileBrowser
 http://federver:3001   Uptime Kuma
-ssh ahassan@federver   SSH
+ssh <user>@federver   SSH
 ```
 
 Works from any device with Tailscale installed and logged into the same account. If `federver` doesn't resolve, use the Tailscale IP (`100.x.x.x`) from the Machines tab at [login.tailscale.com](https://login.tailscale.com).
@@ -958,7 +958,7 @@ Pairing just establishes identities. To actually sync something, you create a fo
 
 1. **On one side** — say the laptop — click **Add Folder**
    - **Folder Label:** display name, e.g. `Notes`
-   - **Folder Path:** local path on this device, e.g. `/home/hamr/notes`
+   - **Folder Path:** local path on this device, e.g. `~/notes`
    - **Sharing** tab → tick the other device (server)
    - **Advanced** tab → **Folder Type** stays at **Send & Receive** (the default) for normal two-way sync
    - Save
@@ -968,7 +968,7 @@ Pairing just establishes identities. To actually sync something, you create a fo
 
 Drop a file into the folder on either side → appears on the other side within seconds. Delete, rename, edit — all sync bidirectionally.
 
-**The path is per-device.** The server holds the folder at `/mnt/data/data/notes`, the laptop at `/home/hamr/notes`. Only the contents are synced, not the paths. You can give the same folder totally different locations on each device.
+**The path is per-device.** The server holds the folder at `/mnt/data/data/notes`, the laptop at `~/notes`. Only the contents are synced, not the paths. You can give the same folder totally different locations on each device.
 
 ### Folder encryption (per folder, optional)
 
@@ -1220,10 +1220,10 @@ sudo grubby --set-default /boot/vmlinuz-<previous-version>
 
 ```bash
 # From home
-ssh ahassan@<hostname>
+ssh <user>@<hostname>
 
 # From anywhere (via Tailscale)
-ssh ahassan@federver
+ssh <user>@federver
 ```
 
 ---

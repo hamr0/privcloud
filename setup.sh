@@ -1,6 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.7.3"
+FEDERVER_VERSION="0.7.4"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.
@@ -11,7 +11,7 @@ FEDERVER_VERSION="0.7.3"
 #      Pick option 1 — enables SSH. Then unplug the monitor.
 #
 #   2. From your laptop (everything else):
-#      cd ~/PycharmProjects/privcloud && ./setup.sh
+#      cd ~/privcloud && ./setup.sh
 #      Pick option 2 first (SSH key auth), then any step in any order.
 #      Server-side steps SSH in automatically. Laptop-side steps run locally.
 #
@@ -28,8 +28,15 @@ FEDERVER_VERSION="0.7.3"
 
 set -e
 
-SERVER_USER="ahassan"
-SERVER_IP="192.168.178.180"
+# Server connection details. Never hardcoded here — this is a public repo.
+# Resolution order: environment variables → local config file → interactive
+# prompt (then persisted). The config file lives outside the repo so nothing
+# identifying can ever be committed.
+FEDERVER_CONFIG="${FEDERVER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/federver/config}"
+# shellcheck source=/dev/null
+[[ -f "$FEDERVER_CONFIG" ]] && source "$FEDERVER_CONFIG"
+SERVER_USER="${SERVER_USER:-}"
+SERVER_IP="${SERVER_IP:-}"
 
 # ── Colors ───────────────────────────────────────────
 GREEN='\033[0;32m'
@@ -104,6 +111,30 @@ run_step() {
 
 # ── Location-aware routing ─────────────────────────
 _is_server() { [[ "$(hostname)" == "federver" ]]; }
+
+# Ensure SERVER_USER/SERVER_IP are known before any laptop→server SSH. Prompts
+# once and persists to FEDERVER_CONFIG (outside the repo). No-op on the server
+# itself, which runs steps locally and never needs these.
+_require_server_config() {
+    _is_server && return 0
+    [[ -n "$SERVER_USER" && -n "$SERVER_IP" ]] && return 0
+    echo ""
+    info "First run: where does your server live? (saved to ${FEDERVER_CONFIG})"
+    local no_input="No input. Set SERVER_USER/SERVER_IP env vars or edit ${FEDERVER_CONFIG}."
+    while [[ -z "$SERVER_USER" ]]; do
+        read -rp "  Server username: " SERVER_USER || { echo ""; fail "$no_input"; return 1; }
+    done
+    while [[ -z "$SERVER_IP" ]]; do
+        read -rp "  Server IP or hostname: " SERVER_IP || { echo ""; fail "$no_input"; return 1; }
+    done
+    mkdir -p "$(dirname "$FEDERVER_CONFIG")"
+    ( umask 077
+      cat > "$FEDERVER_CONFIG" <<EOF
+SERVER_USER="$SERVER_USER"
+SERVER_IP="$SERVER_IP"
+EOF
+    ) && ok "Saved server config to $FEDERVER_CONFIG"
+}
 
 _on_server() {
     local step="$1"
@@ -1835,19 +1866,32 @@ step_deploy() {
     echo ""
     echo -e "  ${BOLD}FileBrowser${NC} (port 8080)"
     # Generate a random password, persist it across container recreations,
-    # and save it to a root-readable file so the user can retrieve it later.
+    # and save it to an owner-only file so the user can retrieve it later.
     local fb_pass
     fb_pass=$(openssl rand -base64 12 | tr -d '/+=' | head -c 16)
     local fb_pass_file="$HOME/.privcloud/filebrowser.pass"
     mkdir -p "$(dirname "$fb_pass_file")"
-    printf '%s\n' "$fb_pass" > "$fb_pass_file"
-    chmod 600 "$fb_pass_file"
+    # umask in a subshell so the file is created 0600, not created-then-chmod'd
+    # (no world-readable window).
+    ( umask 077; printf '%s\n' "$fb_pass" > "$fb_pass_file" )
     sleep 2
     sg docker -c "docker stop filebrowser" > /dev/null 2>&1
-    sg docker -c "docker run --rm -v privcloud_filebrowser-db:/database filebrowser/filebrowser:latest users update admin --password '$fb_pass' --database /database/filebrowser.db" > /dev/null 2>&1
-    sg docker -c "docker start filebrowser" > /dev/null 2>&1
-    echo -e "    Login: ${BOLD}admin${NC} / ${BOLD}$fb_pass${NC}"
-    echo -e "    Saved to: ${BLUE}$fb_pass_file${NC} (retrieve with: ${BOLD}cat $fb_pass_file${NC})"
+    # Pass the password through the container's environment (-e), never
+    # interpolated into the shell string — special characters can't break the
+    # command or inject. Check the result instead of swallowing it: a silent
+    # failure would leave the default credentials active.
+    export FB_NEW_PASS="$fb_pass"
+    if sg docker -c 'docker run --rm -e FB_NEW_PASS --entrypoint sh -v privcloud_filebrowser-db:/database filebrowser/filebrowser:latest -c "filebrowser users update admin --password \"\$FB_NEW_PASS\" --database /database/filebrowser.db"' > /dev/null 2>&1; then
+        unset FB_NEW_PASS
+        sg docker -c "docker start filebrowser" > /dev/null 2>&1
+        echo -e "    Login: ${BOLD}admin${NC} / ${BOLD}$fb_pass${NC}"
+        echo -e "    Saved to: ${BLUE}$fb_pass_file${NC} (retrieve with: ${BOLD}cat $fb_pass_file${NC})"
+    else
+        unset FB_NEW_PASS
+        sg docker -c "docker start filebrowser" > /dev/null 2>&1
+        warn "Could not set the FileBrowser admin password automatically."
+        warn "Default credentials may still be active — set one via: ${BOLD}federver → r → 1${NC}"
+    fi
     echo ""
     echo -e "  ${BOLD}Uptime Kuma${NC} (port 3001)"
     echo -e "    Create admin account, then add monitors (use server IP, not localhost):"
@@ -2852,6 +2896,9 @@ PersistentKeepalive = 25"
     ok "WireGuard installed."
 
     sudo mkdir -p "$WG_DIR"
+    # Lock the directory to root before writing any keys, so there's no window
+    # where a freshly tee'd private key is readable by other local users.
+    sudo chmod 700 "$WG_DIR"
 
     info "Generating server keys..."
     wg genkey | sudo tee "$WG_DIR/server_private.key" > /dev/null
@@ -3772,7 +3819,7 @@ _sync_pick_schedule() {
 
 # Install (or rewrite) a systemd --user timer for a sync job.
 #   $1 = job name        (e.g. photos)
-#   $2 = script path     (e.g. /home/hamr/.local/bin/sync-photos.sh)
+#   $2 = script path     (e.g. $HOME/.local/bin/sync-photos.sh)
 #   $3 = OnCalendar spec (e.g. "Sat", "Sun", "weekly")
 _sync_install_timer() {
     local job_name="$1" script_path="$2" oncal="$3"
@@ -4319,7 +4366,7 @@ _list_local_sources() {
     local i=1
     sources=()
 
-    for mnt in $HOME/Documents $HOME/PycharmProjects /stuff; do
+    for mnt in "$HOME/Documents" "$HOME/Pictures" "$HOME/Downloads"; do
         if [[ -d "$mnt" ]]; then
             echo "    $i) $mnt"
             sources[$i]="$mnt"
@@ -4327,7 +4374,7 @@ _list_local_sources() {
         fi
     done
 
-    local usb_mounts=$(ls -d /run/media/hamr/*/ 2>/dev/null || true)
+    local usb_mounts=$(ls -d /run/media/"$USER"/*/ /media/"$USER"/*/ 2>/dev/null || true)
     if [[ -n "$usb_mounts" ]]; then
         echo ""
         echo -e "  ${BOLD}USB drives:${NC}"
@@ -5199,21 +5246,31 @@ step_reset_password() {
         1)
             echo ""
             warn "This will reset the FileBrowser admin password."
-            read -p "  New password: " new_pass
+            # -s: don't echo the password to the terminal/scrollback.
+            read -rsp "  New password: " new_pass; echo ""
             if [[ -z "$new_pass" ]]; then
                 fail "Password is required."
                 return 1
             fi
             sg docker -c "docker stop filebrowser" > /dev/null 2>&1
-            sg docker -c "docker run --rm -v privcloud_filebrowser-db:/database filebrowser/filebrowser:latest users update admin --password '$new_pass' --database /database/filebrowser.db" > /dev/null 2>&1
+            # Password via the container environment (-e), not interpolated into
+            # the shell string — no command injection, no breakage on quotes or
+            # special characters. Check the exit status rather than swallow it.
+            export FB_NEW_PASS="$new_pass"
+            if ! sg docker -c 'docker run --rm -e FB_NEW_PASS --entrypoint sh -v privcloud_filebrowser-db:/database filebrowser/filebrowser:latest -c "filebrowser users update admin --password \"\$FB_NEW_PASS\" --database /database/filebrowser.db"' > /dev/null 2>&1; then
+                unset FB_NEW_PASS
+                sg docker -c "docker start filebrowser" > /dev/null 2>&1
+                fail "Failed to update the FileBrowser password. The old password is unchanged."
+                return 1
+            fi
+            unset FB_NEW_PASS
             sg docker -c "docker start filebrowser" > /dev/null 2>&1
 
             local fb_pass_file="$HOME/.privcloud/filebrowser.pass"
             mkdir -p "$(dirname "$fb_pass_file")"
-            printf '%s\n' "$new_pass" > "$fb_pass_file"
-            chmod 600 "$fb_pass_file"
+            ( umask 077; printf '%s\n' "$new_pass" > "$fb_pass_file" )
 
-            ok "Password reset. Login: admin / $new_pass"
+            ok "Password reset for admin. Saved to $fb_pass_file"
             echo -e "    ${BLUE}http://$IP:8080${NC}"
             ;;
         2)
@@ -5305,6 +5362,9 @@ if _is_server; then
         esac
     done
 else
+    # Laptop manages a remote server — make sure we know which one before
+    # showing the menu (prompts once, then reads from FEDERVER_CONFIG).
+    _require_server_config
     while true; do
         show_menu
         read -p "  Choose: " choice

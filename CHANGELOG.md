@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.4 — 2026-05-23
+
+### Security
+- **Removed hardcoded server identity from the repo (`setup.sh`).** `SERVER_USER` and `SERVER_IP` were baked in as literals — which, on a public repo, both leaked the maintainer's setup *and* meant anyone else who cloned it had federver trying to SSH to the wrong box. They now resolve at runtime: environment variables → a local config file at `${XDG_CONFIG_HOME:-~/.config}/federver/config` → a one-time interactive prompt that persists the answers (written with `umask 077`). New `_require_server_config` helper runs once on the first laptop invocation, before the menu. EOF/non-interactive stdin exits with a clear message instead of an opaque `set -e` death. Also degenericised the remaining personal values: the sync source-picker no longer hardcodes `$HOME/PycharmProjects` / `/stuff` (now `Documents`/`Pictures`/`Downloads`) and USB mounts glob `/run/media/$USER` and `/media/$USER` (was `/run/media/hamr`); guide examples use `<user>@host` and a generic IP.
+- **Fixed shell command injection in the FileBrowser password set/reset (`setup.sh`).** The password was interpolated into a `sg docker -c "… --password '$pass' …"` string; a single quote in the password broke out of the quoting and ran arbitrary commands (confirmed with a PoC). The password is now passed through the container's environment (`docker run -e FB_NEW_PASS … --entrypoint sh -c '… "$FB_NEW_PASS" …'`) and never appears in any shell string — special characters can't break it or inject, and the value no longer shows up in `ps`. Verified injection-safe end-to-end against the real `filebrowser` image.
+- **Password-set failures are no longer swallowed.** Both the deploy and reset paths redirected the `users update` result to `/dev/null` and unconditionally reported success — a silent failure would leave the default credentials active while printing a password that doesn't work. They now check the exit status: deploy warns and points at `federver → r → 1`; reset reports the old password is unchanged. The reset prompt also reads with `read -rs` (no echo to terminal/scrollback).
+- **Tightened data-directory permissions (`privcloud`).** `fix_permissions` set the Immich upload and Postgres data dirs to `0777`, leaving private photos and the database world-readable/writable to every local user. Now `0700` — the containers run as root and read/write regardless of owner, so nothing breaks (Postgres already forces `0700` on its data dir, so the old `777` there was a misleading no-op).
+- **Other hardening.** The FileBrowser password file (`~/.privcloud/filebrowser.pass`) and the `.env` copy written into a backup are created/locked to `0600` (the latter holds the DB password); `/etc/wireguard` is `chmod 700` before any private key is written, closing the brief world-readable window between `tee` and `chmod`.
+
 ## v0.7.3 — 2026-05-21
 
 ### Changed

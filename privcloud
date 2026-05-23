@@ -99,8 +99,12 @@ fix_permissions() {
   upload_loc="$(env_get UPLOAD_LOCATION)"
   db_loc="$(env_get DB_DATA_LOCATION)"
   mkdir -p "$upload_loc" "$db_loc"
-  chmod 777 "$db_loc" 2>/dev/null || true
-  chmod 777 "$upload_loc" 2>/dev/null || true
+  # 700, not 777: the Immich containers run as root, so they read/write these
+  # dirs regardless of owner — no reason to expose private photos or the
+  # database to every local user. (Postgres also requires its data dir to be
+  # 0700 and resets it on init, so 777 here was a misleading no-op anyway.)
+  chmod 700 "$db_loc" 2>/dev/null || true
+  chmod 700 "$upload_loc" 2>/dev/null || true
 }
 
 elevate() {
@@ -628,7 +632,7 @@ cmd_backup() {
 
   # Get destination
   local dest
-  printf "Backup destination (e.g. /run/media/hamr/External): "
+  printf "Backup destination (e.g. /run/media/%s/External): " "$USER"
   read -r dest
   dest="${dest/#\~/$HOME}"
   dest="${dest//\'/}"
@@ -728,8 +732,11 @@ cmd_backup() {
   sudo chmod -R u+rw "$backup_dir/postgres"
   green "Database copied ($db_copied)."
 
-  # Copy .env so restore knows the password and config
-  cp "$ENV_FILE" "$backup_dir/.env" 2>/dev/null
+  # Copy .env so restore knows the password and config. It holds the DB
+  # password, so keep the backup copy readable only by the owner.
+  if cp "$ENV_FILE" "$backup_dir/.env" 2>/dev/null; then
+    chmod 600 "$backup_dir/.env" 2>/dev/null || true
+  fi
 
   echo ""
   green "Backup complete!"

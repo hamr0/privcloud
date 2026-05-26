@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Documentation
+- **Recorded the Headscale evaluation and the decision to stay on hosted Tailscale (`docs/prd-headscale.md`).** Considered swapping Tailscale's proprietary coordination server for a self-hosted Headscale (hwdsl2/docker-headscale) to make the stack OSS end to end. Declined: no substantial driver. The Tailscale *client* is already open source — only the coordination server is the SaaS piece, so the gain is narrow — and self-hosting it requires a public, TLS-terminated HTTPS endpoint reachable by every device, which directly violates our "expose nothing at home, tunnel everything through the tailnet" posture and adds attack surface, new failure modes (we'd own control-plane uptime; key expiry/re-auth/DNS pushes break during an outage), iOS re-auth friction, and reverse-proxy/DDNS complexity that cuts against the lightweight-over-complex rule. The free tier (100 devices/3 users) isn't a constraint we're near. The PRD also notes the load-bearing AdGuard "Override local DNS" path *is* reproducible in Headscale (`dns.override_local_dns`) and records revisit triggers — and that if ever adopted it belongs on a VPS, never on federver.
+
 ## v0.7.4 — 2026-05-23
 
 ### Security

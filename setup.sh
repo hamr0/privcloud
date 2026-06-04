@@ -844,6 +844,40 @@ _storage_mount_source() {
     esac
 }
 
+# Verify that PATH's data drive is backed by a REAL mounted filesystem before a
+# container bind-mounts from it. An x-systemd.automount entry leaves an autofs
+# stub at the mount point that passes `mountpoint -q` even when the actual disk
+# never mounted (wrong/duplicate fstab UUID, hot-unplug). Docker then fails with
+# "no such device" and silently creates empty dirs on the system disk that look
+# like data loss. Only /mnt/* paths are guarded — internal /home paths never
+# need a separate mount. Returns 0 if safe to start, 1 (with guidance) if not.
+_require_data_mount() {
+    local path="$1"
+    [[ "$path" == /mnt/* ]] || return 0
+    # Mount point is the first two components, e.g. /mnt/data.
+    local mp; mp="/$(echo "${path#/}" | cut -d/ -f1-2)"
+    # Poke the path so an idle (healthy) automount triggers — autofs access is
+    # synchronous, so this blocks until the mount settles or the device-timeout
+    # fails. Retry a few times to ride out a slow spin-up before giving up, so
+    # we don't false-positive and block a start on a disk that is actually fine.
+    local src="" i
+    for i in 1 2 3; do
+        ls "$mp" >/dev/null 2>&1 || true
+        src=$(findmnt -frno SOURCE "$mp" 2>/dev/null)
+        [[ "$src" == /dev/* ]] && break
+        [[ "$i" == 3 ]] || sleep 1
+    done
+    if [[ "$src" != /dev/* ]]; then
+        fail "Data drive is not mounted at $mp (source: ${src:-none})."
+        info "Services bind-mount your photos/music/files from here. Starting now"
+        info "would fail with 'no such device' and create empty folders on the"
+        info "system disk that look like data loss."
+        info "Fix it: ${BOLD}federver → 11 → 2${NC} (Mount USB drive), then retry."
+        return 1
+    fi
+    return 0
+}
+
 _storage_status() {
     echo ""
     local FILES_LOCATION MUSIC_LOCATION UPLOAD_LOCATION DB_DATA_LOCATION
@@ -903,6 +937,24 @@ _storage_status() {
 
     echo -e "  ${BOLD}Disk usage${NC}"
     df -h / /home /mnt/data 2>/dev/null | awk 'NR==1{printf "    %-25s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5} NR>1{printf "    %-25s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5}'
+
+    # Flag any /mnt/* data path whose drive isn't actually mounted — an autofs
+    # stub or unmounted point that would make services die with "no such device"
+    # while everything above still looks fine.
+    local p mp seen_mp=""
+    for p in "$data_path" "$media_path" "$immich_path"; do
+        [[ "$p" == /mnt/* ]] || continue
+        mp="/$(echo "${p#/}" | cut -d/ -f1-2)"
+        case " $seen_mp " in *" $mp "*) continue ;; esac
+        seen_mp+=" $mp"
+        ls "$mp" >/dev/null 2>&1 || true
+        local sc; sc=$(findmnt -frno SOURCE "$mp" 2>/dev/null)
+        if [[ "$sc" != /dev/* ]]; then
+            echo ""
+            warn "$mp is NOT mounted (real disk absent; source: ${sc:-none})."
+            info "Services using it will fail to start. Mount: ${BOLD}federver → 11 → 2${NC}."
+        fi
+    done
 
     _storage_check_fstab_options
 }
@@ -992,19 +1044,56 @@ _storage_mount() {
         return 1
     fi
 
-    if grep -q "$uuid" /etc/fstab 2>/dev/null; then
-        ok "Already in fstab."
-        if mountpoint -q "$mount_point" 2>/dev/null; then
-            ok "Already mounted at $mount_point."
-        else
-            sudo mount -a
-            ok "Mounted at $mount_point."
+    # Remove any STALE fstab entries for this mount point that point at a
+    # DIFFERENT device. Two lines for the same mount point (e.g. an old drive's
+    # UUID left behind after a swap) make systemd's autofs generator bind the
+    # wrong device, so every access fails with "no such device" while the mount
+    # point still looks mounted. This is the single most common cause of
+    # "Navidrome/FileBrowser won't start" after changing drives.
+    local stale
+    stale=$(awk -v mp="$mount_point" -v keep="UUID=$uuid" \
+            '$1 !~ /^#/ && $2==mp && $1!=keep {print $1}' /etc/fstab 2>/dev/null)
+    if [[ -n "$stale" ]]; then
+        warn "Stale fstab entr(ies) for $mount_point point at another device:"
+        echo "$stale" | sed 's/^/      /'
+        read -p "  Remove them so only this drive mounts here? [Y/n] " -n 1 -r; echo ""
+        if [[ ! "$REPLY" =~ ^[Nn]$ ]]; then
+            sudo cp /etc/fstab "/etc/fstab.bak.$(date +%Y%m%d-%H%M%S)"
+            local tmp_fstab; tmp_fstab=$(mktemp)
+            sudo awk -v mp="$mount_point" -v keep="UUID=$uuid" \
+                '!($1 !~ /^#/ && $2==mp && $1!=keep)' /etc/fstab > "$tmp_fstab" \
+                && sudo cp "$tmp_fstab" /etc/fstab
+            rm -f "$tmp_fstab"
+            ok "Removed stale entries (backup at /etc/fstab.bak.*)."
         fi
+    fi
+
+    if grep -qE "^UUID=$uuid[[:space:]]" /etc/fstab 2>/dev/null; then
+        ok "Already in fstab."
     else
         echo "UUID=$uuid $mount_point $fstype nofail,x-systemd.automount,x-systemd.device-timeout=10s 0 2" | sudo tee -a /etc/fstab > /dev/null
-        sudo systemctl daemon-reload
-        sudo mount -a
-        ok "Mounted /dev/$partition at $mount_point (permanent via fstab, automount)."
+        ok "Added to fstab."
+    fi
+
+    # Reload units, clear any cached automount failure from the old config, then
+    # mount and VERIFY the real device is there — not just an autofs stub. The
+    # old code trusted `mountpoint -q`, which is true for the autofs placeholder
+    # even when the actual disk never mounted.
+    sudo systemctl daemon-reload
+    sudo systemctl reset-failed "$(systemd-escape -p --suffix=mount "$mount_point")" \
+                                "$(systemd-escape -p --suffix=automount "$mount_point")" 2>/dev/null || true
+    sudo umount -l "$mount_point" 2>/dev/null || true
+    local mnt_err
+    mnt_err=$(sudo mount "$mount_point" 2>&1) || { fail "Mount failed: $mnt_err"; return 1; }
+
+    local real_src
+    real_src=$(findmnt -frno SOURCE "$mount_point" 2>/dev/null)
+    if [[ "$real_src" == "/dev/$partition" ]]; then
+        ok "Mounted /dev/$partition at $mount_point (verified real device)."
+    else
+        fail "$mount_point reports mounted but the real disk isn't there (source: ${real_src:-none})."
+        info "Check for duplicate /etc/fstab entries or a failed automount unit."
+        return 1
     fi
 
     echo ""
@@ -1365,6 +1454,25 @@ _services_action() {
     [[ "$action" == "start" ]] && running_filter=0
     local target
     target=$(_pick_container "$running_filter") || { info "Cancelled."; return; }
+
+    local SCRIPT_DIR
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    # Pre-flight: starting a container that bind-mounts the data drive while that
+    # drive isn't mounted fails with "no such device" and silently writes empty
+    # dirs to the system disk. Guard the data-backed services before we try.
+    if [[ "$action" == "start" ]]; then
+        local _media _files
+        _media=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null)
+        _files=$(_env_get FILES_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null)
+        case "$target" in
+            navidrome)   _require_data_mount "${_media:-/mnt/data/media}" || return 1 ;;
+            filebrowser) _require_data_mount "${_files:-/mnt/data}"       || return 1 ;;
+            all)         _require_data_mount "${_files:-/mnt/data}"       || return 1 ;;
+        esac
+    fi
+
+    local rc=0
     if [[ "$target" == "all" ]]; then
         # Confirm before stopping everything — easy to hit by accident.
         if [[ "$action" == "stop" ]]; then
@@ -1374,15 +1482,13 @@ _services_action() {
             echo ""
             [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
         fi
-        local SCRIPT_DIR
-        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         cd "$SCRIPT_DIR"
         case "$action" in
             start)
                 for c in $(sudo docker ps -a --format '{{.Names}}'); do
                     sudo docker update --restart=unless-stopped "$c" > /dev/null 2>&1 || true
                 done
-                sg docker -c "docker compose up -d"
+                sg docker -c "docker compose up -d"; rc=$?
                 # Also start standalone containers (not in docker-compose.yml)
                 for c in adguard syncthing; do
                     sudo docker start "$c" > /dev/null 2>&1 || true
@@ -1392,13 +1498,13 @@ _services_action() {
                 for c in $(sudo docker ps --format '{{.Names}}'); do
                     sudo docker update --restart=no "$c" > /dev/null 2>&1 || true
                 done
-                sg docker -c "docker compose stop"
+                sg docker -c "docker compose stop"; rc=$?
                 # Also stop standalone containers
                 for c in adguard syncthing; do
                     sudo docker stop "$c" > /dev/null 2>&1 || true
                 done
                 ;;
-            restart) sg docker -c "docker compose restart" ;;
+            restart) sg docker -c "docker compose restart"; rc=$? ;;
         esac
     else
         # Extras with both-sides lifecycle have their own submenus.
@@ -1417,16 +1523,23 @@ _services_action() {
         case "$action" in
             start)
                 sudo docker update --restart=unless-stopped "$target" > /dev/null 2>&1 || true
-                sudo docker start "$target" > /dev/null
+                sudo docker start "$target" > /dev/null; rc=$?
                 ;;
             stop)
                 sudo docker update --restart=no "$target" > /dev/null 2>&1 || true
-                sudo docker stop "$target" > /dev/null
+                sudo docker stop "$target" > /dev/null; rc=$?
                 ;;
-            restart) sudo docker restart "$target" > /dev/null ;;
+            restart) sudo docker restart "$target" > /dev/null; rc=$? ;;
         esac
     fi
-    ok "${action^} complete."
+
+    if (( rc == 0 )); then
+        ok "${action^} complete."
+    else
+        fail "${action^} failed for ${target} (exit $rc)."
+        info "Check logs: ${BOLD}federver → 7 → 5${NC}  (or: docker logs <name>)"
+        return 1
+    fi
 }
 
 _services_logs() {
@@ -1835,6 +1948,12 @@ step_deploy() {
     DB_DATA_LOCATION=$(_env_get DB_DATA_LOCATION "$SCRIPT_DIR/.env")
     MEDIA_LOCATION=$(_env_get MEDIA_LOCATION "$SCRIPT_DIR/.env")
     MUSIC_LOCATION=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env")
+
+    # Bail before creating dirs or starting containers if the data drive isn't
+    # mounted — otherwise mkdir writes empty folders to the system disk under the
+    # unmounted stub and every data-backed container fails with "no such device".
+    _require_data_mount "$base_path" || return 1
+
     sudo mkdir -p "$UPLOAD_LOCATION" "$DB_DATA_LOCATION" "$MEDIA_LOCATION" "$MUSIC_LOCATION" 2>/dev/null || true
 
     # Seed smart playlists into the music folder before Navidrome starts, so its
@@ -1842,7 +1961,12 @@ step_deploy() {
     _install_smart_playlists
 
     cd "$SCRIPT_DIR"
-    sg docker -c "docker compose up -d"
+    if ! sg docker -c "docker compose up -d"; then
+        echo ""
+        fail "One or more containers failed to start."
+        info "Check logs: ${BOLD}federver → 7 → 5${NC}  (or: docker compose logs)"
+        return 1
+    fi
 
     IP=$(hostname -I | awk '{print $1}')
     echo ""

@@ -12,6 +12,8 @@
 
 **Public repo — no hardcoded config.** This repo is public. Never commit user-specific values (SSH usernames, LAN/Tailscale IPs, personal paths like `/home/<user>` or `/run/media/<user>`, secrets). Resolve them at runtime: env var → local config file outside the repo (e.g. `${XDG_CONFIG_HOME:-~/.config}/federver/config`) → interactive prompt that persists (write with `umask 077`). `setup.sh`'s `_require_server_config` is the reference pattern; use `$USER`/`$HOME` in paths.
 
+**Server SSH must work home and away.** The config holds `SERVER_IP` (LAN, fast at home) and optional `SERVER_HOST_TS` (Tailscale name/IP, reachable anywhere). At startup `_resolve_server_endpoint` probes the LAN address and falls back to `SERVER_HOST_TS` when roaming, so all SSH targets one resolved `SERVER_IP`. All laptop→server `ssh` goes through the `ssh()` wrapper (`ConnectTimeout` + keepalives) so an unreachable address fails fast instead of hanging — never call `command ssh` directly for server hops.
+
 For full development and testing standards, see `.claude/memory/AGENT_RULES.md`.
 
 ## Project: privcloud

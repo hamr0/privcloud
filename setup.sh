@@ -1,6 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.8.3"
+FEDERVER_VERSION="0.8.4"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.
@@ -37,6 +37,11 @@ FEDERVER_CONFIG="${FEDERVER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/federver/c
 [[ -f "$FEDERVER_CONFIG" ]] && source "$FEDERVER_CONFIG"
 SERVER_USER="${SERVER_USER:-}"
 SERVER_IP="${SERVER_IP:-}"
+# Optional Tailscale name/IP for the server. SERVER_IP is usually a LAN address
+# that only answers at home; this is the address that answers from anywhere on
+# the tailnet. When set, the laptop falls back to it automatically when the LAN
+# address is unreachable (i.e. when roaming). Lives in the config file, not here.
+SERVER_HOST_TS="${SERVER_HOST_TS:-}"
 
 # ── Colors ───────────────────────────────────────────
 GREEN='\033[0;32m'
@@ -78,6 +83,20 @@ if [[ "$DRY_RUN" == "1" ]]; then
         esac
     }
 fi
+
+# ── SSH connection hardening ─────────────────────────
+# Every laptop→server SSH in this script goes through this wrapper. Without it,
+# a wrong/unreachable address (e.g. a LAN IP while roaming) makes ssh block on
+# the kernel's default connect timeout — a minute-plus "hang" with no feedback.
+# ConnectTimeout fails fast instead; the keepalives drop a frozen roaming link
+# within ~1min rather than freezing the menu. `command ssh` avoids recursion.
+ssh() {
+    command ssh -o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$@"
+}
+
+# True if a TCP connection to host:port completes within 2s. Used to pick a
+# reachable server address before opening the menu. /dev/tcp is a bash builtin.
+_tcp_open() { timeout 2 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; }
 
 # Run a step with clear screen and success/fail banner.
 # Convention: a step that returns 2 means "user picked Back before doing
@@ -127,11 +146,17 @@ _require_server_config() {
     while [[ -z "$SERVER_IP" ]]; do
         read -rp "  Server IP or hostname: " SERVER_IP || { echo ""; fail "$no_input"; return 1; }
     done
+    # Optional: a Tailscale name/IP that works when away from home. If the
+    # address above is a LAN IP, set this so the menu keeps working while
+    # roaming; press Enter to skip.
+    [[ -z "$SERVER_HOST_TS" ]] && \
+        read -rp "  Tailscale name/IP for access away from home (optional): " SERVER_HOST_TS
     mkdir -p "$(dirname "$FEDERVER_CONFIG")"
     ( umask 077
       cat > "$FEDERVER_CONFIG" <<EOF
 SERVER_USER="$SERVER_USER"
 SERVER_IP="$SERVER_IP"
+SERVER_HOST_TS="$SERVER_HOST_TS"
 EOF
     ) && ok "Saved server config to $FEDERVER_CONFIG"
 }
@@ -145,7 +170,7 @@ _on_server() {
         echo ""
         local dry=""
         [[ "$DRY_RUN" == "1" ]] && dry="--dry-run "
-        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && git pull --ff-only -q 2>/dev/null; ./setup.sh ${dry}--run $step"
+        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && GIT_TERMINAL_PROMPT=0 git pull --ff-only -q 2>/dev/null; ./setup.sh ${dry}--run $step"
     fi
 }
 
@@ -157,6 +182,26 @@ _on_laptop() {
     else
         "$step"
     fi
+}
+
+# Pick a reachable address for the server before the menu opens. SERVER_IP is
+# typically a LAN address that only answers at home; SERVER_HOST_TS (optional,
+# from the config file) is the Tailscale address that answers from anywhere.
+# Probe the LAN address first — if it answers we keep it (fast path at home);
+# otherwise switch to the Tailscale fallback so being away from home fails over
+# instead of hanging. No-op on the server itself, and a no-op (beyond the ssh
+# wrapper's fast-fail) when no fallback is configured.
+_resolve_server_endpoint() {
+    _is_server && return 0
+    [[ -z "$SERVER_HOST_TS" || "$SERVER_HOST_TS" == "$SERVER_IP" ]] && return 0
+    _tcp_open "$SERVER_IP" 22 && return 0
+    if _tcp_open "$SERVER_HOST_TS" 22; then
+        info "LAN address ($SERVER_IP) unreachable — using Tailscale ($SERVER_HOST_TS)."
+        SERVER_IP="$SERVER_HOST_TS"
+        return 0
+    fi
+    warn "Neither $SERVER_IP nor $SERVER_HOST_TS answered on port 22."
+    warn "If you're away from home, make sure Tailscale is up on this machine."
 }
 
 step_emergency() {
@@ -5652,6 +5697,7 @@ else
     # Laptop manages a remote server — make sure we know which one before
     # showing the menu (prompts once, then reads from FEDERVER_CONFIG).
     _require_server_config
+    _resolve_server_endpoint
     while true; do
         show_menu
         read -p "  Choose: " choice

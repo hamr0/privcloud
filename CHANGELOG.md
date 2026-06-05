@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.4 — 2026-06-05
+
+### Fixed
+- **The menu no longer hangs when run away from home; laptop→server SSH fails over to Tailscale automatically (`setup.sh`).** `SERVER_IP` is typically a LAN address (e.g. `192.168.178.180`) that only answers at home. Off the home network it's unreachable, and because every `ssh` call ran with no connect timeout, picking a remote option (e.g. `federver` → 11, Manage storage) blocked on the kernel's default TCP connect timeout — a minute-plus silent "hang" stuck on `Connecting to server...`. This was 100% deterministic, not flaky: the LAN IP simply has no route when roaming. Three changes fix it: (1) a global `ssh()` wrapper adds `ConnectTimeout=8` + keepalives (`ServerAliveInterval=15`, `ServerAliveCountMax=4`) so no SSH call can hang silently — a dead address now fails in ~8s with a real error, and a dropped roaming link is detected within ~1min instead of freezing the menu; (2) `_resolve_server_endpoint` probes the LAN address on port 22 at startup (2s timeout) and, when it doesn't answer, switches to a new optional `SERVER_HOST_TS` config value (the server's Tailscale name/IP, which answers from anywhere on the tailnet) — fast path at home, automatic fallback when away; (3) the remote `git pull` in the SSH hop now runs with `GIT_TERMINAL_PROMPT=0` so it can't block on a hidden credential prompt. The fallback covers all ~40 SSH call sites at once by resolving `SERVER_IP` a single time before the menu opens, rather than touching each call. `SERVER_HOST_TS` lives in the out-of-repo config file (`~/.config/federver/config`) and the first-run prompt now asks for it (optional, press Enter to skip), so nothing identifying is committed. Validated live from a roaming connection: LAN probe fails in 2s, falls over to the tailnet address, and the full hop (connect → `git pull` → `--run`) succeeds.
+
 ## v0.8.3 — 2026-06-05
 
 ### Fixed

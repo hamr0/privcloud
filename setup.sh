@@ -2098,7 +2098,7 @@ step_deploy() {
     echo ""
     echo -e "  ${BOLD}Navidrome${NC} (port 4533)"
     echo -e "    Open in browser, create admin account. Music is served from /music."
-    echo -e "    Download ${BOLD}Amperfy${NC} from the App Store for iPhone playback"
+    echo -e "    Download ${BOLD}Arpeggi${NC} from the App Store for iPhone playback"
     echo -e "    (background playback + offline cache via Subsonic API)."
     echo ""
     echo -e "  ${BOLD}FileBrowser${NC} (port 8080)"

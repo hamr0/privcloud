@@ -63,5 +63,5 @@ that folder out of it.
   check the Navidrome log for a parse error and confirm the field name against the docs:
   https://www.navidrome.org/docs/usage/smartplaylists/
 - **Clients can play these but not create them.** `.nsp` is a server-side file feature.
-  Amperfy (and other Subsonic apps) will see and play the resulting playlist, but you
+  Arpeggi (and other Subsonic apps) will see and play the resulting playlist, but you
   can't author/edit the rules from the app — edit the files via FileBrowser or SSH.

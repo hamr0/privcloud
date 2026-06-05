@@ -651,12 +651,12 @@ After step 7 (services deploy), configure each service in your browser. Run `fed
 
 1. Open `http://<server-ip>:4533` in browser, create admin account
 2. Music is automatically scanned from the `MUSIC_LOCATION` folder
-3. Install **Amperfy** on iPhone (free, App Store) for mobile playback:
+3. Install **Arpeggi** on iPhone (free, App Store) for mobile playback:
    - Supports background playback and offline caching via Subsonic API
    - Server URL: `http://<server-ip>:4533`
    - Log in with your Navidrome credentials
 4. Upload music via FileBrowser into `media/My Music/` — Navidrome picks it up automatically
-5. **Smart playlists (auto-installed):** deploy drops self-updating playlists into `media/My Music/Playlists/` — **Daily Mix**, **Rediscover**, **On Repeat**, **90s**, **2000s**, **Throwback**, and **Surprise Me**. Navidrome builds them from your own library, play history (play counts, "loved" tracks), and `year` tags, refreshing them on each scan. They appear under **Playlists** in Navidrome and Amperfy. To tweak the rules or add your own, edit the `.nsp` files in `media/My Music/Playlists/` via FileBrowser (one JSON file = one playlist; see `tools/navidrome/README.md`). The decade/throwback lists need `year` ID3 tags; if empty, tag the library with MusicBrainz Picard. Note: smart playlists are a server-side feature — Amperfy can *play* them but can't create or edit them from the app.
+5. **Smart playlists (auto-installed):** deploy drops self-updating playlists into `media/My Music/Playlists/` — **Daily Mix**, **Rediscover**, **On Repeat**, **90s**, **2000s**, **Throwback**, and **Surprise Me**. Navidrome builds them from your own library, play history (play counts, "loved" tracks), and `year` tags, refreshing them on each scan. They appear under **Playlists** in Navidrome and Arpeggi. To tweak the rules or add your own, edit the `.nsp` files in `media/My Music/Playlists/` via FileBrowser (one JSON file = one playlist; see `tools/navidrome/README.md`). The decade/throwback lists need `year` ID3 tags; if empty, tag the library with MusicBrainz Picard. Note: smart playlists are a server-side feature — Arpeggi can *play* them but can't create or edit them from the app.
 
 ### FileBrowser (port 8080)
 

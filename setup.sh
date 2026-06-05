@@ -4612,24 +4612,80 @@ _pick_server_path() {
     done
 }
 
+# Ask how a directory should be copied — in plain words, not rsync jargon — and
+# draw a tree of exactly what the destination will look like for the choice, so
+# the user confirms intent by seeing the result rather than remembering trailing
+# slashes. Sets copy_mode=folder|contents; callers turn that into rsync's slash.
+# A single file needs no question — it lands in the destination folder.
+# Args: src_path  is_dir(true|false)  dst_path  src_loc(local|server)
 _pick_copy_mode() {
     local src_path="$1"
     local is_dir="$2"
-    local src_name=$(basename "$src_path")
+    local dst_path="$3"
+    local src_loc="${4:-local}"
+    local src_name; src_name=$(basename "$src_path")
     copy_mode="contents"
-    if [[ "$is_dir" == "true" ]]; then
-        echo ""
-        echo -e "  ${BOLD}Copy mode for ${src_name}/:${NC}"
-        echo -e "    ${BOLD}1)${NC} Copy folder     ${DIM}destination/${src_name}/files...  (creates the folder inside)${NC}"
-        echo -e "    ${BOLD}2)${NC} Copy contents   ${DIM}destination/files...              (files go directly in)${NC}"
-        echo ""
-        echo -e "  ${YELLOW}Tip: if your destination path already ends with /${src_name}, pick 2.${NC}"
-        echo -e "    ${BOLD}0)${NC} Back"
-        echo ""
-        read -p "  Mode [0/1/2]: " mode
-        [[ -z "$mode" || "$mode" == "0" ]] && return 2
-        [[ "$mode" == "2" ]] && copy_mode="contents" || copy_mode="folder"
+
+    # Non-directory (single file): it simply goes into the destination folder.
+    [[ "$is_dir" != "true" ]] && return 0
+
+    echo ""
+    echo -e "  ${BOLD}How should \"${src_name}\" be copied?${NC}"
+    echo -e "    ${BOLD}1)${NC} The whole folder    ${DIM}→ a \"${src_name}\" folder is created inside the destination${NC}"
+    echo -e "    ${BOLD}2)${NC} Only its contents   ${DIM}→ files land directly in the destination${NC}"
+    echo -e "    ${BOLD}0)${NC} Back"
+    echo ""
+    read -p "  Select [1/2]: " mode
+    [[ -z "$mode" || "$mode" == "0" ]] && return 2
+    [[ "$mode" == "2" ]] && copy_mode="contents" || copy_mode="folder"
+
+    # Top-level listing of the source, used only to draw the preview tree.
+    local listing
+    if [[ "$src_loc" == "server" ]]; then
+        listing=$(ssh "$SERVER_USER@$SERVER_IP" "ls -1 '$src_path' 2>/dev/null")
+    else
+        listing=$(ls -1 "$src_path" 2>/dev/null)
     fi
+
+    echo ""
+    echo -e "  ${BOLD}Destination will look like this:${NC}"
+    echo -e "    ${dst_path}/"
+    if [[ "$copy_mode" == "folder" ]]; then
+        echo -e "    └── ${src_name}/"
+        _print_tree_entries "$listing" "        "
+    else
+        _print_tree_entries "$listing" "    "
+    fi
+    echo ""
+    return 0
+}
+
+# Render up to 6 entries of a newline-separated listing as a tree branch under
+# INDENT, with "… and N more" when truncated, or a sudo note when the listing is
+# empty (e.g. a root-owned 0700 source we can't read without sudo).
+_print_tree_entries() {
+    local listing="$1"
+    local indent="$2"
+    if [[ -z "$listing" ]]; then
+        echo -e "${indent}└── ${DIM}(can't list without sudo — everything will still be copied)${NC}"
+        return
+    fi
+    local total shown n more i=0 line
+    total=$(printf '%s\n' "$listing" | grep -c .)
+    shown=$(printf '%s\n' "$listing" | grep . | head -6)
+    n=$(printf '%s\n' "$shown" | grep -c .)
+    more=$(( total - n ))
+    while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        i=$((i + 1))
+        if (( i == n && more <= 0 )); then
+            echo -e "${indent}└── ${line}"
+        else
+            echo -e "${indent}├── ${line}"
+        fi
+    done <<< "$shown"
+    (( more > 0 )) && echo -e "${indent}└── ${DIM}… and ${more} more${NC}"
+    return 0
 }
 
 _sync_one_time_backup() {
@@ -4672,7 +4728,7 @@ _sync_one_time_backup() {
 
             local is_dir="false"
             [[ -d "$src_path" ]] && is_dir="true"
-            _pick_copy_mode "$src_path" "$is_dir" || return
+            _pick_copy_mode "$src_path" "$is_dir" "$dst_path" "local" || return
             local rsync_src="$src_path/"
             local dest_display="$dst_path"
             if [[ "$copy_mode" == "folder" ]]; then
@@ -4707,7 +4763,7 @@ _sync_one_time_backup() {
 
             local is_dir="false"
             ssh "$SERVER_USER@$SERVER_IP" "test -d '$src_path'" 2>/dev/null && is_dir="true"
-            _pick_copy_mode "$src_path" "$is_dir" || return
+            _pick_copy_mode "$src_path" "$is_dir" "$dst_path" "server" || return
             local rsync_src="$src_path/"
             local dest_display="$dst_path"
             if [[ "$copy_mode" == "folder" ]]; then
@@ -4741,7 +4797,7 @@ _sync_one_time_backup() {
 
             local is_dir="false"
             [[ -d "$src_path" ]] && is_dir="true"
-            _pick_copy_mode "$src_path" "$is_dir" || return
+            _pick_copy_mode "$src_path" "$is_dir" "$dst_path" "local" || return
             local rsync_src="$src_path/"
             local dest_display="$dst_path"
             if [[ "$copy_mode" == "folder" ]]; then
@@ -4778,7 +4834,7 @@ _sync_one_time_backup() {
             # Both paths live on the server; rsync runs there over one SSH session.
             local is_dir="false"
             ssh "$SERVER_USER@$SERVER_IP" "test -d '$src_path'" 2>/dev/null && is_dir="true"
-            _pick_copy_mode "$src_path" "$is_dir" || return
+            _pick_copy_mode "$src_path" "$is_dir" "$dst_path" "server" || return
             local rsync_src="$src_path/"
             local dest_display="$dst_path"
             if [[ "$copy_mode" == "folder" ]]; then
@@ -4867,7 +4923,7 @@ step_sync() {
             _pick_server_path false || return
 
             [[ -d "$local_path" ]] && local is_dir="true" || local is_dir="false"
-            _pick_copy_mode "$local_path" "$is_dir" || return
+            _pick_copy_mode "$local_path" "$is_dir" "$server_path" "local" || return
             local rsync_src="$local_path/"
             local dest_display="$server_path"
             if [[ "$copy_mode" == "folder" ]]; then
@@ -4898,7 +4954,7 @@ step_sync() {
 
             local is_dir="false"
             ssh "$SERVER_USER@$SERVER_IP" "test -d '$server_path'" 2>/dev/null && is_dir="true"
-            _pick_copy_mode "$server_path" "$is_dir" || return
+            _pick_copy_mode "$server_path" "$is_dir" "$local_path" "server" || return
             local rsync_src="$server_path/"
             local dest_display="$local_path"
             if [[ "$copy_mode" == "folder" ]]; then

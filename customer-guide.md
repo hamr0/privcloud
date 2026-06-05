@@ -456,7 +456,7 @@ Expect ~20-30% overhead on top of your original library for thumbnails and previ
 privcloud backup
 ```
 
-Stops server, copies photos + database + config to destination, restarts. Incremental after first run.
+Stops server, copies photos + database + config to destination, restarts. Before running it previews the destination layout as a tree (`privcloud-backup/photos` + `/postgres`, with sizes) and asks **Append** (keep everything on the backup) vs **Mirror** (exact copy, removes files deleted from source). Incremental after first run.
 
 ### How often
 
@@ -1044,9 +1044,14 @@ When run directly on the server, option 12 opens a server-only submenu instead.
 
 Menu is organised by category — `Status` spans everything, then `Sync -` entries (rsync between laptop and server), `Backup -` entries (one-time + scheduled Immich DB dump), and `Monitor -` (disk-space heartbeat).
 
-- **Sync - New** (option 2) — upload or download files and directories between laptop and server. Accepts files and directories, strips quotes and trailing slashes, handles folder-vs-contents mode (with a visual preview of the result path + a tip to avoid accidental nesting). Exit any step with `0` in menus or `q` in text prompts (no Ctrl+C needed), 3-attempt retry on invalid input. At the end you choose: run now or schedule as a recurring job.
+- **Sync - New** (option 2) — upload or download files and directories between laptop and server. Accepts files and directories, strips quotes and trailing slashes. When the source is a folder it asks in plain words whether to copy **the whole folder** or **only its contents**, then previews the exact result as a directory tree — so you confirm by *seeing* where files land, not by reasoning about trailing slashes. Exit any step with `0` in menus or `q` in text prompts (no Ctrl+C needed), 3-attempt retry on invalid input. At the end you choose: run now or schedule as a recurring job.
 - **Delete files** (option 2 → 3) — remove files on the laptop or server side.
-- **Backup - One-time** (option 5) — ad-hoc rsync that runs once and leaves nothing behind: no cron entry, no timer, no saved script. Pick a direction (Upload / Download / Local — laptop → laptop covers backups to a USB drive plugged into the laptop), pick source + destination using the same pickers as Sync - New (USB drives are auto-listed with their size), preview the resulting paths, confirm `y/N`. Built for "I want a backup right now, not on a schedule."
+- **Backup - One-time** (option 5) — ad-hoc rsync that runs once and leaves nothing behind: no cron entry, no timer, no saved script. Pick a direction:
+  - **Upload** — laptop → server
+  - **Download** — server → laptop
+  - **Local** — laptop → laptop (e.g. to a USB drive plugged into the laptop)
+  - **Server** — server → server (e.g. `/mnt/data` → a backup drive plugged into the server), copied with `sudo rsync` directly on the server without routing the bytes through the laptop
+  Pick source + destination using the same pickers as Sync - New (USB drives are auto-listed with their size), see the same plain-words copy choice + tree preview of the result, confirm `y/N`. Built for "I want a backup right now, not on a schedule."
 - **Scheduled sync jobs** (option 2 → "Schedule as recurring job") — set up rsync jobs that run automatically. Two schedule kinds, picked during creation:
   - **Cron** (presets: every hour, every 6h, daily at 2am, or custom expression with built-in cheat sheet + English translation). Simple, exact-time. If the laptop is off at the scheduled minute, that run is lost.
   - **Systemd timer** (once a week, any time — Sat / Sun / any day). Uses `Persistent=true` + 6h randomized delay so a missed run is caught on next boot. The right pick for weekly jobs on a laptop that might be off at a specific hour.

@@ -648,8 +648,11 @@ cmd_backup() {
   local avail
   avail="$(df -h "$dest" 2>/dev/null | awk 'NR==2{print $4}')"
   echo ""
-  echo "  Destination:  $backup_dir"
-  echo "  Available:    $avail"
+  echo "  Destination will look like this:"
+  echo "    $backup_dir/"
+  echo "    ├── photos/      ($photos_size)"
+  echo "    └── postgres/    ($db_size)"
+  echo "  Available on drive: $avail"
   echo ""
 
   # Check if any containers are running and stop them

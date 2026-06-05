@@ -1,9 +1,9 @@
 {
-  "name": "🎼 All English",
-  "comment": "Everything under the english/ folder and all its subfolders.",
+  "name": "🎼 English+",
+  "comment": "A rotating random 2500 from the english/ folder tree (and all its subfolders).",
   "all": [
     { "startsWith": { "filepath": "english/" } }
   ],
-  "sort": "artist",
-  "order": "asc"
+  "sort": "random",
+  "limit": 2500
 }

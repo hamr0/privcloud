@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.6 — 2026-06-05
+
+### Changed
+- **The two folder playlists are now lighter, rotating mixes: "🎼 English+" and "🎶 Arabic+" (renamed from "All English"/"All Arabic"), each capped at a random 2,500 tracks (`tools/navidrome/playlists/`).** The unlimited versions from v0.8.5 were too heavy to load in clients — "All English" alone was ~65,000 tracks. Both now use `sort: random` + `limit: 2500`, so they pull a fresh random 2,500 from their folder tree. Navidrome reshuffles a smart playlist on access (throttled by `ND_SMARTPLAYLISTREFRESHDELAY`, default ~5s), so each open gives a new random selection — new music at least daily, with no per-playlist scheduling. Note: Navidrome does **not** rename or re-cap an existing synced playlist on re-import (the name/rules are bound at creation), so on the live server the old playlists were deleted from the DB and recreated to pick up the new name and limit; a fresh install gets the right values directly from the `.nsp` files. Smart playlists materialize lazily on first open — verified live at 2,500/2,500 for both once opened.
+
 ## v0.8.5 — 2026-06-05
 
 ### Added

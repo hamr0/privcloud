@@ -1,6 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.8.2"
+FEDERVER_VERSION="0.8.3"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.
@@ -1250,7 +1250,7 @@ _install_smart_playlists() {
     music_dir=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env")
     src="$SCRIPT_DIR/tools/navidrome/playlists"
     [[ -n "$music_dir" && -d "$src" ]] || return 0
-    dest="$music_dir/Playlists"
+    dest="$music_dir/playlists"
     sudo mkdir -p "$dest" || return 0
     if sudo cp "$src"/*.nsp "$dest"/ 2>/dev/null; then
         ok "Smart playlists installed to: $dest"

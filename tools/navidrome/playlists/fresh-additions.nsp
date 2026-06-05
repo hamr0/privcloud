@@ -1,0 +1,10 @@
+{
+  "name": "🆕 Fresh Additions",
+  "comment": "Music added to the library in the last 90 days (by file date, not release year).",
+  "all": [
+    { "inTheLast": { "dateAdded": 90 } }
+  ],
+  "sort": "dateAdded",
+  "order": "desc",
+  "limit": 100
+}

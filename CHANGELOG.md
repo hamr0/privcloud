@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.3 — 2026-06-05
+
+### Fixed
+- **Navidrome no longer imports hundreds of stray playlists from the music library (`docker-compose.yml`, `setup.sh`).** By default Navidrome scans the entire music folder for playlist files and imports each one; a legacy collection with a `playlist.m3u` in nearly every album folder turned into ~500 junk playlists (513 total in the DB) that buried the 7–8 curated smart playlists. The navidrome service now sets `ND_PLAYLISTS_PATH: playlists`, so Navidrome imports playlists **only** from `<music>/playlists` and ignores every `.m3u`/`.m3u8` scattered through the album tree. `_install_smart_playlists` now writes the curated `.nsp` templates into that lowercase `playlists` folder (was `Playlists`) so the script and Navidrome agree on one location instead of creating a duplicate case-variant folder that got imported twice.
+
+### Added
+- **`fresh-additions.nsp` smart playlist (`tools/navidrome/playlists/`).** "🆕 Fresh Additions" — music added to the library in the last 90 days (`dateAdded`), newest first. Smart playlists are rule-based, so it auto-populates as new music is added, with no manual upkeep. It was already deployed on the server but missing from the repo, so a reinstall would have dropped it.
+
 ## v0.8.2 — 2026-06-05
 
 ### Fixed

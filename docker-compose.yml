@@ -80,6 +80,11 @@ services:
       ND_SCANSCHEDULE: 1h
       ND_LOGLEVEL: info
       ND_BASEURL: ""
+      # Import playlists ONLY from <music>/playlists, not the whole library.
+      # The legacy collection has hundreds of per-album .m3u files; without this
+      # Navidrome auto-imports every one as a playlist. Curated .nsp smart
+      # playlists live in that folder; everything else in the tree is ignored.
+      ND_PLAYLISTS_PATH: playlists
     restart: always
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:4533/ping || exit 1"]

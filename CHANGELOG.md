@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.7 — 2026-06-05
+
+### Changed
+- **The eight curated smart playlists now cap at 250 tracks, up from 50/100 (`tools/navidrome/playlists/`).** Daily Mix, On Repeat, Rediscover (were 50) and 2000s, 90s, Fresh Additions, Surprise Me, Throwback (were 100) all moved to `limit: 250` for longer mixes. English+/Arabic+ are unchanged at 2,500. Unlike a name change, a `limit` is part of the smart-playlist rules and applies on re-import — no delete/recreate needed; the new cap is live and shows on each playlist's next open. Year-scoped lists (decades, Throwback) may still come in under 250 when fewer tracks match — 250 is the cap, not a target.
+
 ## v0.8.6 — 2026-06-05
 
 ### Changed

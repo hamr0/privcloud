@@ -6,7 +6,7 @@
 3. [Testing Standards](#testing-standards)
 4. [Environment](#environment)
 5. [Development Workflow](#development-workflow)
-6. [Twelve-Factor Reference](#twelve-factor-reference)
+6. [Twelve-Factor Checklist](#twelve-factor-checklist)
 7. [CLAUDE.md Stub](#claudemd-stub)
 8. [AI Agent Instructions](#ai-agent-instructions)
 
@@ -25,6 +25,7 @@
 - **Learning Style**: Understands concepts, needs executable instructions
 - **Expects**: Step-by-step guidance with clear explanations
 - **Comfortable with**: Command-line operations and scripts
+- **Builds a lot of web apps** — assume any UI work will be consumed on phones as well as desktop
 
 ### Required Safeguards
 - Always identify affected files before making changes
@@ -74,6 +75,8 @@ Before adding any external dependency, all of these must be true:
 - **Every line must have a purpose.** No speculative code, no "might need this later", no abstractions for one use case
 - **Simple > clever.** Readable code that a junior can follow beats elegant code that requires a PhD to debug
 - **Containerize only when necessary.** Start with a virtualenv or bare metal. Docker adds value for deployment parity and isolation — not for running a script
+- **Responsive web UI is mandatory in dev projects.** Any web UI must be usable on mobile by default — fluid layouts, viewport meta tag, breakpoints for narrow screens, no horizontal scroll. Test in DevTools device emulation before declaring a UI task done. POCs are exempt (validate the idea first), but the moment a POC graduates to a real project this becomes a hard requirement
+- **Surgical changes only.** Touch what the task requires; nothing else. Don't "improve" adjacent code, comments, or formatting. Match existing style even if you'd do it differently. Only clean up orphans your own change created — leave pre-existing dead code alone unless asked. Every changed line should trace directly to the request
 
 ### Red Flags — Stop and Flag These
 - Over-engineering simple problems
@@ -104,6 +107,13 @@ Before adding any external dependency, all of these must be true:
 - **Write tests before refactoring.** Before changing working code, write characterization tests first to lock in current behavior, then refactor with confidence
 - **Do not write tests for glue code.** Code that just wires components together (calls A then B then C) is tested at the integration level, not unit level
 
+### TDD: When It Works and When It Doesn't
+
+- **TDD works for:** Pure functions, algorithms, parsers, validators, data transformations — anything with clear inputs and outputs
+- **TDD does not work for:** Exploring a design, building a POC, or unstable interfaces. Writing tests for unstable APIs creates churn and false confidence
+- **The rule:** You must understand what you're building before you TDD it. TDD is a design tool for known problems, not a discovery tool for unknown ones
+- **Red-green-refactor discipline:** If you do TDD, follow the cycle strictly. Write a failing test, write minimal code to pass, refactor. Do not write 20 tests then implement — that's front-loading waste
+
 ### What Makes a Good Test
 
 - **Tests real behavior.** Call the public API, assert on observable output. Do not reach into internals
@@ -111,6 +121,58 @@ Before adding any external dependency, all of these must be true:
 - **Reads like a spec.** Someone unfamiliar with the code must understand what the feature does by reading the test
 - **Self-contained.** Each test sets up its own state, runs, and cleans up. No ordering dependencies between tests
 - **Fast and deterministic.** Flaky tests erode trust. If a test depends on timing, network, or global state, fix that dependency
+
+### Anti-Patterns — Do Not Do These
+
+- **Mocking more than 60% of the test.** If most of the test is mock setup, you're testing mocks, not code. Use real implementations with `tmp_path`, `:memory:` SQLite, or test containers
+- **Smoke tests.** `assert result is not None` proves nothing. Assert on specific values, structure, or side effects
+- **Testing private methods.** If you need to test a private method, either it should be public or the public method's tests should cover it
+- **Mirroring implementation.** Tests that replicate the source code line-by-line break on every refactor and catch zero bugs
+- **Test-only production code.** Never add methods, flags, or branches to production code solely for testing. Use dependency injection instead
+
+### Test Organization
+
+- **Co-locate tests with packages:** `packages/<pkg>/tests/` not a root `tests/` directory. Each package owns its tests
+- **Separate by type:**
+  ```
+  packages/<pkg>/tests/
+    unit/           # Fast, isolated, mocked deps, <1s each
+    integration/    # Real DB, filesystem, multi-component, <10s each
+    e2e/            # Full workflows, subprocess calls, <60s each
+    conftest.py     # Shared fixtures for this package
+  ```
+- **One test file per module** (not per function). `test_auth.py` tests the auth module, not `test_login.py` + `test_logout.py` + `test_session.py`
+- **No duplicate test files.** Before creating a new test file, check if one already exists for that module
+
+### Markers and Signals
+
+| Marker | Purpose | CI Behavior |
+|--------|---------|-------------|
+| `@pytest.mark.slow` | Runtime > 5s | Run in full suite, skip in quick checks |
+| `@pytest.mark.ml` | Requires ML deps (torch, etc.) | Skip if deps not installed |
+| `@pytest.mark.real_api` | Calls external APIs | Skip in CI — run manually before release |
+
+**CI runs for fast signals:**
+- `pytest -m "not slow and not ml and not real_api"` — fast gate on every push (~30s)
+- `pytest` — full suite on PR merge or nightly
+- Package-level runs for targeted debugging: `pytest packages/core/tests/`
+
+### Coverage and Ratios
+
+- **Do not chase a coverage number.** 80% coverage with meaningless tests is worse than 40% with behavior-testing integration tests
+- **Cover the critical path first.** Data layer, auth, payment, core business logic — before helper utilities
+- **Coverage tells you what's NOT tested, not what IS tested.** High coverage with bad assertions is false confidence
+- **Delete tests that don't catch bugs.** If a test has never failed (or only fails on refactors), it's not providing value
+
+**Target ratio:** ~20% unit, ~60% integration, ~15% E2E, ~5% manual/exploratory
+
+### Test Tooling Standards
+
+- Use `tmp_path` for filesystem tests, `:memory:` or `tmp_path` SQLite for DB tests
+- Use dependency injection over `@patch` — it's more readable and survives refactors
+- Tests must be self-sufficient — no dependency on project directories, user config, or environment state
+- Use factories or builders for test data, not raw constructors with 15 arguments
+- Keep test fixtures close to where they're used. Shared fixtures in `conftest.py`, not a global test utilities package
 
 ---
 
@@ -136,7 +198,7 @@ Before adding any external dependency, all of these must be true:
 
 ---
 
-## Twelve-Factor Reference
+## Twelve-Factor Checklist
 
 The [Twelve-Factor App](https://12factor.net) methodology for modern, scalable applications:
 
@@ -154,6 +216,30 @@ The [Twelve-Factor App](https://12factor.net) methodology for modern, scalable a
 | 10 | Dev/Prod Parity | Keep dev, staging, and production as similar as possible |
 | 11 | Logs | Treat logs as event streams to stdout |
 | 12 | Admin Processes | Run admin/maintenance tasks as one-off processes |
+
+---
+
+## CLAUDE.md Stub
+
+Copy this to any project's CLAUDE.md. These are mandatory rules, not suggestions.
+
+```markdown
+## Dev Rules
+
+**POC first.** Always validate logic with a ~15min proof-of-concept before building. Cover happy path + common edges. POC works → design properly → build with tests. Never ship the POC.
+
+**Build incrementally.** Break work into small independent modules. One piece at a time, each must work on its own before integrating.
+
+**Dependency hierarchy — follow strictly:** vanilla language → standard library → external (only when stdlib can't do it in <100 lines). External deps must be maintained, lightweight, and widely adopted. Exception: always use vetted libraries for security-critical code (crypto, auth, sanitization).
+
+**Lightweight over complex.** Fewer moving parts, fewer deps, less config. Express over NestJS, Flask over Django, unless the project genuinely needs the framework. Simple > clever. Readable > elegant.
+
+**Open-source only.** No vendor lock-in. Every line of code must have a purpose — no speculative code, no premature abstractions.
+
+**Responsive web UI is mandatory.** Any web UI must work on mobile by default — fluid layouts, viewport meta, breakpoints, no horizontal scroll. Verify in DevTools device emulation before claiming a UI task is done. POCs exempt; real projects are not.
+
+For full development and testing standards, see `.claude/memory/AGENT_RULES.md`.
+```
 
 ---
 

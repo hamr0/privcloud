@@ -7,3 +7,4 @@ data/
 thumbs.db
 .barebrowse/
 .claude/stash/
+.claude/friction/

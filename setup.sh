@@ -1,6 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.8.8"
+FEDERVER_VERSION="0.8.9"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.

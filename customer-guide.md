@@ -233,7 +233,14 @@ Each Immich account gets its own separate library, timeline, face recognition, a
 
 ### Uploading to the right account
 
-Each API key is tied to the account that created it. When using `privcloud upload`, use the API key for whichever account should own the photos.
+Each API key is tied to the account that created it. When using `privcloud upload`, use the API key for whichever account should own the photos — so a second profile (a separate username with its own key) stays completely separate.
+
+A few things about how `privcloud upload` works:
+
+- **It runs on the server and reads server-local folders.** Give it a path that exists on the server (e.g. `/mnt/federver/data/amr-pics`), not a path on your laptop.
+- **It copies, never moves.** Your originals are left untouched; Immich keeps its own copy under its storage location. The data ends up stored twice, and the source drive and Immich's drive may differ — make sure the Immich drive has room.
+- **Albums or flat (asked after the path):** pick **Albums** to turn each subfolder into its own album (named after the folder), or **Flat** to drop everything into the timeline.
+- **Safe to re-run.** Immich skips anything already uploaded — it hashes files first.
 
 ---
 
@@ -262,7 +269,7 @@ The script extracts zips, matches each photo to its JSON sidecar, writes dates a
 privcloud upload
 ```
 
-Enter your API key (from http://localhost:2283 → Account Settings → API Keys) and the path to the extracted photos.
+Enter your API key (from http://localhost:2283 → Account Settings → API Keys) and the path to the extracted photos. When asked **Albums or Flat**, pick **Flat** — a Takeout export is usually one big dump rather than album folders (choose **Albums** only if you sorted the export into folders you want to keep).
 
 ### What gets fixed
 

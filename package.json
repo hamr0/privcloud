@@ -1,6 +1,6 @@
 {
   "name": "privcloud",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "description": "Self-hosted home server (federver) and Immich photo backup (privcloud). One box, every service, no cloud overlords.",
   "homepage": "https://github.com/hamr0/privcloud",
   "repository": {

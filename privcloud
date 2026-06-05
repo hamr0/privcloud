@@ -580,6 +580,23 @@ cmd_upload() {
     return 1
   fi
 
+  # Albums vs flat. --album makes the Immich CLI create one album per source
+  # subfolder (named after the folder); flat just adds everything to the
+  # timeline. Default (Enter / anything but 1) is flat.
+  local album_flag=""
+  echo ""
+  echo "  How should the folders under this path be imported?"
+  echo "    1) Albums  — one album per subfolder (keeps your folder names)"
+  echo "    2) Flat    — everything into the timeline, no albums"
+  printf "  Choose [1/2]: "
+  read -r album_choice
+  if [ "$album_choice" = "1" ]; then
+    album_flag="--album"
+    green "Albums: one per folder."
+  else
+    green "Flat import (no albums)."
+  fi
+
   local file_count
   file_count="$(find "$photo_path" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.heic' -o -iname '*.heif' -o -iname '*.gif' -o -iname '*.mp4' -o -iname '*.mov' -o -iname '*.avi' \) | wc -l)"
   echo ""
@@ -605,7 +622,7 @@ cmd_upload() {
     -e IMMICH_INSTANCE_URL="http://localhost:2283/api" \
     -e IMMICH_API_KEY="$api_key" \
     -v "$photo_path":/import:ro \
-    "$cli_image" upload --recursive /import
+    "$cli_image" upload --recursive $album_flag /import
 
   echo ""
   green "Upload complete. Browse your photos at http://localhost:2283"

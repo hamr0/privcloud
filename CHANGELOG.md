@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.8.9 — 2026-06-05
+
+### Added
+- **`privcloud` → 7 (upload) now asks "Albums or Flat?" after the path (`privcloud`).** After you enter the photo folder, the upload offers two layouts: **1) Albums** — pass `--album` to the Immich CLI so each source subfolder becomes its own album (named after the folder), keeping your existing folder organization; or **2) Flat** — everything into the user's timeline with no albums (the previous behavior, still the default on Enter). The choice maps to a single `--album` flag on the `immich upload` command. Verified live: the flag is accepted by the CLI (immich-cli v2.7.5) and the upload still authenticates per-user via the API key, so albums land in the library of whoever owns the key.
+
 ## v0.8.8 — 2026-06-05
 
 ### Fixed

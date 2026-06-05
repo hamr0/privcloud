@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Status (`federver` → s) now shows every mounted drive, not just three hardcoded paths (`setup.sh`).** The Disk section ran `df -h / /home /mnt/data` — a fixed list — so any drive mounted elsewhere (e.g. a "New Backup" disk at `/run/media/<user>/New Backup`) was invisible, even though it was installed and mounted. It now enumerates all real block-device filesystems (`df -h` filtered to `/dev/*`, excluding `loop`/`tmpfs`/`overlay`/docker pseudo-mounts and de-duped by device), so newly added internal or USB drives appear automatically. The existing Internal-vs-USB split (by `lsblk TRAN=usb`) is unchanged and now classifies the extra rows too. Also fixed the row formatter to handle mountpoints with spaces (e.g. "New Backup"), which previously would have been truncated at the first space. Same hardcoded-path fix applied to Storage → Status's disk-usage line (`federver` → 11 → 1).
+
+### Added
+- **Server-to-server option in the one-time backup wizard (`federver` → 14 → 5 → 4).** A fourth direction, **Server: server → server**, copies between two paths on federver itself — e.g. backing up `/mnt/data` (the HDD) to a backup USB plugged into the server — without routing the bytes through the laptop. It reuses the existing server-path and copy-mode pickers, mirrors the download flow (no source-size preview, since that would need a passwordless `sudo du`), and runs `sudo rsync` on the server over a single `ssh -t` session. `sudo` is required because Immich's data is `0700` root-owned after the v0.7.4 hardening; the `-t` flag gives the interactive sudo prompt a tty, and single-quoted paths handle spaces (e.g. a drive labelled "New Backup"). The destination is typed (with a hint pointing at `/run/media/<user>/<label>`) and `mkdir -p`'d before the copy.
+
 ## v0.7.5 — 2026-06-04
 
 ### Fixed

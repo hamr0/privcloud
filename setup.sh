@@ -936,7 +936,7 @@ _storage_status() {
     echo ""
 
     echo -e "  ${BOLD}Disk usage${NC}"
-    df -h / /home /mnt/data 2>/dev/null | awk 'NR==1{printf "    %-25s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5} NR>1{printf "    %-25s %6s %6s %6s %5s\n",$1,$2,$3,$4,$5}'
+    df -h 2>/dev/null | awk 'NR==1 || ($1 ~ /^\/dev\// && $1 !~ /loop/ && !seen[$1]++){mp=""; for(i=6;i<=NF;i++) mp=mp(i>6?" ":"")$i; printf "    %-22s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,mp}'
 
     # Flag any /mnt/* data path whose drive isn't actually mounted — an autofs
     # stub or unmounted point that would make services die with "no such device"
@@ -4643,11 +4643,12 @@ _sync_one_time_backup() {
         echo -e "  ${BOLD}1)${NC} Upload:   laptop → server"
         echo -e "  ${BOLD}2)${NC} Download: server → laptop"
         echo -e "  ${BOLD}3)${NC} Local:    laptop → laptop    ${DIM}(e.g. backup to a USB drive)${NC}"
+        echo -e "  ${BOLD}4)${NC} Server:   server → server    ${DIM}(e.g. /mnt/data → backup USB on the server)${NC}"
         echo -e "  ${BOLD}0)${NC} Back"
         echo ""
-        read -p "  Choice [1/2/3/0]: " direction
+        read -p "  Choice [1/2/3/4/0]: " direction
         [[ "$direction" == "0" ]] && return 2
-        [[ "$direction" =~ ^[123]$ ]] && break
+        [[ "$direction" =~ ^[1234]$ ]] && break
         ((dir_attempts++))
         if (( dir_attempts < 3 )); then
             fail "Invalid choice. Try again. ($((3-dir_attempts)) attempts left)"
@@ -4762,6 +4763,44 @@ _sync_one_time_backup() {
 
             mkdir -p "$dst_path" || { fail "Could not create destination."; return 1; }
             rsync -avh --progress "$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
+            ;;
+        4)
+            echo ""
+            echo -e "  ${BOLD}-- Source (server) --${NC}"
+            _pick_server_path true || return
+            local src_path="$server_path"
+            echo ""
+            echo -e "  ${BOLD}-- Destination (server) --${NC}"
+            info "Type the destination, e.g. a backup USB at /run/media/$SERVER_USER/<label>"
+            _pick_server_path false || return
+            local dst_path="$server_path"
+
+            # Both paths live on the server; rsync runs there over one SSH session.
+            local is_dir="false"
+            ssh "$SERVER_USER@$SERVER_IP" "test -d '$src_path'" 2>/dev/null && is_dir="true"
+            _pick_copy_mode "$src_path" "$is_dir" || return
+            local rsync_src="$src_path/"
+            local dest_display="$dst_path"
+            if [[ "$copy_mode" == "folder" ]]; then
+                rsync_src="$src_path"
+                dest_display="$dst_path/$(basename "$src_path")"
+            fi
+
+            echo ""
+            echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "  ${BOLD}⇄ One-time server copy: federver → federver${NC}"
+            echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
+            echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
+            echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            info "Runs with sudo on the server (Immich data is root-owned); you may be prompted for the server password."
+
+            read -p "  Proceed? [y/N] " -n 1 -r
+            echo ""
+            [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
+
+            # -t for the interactive sudo password prompt. mkdir the destination
+            # first, then copy. Single-quoted paths handle spaces (e.g. "New Backup").
+            ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$dest_display' && sudo rsync -avh --progress '$rsync_src' '$dst_path/'" || { fail "Backup failed."; return 1; }
             ;;
     esac
 
@@ -4957,7 +4996,7 @@ step_status() {
             echo "@@DSTATS_END@@"
             echo "@@USB_DISKS@@$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}' | paste -sd'|' -)"
             echo "@@DISK_START@@"
-            df -h / /home /mnt/data 2>/dev/null | tail -n +2 | awk '!seen[$1]++'
+            df -h 2>/dev/null | awk 'NR>1 && $1 ~ /^\/dev\// && $1 !~ /loop/ && !seen[$1]++'
             echo "@@DISK_END@@"
 REMOTE_STATUS
         ) || { fail "Cannot reach server at $SERVER_IP."; return 1; }
@@ -5046,11 +5085,11 @@ REMOTE_STATUS
 
     if [[ -n "$internal_rows" ]]; then
         echo -e "    ${DIM}Internal${NC}"
-        echo -n "$internal_rows" | awk '{printf "      %-20s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,$6}'
+        echo -n "$internal_rows" | awk '{mp=$6; for(i=7;i<=NF;i++) mp=mp" "$i; printf "      %-20s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,mp}'
     fi
     if [[ -n "$usb_rows" ]]; then
         echo -e "    ${DIM}USB${NC}"
-        echo -n "$usb_rows" | awk '{printf "      %-20s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,$6}'
+        echo -n "$usb_rows" | awk '{mp=$6; for(i=7;i<=NF;i++) mp=mp" "$i; printf "      %-20s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,mp}'
     fi
     echo ""
 

@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.8.1 — 2026-06-05
 
 ### Fixed
+- **A failed USB unmount (`federver` → 11 → 3) now tells you what's holding the drive, instead of printing a command and quitting (`setup.sh`).** When `umount` failed with `target is busy`, the menu printed `See what: sudo fuser -mv <mp>` and returned — leaving the user to run the diagnostic themselves and decode the output. In practice the blocker is rarely just the two services the warning names: a container bind-mount, a desktop app (e.g. Pragha left playing a track off the drive), or any shell `cd`'d into the mount will all pin it. The failure path now runs the diagnosis itself via the new `_storage_show_busy` helper and prints, in plain words, every holder it finds: Docker containers whose bind-mounts sit on the drive (each tagged with "stop it: federver → 7 → 3") and every process with a file open or cwd there (PID + command line, via `sudo fuser -m`). Only the `*busy*`/`*in use*` branch triggers the scan; other umount errors keep the original short guidance. Validated live against the server — it correctly fingered a stray `pragha` process and named the service containers when they were the ones binding `/mnt/data`.
 - **Unmount USB (`federver` → 11 → 3) no longer lists bare disks or reports a fake success (`setup.sh`).** The picker built its list with `lsblk -rno NAME,MOUNTPOINT,SIZE | awk '$2!=""'`; for an unmounted parent disk the empty MOUNTPOINT field collapsed under `-r`, so the *size* landed in `$2` and the whole disk (e.g. `/dev/sdb`) showed up as a "mounted drive". Picking it ran `umount /dev/sdb` — not a mountpoint — which failed, but `2>/dev/null || true` swallowed the error and `✓ Unmounted` printed anyway (fstab survived only thanks to a UUID guard). The list is now built from `findmnt` per partition, so only genuinely mounted partitions appear; `umount`'s exit code is checked and a failure reports the real error plus `sudo fuser -mv <mp>` to find what's holding the drive; the automount unit is stopped first so it can't silently remount; and fstab is backed up and only reported as changed when it actually was.
 
 ## v0.8.0 — 2026-06-05

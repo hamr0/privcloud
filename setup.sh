@@ -1,6 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.8.0"
+FEDERVER_VERSION="0.8.1"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.
@@ -1101,6 +1101,36 @@ _storage_mount() {
     ls "$mount_point" 2>/dev/null || true
 }
 
+# Print what's holding a mountpoint busy, in plain words, so a failed unmount
+# never leaves the user with a bare "target is busy". Best-effort: lists Docker
+# containers whose bind-mounts sit on the drive, plus any process (desktop app,
+# shell, scanner) with a file open or cwd there. Uses fuser (psmisc, present on
+# Fedora) for processes and `docker inspect` for container binds.
+_storage_show_busy() {
+    local mp="$1" found=""
+    local c src
+
+    for c in $(sg docker -c "docker ps --format '{{.Names}}'" 2>/dev/null); do
+        while IFS= read -r src; do
+            case "$src" in
+                "$mp"|"$mp"/*)
+                    warn "  container '$c'  — stop it: federver → 7 → 3"
+                    found=1; break ;;
+            esac
+        done < <(sg docker -c "docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' '$c'" 2>/dev/null)
+    done
+
+    local pid cmd
+    while read -r pid; do
+        [[ -z "$pid" ]] && continue
+        cmd=$(ps -o args= -p "$pid" 2>/dev/null)
+        warn "  process $pid  — ${cmd:0:70}"
+        found=1
+    done < <(sudo fuser -m "$mp" 2>/dev/null | grep -oE '[0-9]+' | sort -un)
+
+    [[ -z "$found" ]] && info "  (couldn't pin it down — try: ${BOLD}sudo fuser -mv $mp${NC})"
+}
+
 _storage_unmount() {
     echo ""
 
@@ -1162,8 +1192,19 @@ _storage_unmount() {
     local umount_err
     if ! umount_err=$(sudo umount "$mpoint" 2>&1); then
         fail "Could not unmount $mpoint: ${umount_err:-unknown error}"
-        info "Something is still using it. See what: ${BOLD}sudo fuser -mv $mpoint${NC}"
-        info "If it's a service, stop it (federver → 7 → 3) and retry."
+        case "$umount_err" in
+            *busy*|*"in use"*)
+                echo ""
+                warn "Still in use by:"
+                _storage_show_busy "$mpoint"
+                echo ""
+                info "Stop the services above (federver → 7 → 3) and close any app or"
+                info "shell using files on the drive, then retry the unmount."
+                ;;
+            *)
+                info "If it's a service, stop it (federver → 7 → 3) and retry."
+                ;;
+        esac
         return 1
     fi
 

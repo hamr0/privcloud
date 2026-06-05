@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.5 — 2026-06-05
+
+### Added
+- **Two folder-scoped smart playlists — "🎼 All English" and "🎶 All Arabic" (`tools/navidrome/playlists/`).** Each plays everything under one top-level library folder (`english/` and `arabic/`) and all of its subfolders, sorted by artist. They're rule-based, so they auto-pick-up anything added under those folders later — unlike the static `english.m3u8`/`arabic.m3u8` snapshots that already existed. "All Arabic" deliberately matches only the `arabic/` tree and **not** the separate `arabic-oldies/` folder (nor `holy-quraan/`, which is its own top-level folder). Installed live to `<MUSIC_LOCATION>/playlists` and verified against the library: ~65,405 English tracks, ~4,657 Arabic. Like all repo `.nsp` templates, they redeploy automatically whenever the music location changes (`_install_smart_playlists`, `setup.sh:1293`).
+
+### Fixed
+- **Smart-playlist folder matching now uses the library-relative path Navidrome actually stores (`tools/navidrome/playlists/`).** Navidrome 0.61 stores `media_file.path` **relative to the library root** (e.g. `english/Album/track.mp3`), not as an absolute container path (`/music/english/...`). The first cut of the two playlists above anchored on `/english/` and `/arabic/` with a leading slash, which can never match a path that *starts* with the folder name → both rendered zero tracks even though they imported cleanly. Rewritten to `startsWith` on `english/` / `arabic/` (no leading slash), which also cleanly excludes `arabic-oldies/`. Smart playlists are evaluated live on access, so the corrected rule populates instantly regardless of list size.
+
 ## v0.8.4 — 2026-06-05
 
 ### Fixed

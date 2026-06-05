@@ -1,0 +1,9 @@
+{
+  "name": "🎶 All Arabic",
+  "comment": "Everything under the arabic/ folder and all its subfolders (not arabic-oldies).",
+  "all": [
+    { "startsWith": { "filepath": "arabic/" } }
+  ],
+  "sort": "artist",
+  "order": "asc"
+}

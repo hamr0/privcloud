@@ -1,0 +1,9 @@
+{
+  "name": "🎼 All English",
+  "comment": "Everything under the english/ folder and all its subfolders.",
+  "all": [
+    { "startsWith": { "filepath": "english/" } }
+  ],
+  "sort": "artist",
+  "order": "asc"
+}

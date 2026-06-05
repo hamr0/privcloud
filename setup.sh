@@ -1104,38 +1104,43 @@ _storage_mount() {
 _storage_unmount() {
     echo ""
 
-    # Find USB-mounted partitions
-    local usb_mounts
-    local usb_disks
+    # List USB *partitions* that are actually mounted. Built from findmnt so we
+    # skip bare disks (e.g. /dev/sdb with no filesystem) and read the real, fully
+    # resolved mount path. The old lsblk+awk approach mistook the parent disk for
+    # a mount (its empty MOUNTPOINT field collapsed under `-r`), so users could
+    # pick a non-mountpoint and the code "succeeded" without unmounting anything.
+    local usb_disks entries="" d part mp sz
     usb_disks=$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}')
-    usb_mounts=""
     for d in $usb_disks; do
-        usb_mounts+="$(lsblk -rno NAME,MOUNTPOINT,SIZE "/dev/$d" 2>/dev/null | awk '$2!=""')"$'\n'
+        while IFS= read -r part; do
+            [[ -z "$part" ]] && continue
+            mp=$(findmnt -nro TARGET "/dev/$part" 2>/dev/null | head -1)
+            [[ -z "$mp" ]] && continue          # not mounted → not a candidate
+            sz=$(lsblk -drno SIZE "/dev/$part" 2>/dev/null)
+            entries+="${part}|${mp}|${sz}"$'\n'
+        done < <(lsblk -rno NAME "/dev/$d")
     done
-    usb_mounts=$(echo "$usb_mounts" | sed '/^$/d')
+    entries=$(echo "$entries" | sed '/^$/d')
 
-    if [[ -z "$usb_mounts" ]]; then
+    if [[ -z "$entries" ]]; then
         fail "No mounted USB drives found."
         return 1
     fi
 
     echo -e "  ${BOLD}Mounted USB drives:${NC}"
     local idx=1
-    declare -a mount_arr
-    declare -a name_arr
-    while IFS= read -r line; do
-        local name=$(echo "$line" | awk '{print $1}')
-        local mpoint=$(echo "$line" | awk '{print $2}')
-        local size=$(echo "$line" | awk '{print $3}')
-        echo -e "    ${BOLD}$idx)${NC} /dev/$name  ${mpoint}  ${size}"
-        mount_arr[$idx]="$mpoint"
+    declare -a mp_arr name_arr
+    local name size
+    while IFS='|' read -r name mp size; do
+        echo -e "    ${BOLD}$idx)${NC} /dev/$name  ${mp}  ${size}"
         name_arr[$idx]="$name"
+        mp_arr[$idx]="$mp"
         idx=$((idx + 1))
-    done <<< "$usb_mounts"
+    done <<< "$entries"
 
     echo ""
     read -p "  Which drive to unmount? " umount_choice
-    local mpoint="${mount_arr[$umount_choice]}"
+    local mpoint="${mp_arr[$umount_choice]}"
     local devname="${name_arr[$umount_choice]}"
 
     if [[ -z "$mpoint" ]]; then
@@ -1143,23 +1148,37 @@ _storage_unmount() {
         return 1
     fi
 
-    warn "This will unmount $mpoint (/dev/$devname)."
-    warn "Make sure no services are using files on this drive."
+    warn "This will unmount /dev/$devname from $mpoint."
+    warn "Navidrome/FileBrowser read from the data drive — stop them first"
+    warn "(federver → 7 → 3) or the unmount will fail with 'target is busy'."
     read -p "  Continue? [y/N] " -n 1 -r
     echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        return
+    [[ ! $REPLY =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
+
+    # Drop the automount unit first so it can't silently remount on next access.
+    sudo systemctl stop "$(systemd-escape -p --suffix=automount "$mpoint")" 2>/dev/null || true
+
+    # Unmount and CHECK the result — never claim success on a failed umount.
+    local umount_err
+    if ! umount_err=$(sudo umount "$mpoint" 2>&1); then
+        fail "Could not unmount $mpoint: ${umount_err:-unknown error}"
+        info "Something is still using it. See what: ${BOLD}sudo fuser -mv $mpoint${NC}"
+        info "If it's a service, stop it (federver → 7 → 3) and retry."
+        return 1
     fi
 
-    sudo umount "$mpoint" 2>/dev/null || true
-
-    # Remove from fstab
-    local uuid=$(sudo blkid -s UUID -o value "/dev/$devname" 2>/dev/null)
-    if [[ -n "$uuid" ]]; then
+    # Only after a real unmount, remove the fstab entry (by the partition's UUID)
+    # and reload — and only say so when we actually changed fstab.
+    local uuid removed=""
+    uuid=$(sudo blkid -s UUID -o value "/dev/$devname" 2>/dev/null)
+    if [[ -n "$uuid" ]] && grep -q "$uuid" /etc/fstab 2>/dev/null; then
+        sudo cp /etc/fstab "/etc/fstab.bak.$(date +%Y%m%d-%H%M%S)"
         sudo sed -i "\|UUID=$uuid|d" /etc/fstab
+        sudo systemctl daemon-reload
+        removed=" and removed from fstab"
     fi
 
-    ok "Unmounted $mpoint and removed from fstab."
+    ok "Unmounted /dev/$devname from $mpoint${removed}."
     info "Safe to unplug the drive."
 }
 

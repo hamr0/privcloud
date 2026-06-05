@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Unmount USB (`federver` → 11 → 3) no longer lists bare disks or reports a fake success (`setup.sh`).** The picker built its list with `lsblk -rno NAME,MOUNTPOINT,SIZE | awk '$2!=""'`; for an unmounted parent disk the empty MOUNTPOINT field collapsed under `-r`, so the *size* landed in `$2` and the whole disk (e.g. `/dev/sdb`) showed up as a "mounted drive". Picking it ran `umount /dev/sdb` — not a mountpoint — which failed, but `2>/dev/null || true` swallowed the error and `✓ Unmounted` printed anyway (fstab survived only thanks to a UUID guard). The list is now built from `findmnt` per partition, so only genuinely mounted partitions appear; `umount`'s exit code is checked and a failure reports the real error plus `sudo fuser -mv <mp>` to find what's holding the drive; the automount unit is stopped first so it can't silently remount; and fstab is backed up and only reported as changed when it actually was.
+
 ## v0.8.0 — 2026-06-05
 
 ### Changed

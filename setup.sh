@@ -1,6 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.8.7"
+FEDERVER_VERSION="0.8.8"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.
@@ -3291,7 +3291,7 @@ step_immich() {
         fi
     else
         info "Opening Immich manager on the server via SSH..."
-        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && ./privcloud"
+        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && GIT_TERMINAL_PROMPT=0 git pull --ff-only -q 2>/dev/null; ./privcloud"
     fi
 }
 

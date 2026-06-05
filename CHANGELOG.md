@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.8 — 2026-06-05
+
+### Fixed
+- **`privcloud` → 7 (upload) no longer dies with `npm: command not found` (`privcloud`).** The upload path installed the Immich CLI with `npm i -g @immich/cli`, but the server has no Node.js/npm — so on a fresh server the feature failed at the install step (`./privcloud: line 535: npm: command not found`). Installing a whole Node toolchain just for a CLI also runs against the project's lightweight/Docker-only design. The upload now runs the **official Immich CLI as a one-shot Docker container** (`ghcr.io/immich-app/immich-cli`, pulled once and cached), reusing the Docker that already runs the stack — no host dependencies. It mounts the chosen photo folder read-only at `/import`, reaches Immich over `--network host` at `http://localhost:2283/api`, and authenticates with the API key via `IMMICH_INSTANCE_URL`/`IMMICH_API_KEY`. `--security-opt label=disable` avoids SELinux relabeling the user's photo folder. Validated live: the containerized CLI connects to the running server (a bad key returns a clean 401, a good key uploads).
+- **`federver` → i now pulls the latest `privcloud` on the server before launching it (`setup.sh`).** `step_immich` ran `cd ~/privcloud && ./privcloud` over SSH with no `git pull`, so server-side fixes to `privcloud` never reached the box until something else triggered a pull. It now does `GIT_TERMINAL_PROMPT=0 git pull --ff-only -q` first, matching the `_on_server` hop, so the Immich manager is always current.
+
 ## v0.8.7 — 2026-06-05
 
 ### Changed

@@ -524,23 +524,19 @@ cmd_upload() {
     return 1
   fi
 
-  # Check for immich CLI
-  local immich_bin=""
-  if command -v immich &>/dev/null; then
-    immich_bin="immich"
-  elif [ -x "$HOME/.local/bin/immich" ]; then
-    immich_bin="$HOME/.local/bin/immich"
-  else
-    yellow "Immich CLI not found. Installing..."
-    npm i -g @immich/cli --prefix "$HOME/.local" 2>&1 | tail -3
-    if [ -x "$HOME/.local/bin/immich" ]; then
-      immich_bin="$HOME/.local/bin/immich"
-    else
-      red "Failed to install Immich CLI. Install manually: npm i -g @immich/cli"
+  # Immich CLI runs as a one-shot Docker container — no Node.js/npm on the host,
+  # and it reuses the Docker that already runs the stack. The image is the
+  # official one, pulled once and cached.
+  local cli_image="ghcr.io/immich-app/immich-cli:latest"
+  if ! docker image inspect "$cli_image" &>/dev/null; then
+    yellow "Fetching Immich CLI image (one-time)..."
+    if ! docker pull "$cli_image"; then
+      red "Failed to pull Immich CLI image: $cli_image"
+      red "Check the server's internet connection and Docker, then retry."
       return 1
     fi
   fi
-  green "Immich CLI: $($immich_bin --version)"
+  green "Immich CLI: $(docker run --rm "$cli_image" --version 2>/dev/null)"
   echo ""
 
   # Get API key (3 attempts)
@@ -598,11 +594,18 @@ cmd_upload() {
   fi
 
   echo ""
-  $immich_bin upload \
-    --url http://localhost:2283 \
-    --key "$api_key" \
-    --recursive \
-    "$photo_path"
+  # Mount the photos read-only at /import and upload from there. --network host
+  # lets the CLI reach Immich on localhost:2283; label=disable avoids SELinux
+  # relabeling the user's photo folder. Allocate a TTY only when we have one.
+  local tflag=""
+  [ -t 1 ] && tflag="-t"
+  docker run --rm $tflag \
+    --security-opt label=disable \
+    --network host \
+    -e IMMICH_INSTANCE_URL="http://localhost:2283/api" \
+    -e IMMICH_API_KEY="$api_key" \
+    -v "$photo_path":/import:ro \
+    "$cli_image" upload --recursive /import
 
   echo ""
   green "Upload complete. Browse your photos at http://localhost:2283"

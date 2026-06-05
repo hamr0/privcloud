@@ -1,6 +1,6 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.8.1"
+FEDERVER_VERSION="0.8.2"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.
@@ -886,20 +886,28 @@ _storage_status() {
     UPLOAD_LOCATION=$(_env_get UPLOAD_LOCATION "$SCRIPT_DIR/.env")
     DB_DATA_LOCATION=$(_env_get DB_DATA_LOCATION "$SCRIPT_DIR/.env")
 
+    # A partition's transport (TRAN) is reported only on its parent disk, so a
+    # USB partition (e.g. sdb1) has an empty TRAN and used to leak into the
+    # Internal list while its parent disk was correctly filtered into USB. Build
+    # the full set of USB device names (disk + partitions) up front and filter
+    # the Internal listing against it.
+    local usb_disks usb_names="" d
+    usb_disks=$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}')
+    for d in $usb_disks; do
+        usb_names+=" $(lsblk -rno NAME "/dev/$d" 2>/dev/null | tr '\n' ' ')"
+    done
+
     echo -e "  ${BOLD}Internal drives${NC}"
     lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL -n | grep -v loop | while IFS= read -r line; do
-        if lsblk -o NAME,TRAN -n 2>/dev/null | grep "$(echo "$line" | awk '{print $1}' | tr -d '├─└─│ ')" | grep -q "usb"; then
-            continue
-        fi
+        local dev
+        dev=$(echo "$line" | awk '{print $1}' | tr -d '├─└─│ ')
+        case " $usb_names " in *" $dev "*) continue ;; esac
         echo "    $line"
     done
     echo ""
 
-    # USB drives
-    local usb_drives
-    local usb_disks
-    usb_disks=$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}')
-    usb_drives=""
+    # USB drives (usb_disks computed above)
+    local usb_drives=""
     for d in $usb_disks; do
         usb_drives+="$(lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL "/dev/$d" -n 2>/dev/null)"$'\n'
     done
@@ -936,7 +944,7 @@ _storage_status() {
     echo ""
 
     echo -e "  ${BOLD}Disk usage${NC}"
-    df -h 2>/dev/null | awk 'NR==1 || ($1 ~ /^\/dev\// && $1 !~ /loop/ && !seen[$1]++){mp=""; for(i=6;i<=NF;i++) mp=mp(i>6?" ":"")$i; printf "    %-22s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,mp}'
+    df -h 2>/dev/null | awk 'NR==1 || ($1 ~ /^\/dev\// && $1 !~ /loop/ && !seen[$1]++){mp=$6; for(i=7;i<=NF;i++) mp=mp" "$i; printf "    %-22s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,mp}'
 
     # Flag any /mnt/* data path whose drive isn't actually mounted — an autofs
     # stub or unmounted point that would make services die with "no such device"

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.8.2 — 2026-06-05
+
+### Fixed
+- **Storage → Status (`federver` → 11 → 1) no longer crashes the whole step on the Disk-usage table (`setup.sh`).** The `awk` that formats `df -h` wrote `mp=mp(i>6?" ":"")$i` to rebuild a space-containing mountpoint; `awk` parses `mp(` as a call to a function named `mp`, and with no such function it died at runtime with `attempt to use non-function 'mp' in function call` the instant it hit any `/dev/*` row. The error surfaced under the "Disk usage" heading and made the menu step exit non-zero → `✗ [11] Manage storage — FAILED`. Rewritten to seed `mp=$6` and append the remaining fields (`for(i=7;i<=NF;i++) mp=mp" "$i`) — same space-safe behaviour for mountpoints like "New Backup", without the function-call ambiguity.
+- **USB partitions no longer show up under "Internal drives" in Storage → Status (`setup.sh`).** The Internal/USB split filtered each `lsblk` row by its transport (`TRAN`), but `TRAN=usb` is reported only on the parent *disk* (`sdb`), not its partitions (`sdb1`) — so a USB partition with an empty `TRAN` leaked into the Internal list even though its disk was correctly placed under USB. Status now resolves the full set of USB device names (each USB disk plus its partitions, via `lsblk -rno NAME /dev/<disk>`) once up front and filters the Internal listing against that set, so a USB drive and all its partitions are classified together. Validated on the live server (simulated, since the drive was detached at the time).
+
 ## v0.8.1 — 2026-06-05
 
 ### Fixed

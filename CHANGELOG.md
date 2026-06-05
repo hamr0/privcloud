@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.8.0 — 2026-06-05
 
 ### Changed
 - **Copy step in every backup/sync flow now asks intent in plain words and previews the result as a tree, instead of exposing rsync's trailing-slash rule (`setup.sh`).** The old "Copy folder / Copy contents" prompt made users mentally map an abstract choice (really `src` vs `src/`) onto what would land on disk, with only a "Tip" line as a safety net — the #1 source of messy directories. The shared `_pick_copy_mode` helper now asks **"How should X be copied? 1) The whole folder  2) Only its contents"** and then draws a tree of exactly what the destination will look like for that choice, e.g. `/mnt/data/nbackup/ └── New Backup/ ├── ashry …`. You confirm by *seeing* the layout, not by remembering slash semantics. The top-level listing is capped at 6 entries (`… and N more`), and for a root-owned `0700` source it can't read without sudo it shows `(can't list without sudo — everything will still be copied)` rather than a misleading empty tree. Applied once to the helper, so it fixes all six flows at once: the four one-time backup directions (`federver` → 14 → 5) and both scheduled upload/download jobs (`federver` → 14 → 2). Trailing-slash handling is unchanged (the pickers already strip them and the helper controls the slash), so behaviour is identical — only the presentation is clearer.

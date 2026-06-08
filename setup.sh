@@ -3854,24 +3854,64 @@ _immich_backup_run() {
     info "Watch live:  tail -f /var/log/immich-backup.log"
 }
 
-# Show the schedule, next/last run, and recent log for the scheduled backup.
+# Show the schedule, a clean recent-runs table (ran/failed, no log dump), and a
+# table of all scheduled jobs on this server so it's clear which is which.
 _immich_backup_status() {
     if [ ! -f /etc/systemd/system/immich-backup.timer ]; then
         warn "No scheduled Immich backup is configured."
         info "Set one up: privcloud → 9 → 2  (or federver → 14 → 6)."
         return 0
     fi
+
+    local oncal next enabled lastresult
+    oncal=$(systemctl show immich-backup.timer -p OnCalendar --value 2>/dev/null)
+    next=$(systemctl list-timers immich-backup.timer --no-pager 2>/dev/null | awk '/immich-backup/{print $1,$2,$3,$4; exit}')
+    enabled=$(systemctl is-enabled immich-backup.timer 2>/dev/null)
+    lastresult=$(systemctl show immich-backup.service -p Result --value 2>/dev/null)
+
     echo ""
-    echo -e "  ${BOLD}Scheduled Immich backup${NC}"
-    systemctl list-timers immich-backup.timer --all --no-pager 2>/dev/null | sed 's/^/  /'
+    echo -e "  ${BOLD}Immich backup schedule${NC}"
+    printf "    %-11s %s\n" "Schedule:" "${oncal:-?}"
+    printf "    %-11s %s\n" "Next run:" "${next:-unknown}"
+    printf "    %-11s %s\n" "Enabled:"  "${enabled:-unknown}"
+    printf "    %-11s %s\n" "Last run:" "${lastresult:-n/a}"
+
+    # Recent runs — one row per run (the terminal log line), ✓ ran / ✗ failed,
+    # no file paths. Works for both old single-line and new multi-line logs.
     echo ""
-    echo -e "  Last run result: ${BOLD}$(systemctl show immich-backup.service -p Result --value 2>/dev/null)${NC} ${DIM}(active: $(systemctl is-active immich-backup.service 2>/dev/null))${NC}"
-    echo ""
-    echo -e "  ${BOLD}Recent log${NC} ${DIM}(/var/log/immich-backup.log)${NC}:"
-    if [ -s /var/log/immich-backup.log ]; then
-        tail -n 10 /var/log/immich-backup.log 2>/dev/null | sed 's/^/    /'
+    echo -e "  ${BOLD}Recent runs${NC} ${DIM}(newest last)${NC}"
+    if [ -s /var/log/immich-backup.log ] && grep -qE 'Backup (complete|FAILED)' /var/log/immich-backup.log 2>/dev/null; then
+        grep -E 'Backup (complete|FAILED)' /var/log/immich-backup.log | tail -n 8 | while IFS= read -r line; do
+            local when=${line%%: Backup*}
+            if [[ "$line" == *"Backup complete"* ]]; then
+                echo -e "    ${GREEN}✓${NC} ran     $when"
+            else
+                echo -e "    ${RED}✗${NC} failed  $when"
+            fi
+        done
     else
-        echo "    (no runs logged yet)"
+        echo "    (no runs yet)"
+    fi
+
+    # All scheduled jobs on this server, so it's clear which is which. systemd
+    # timers need no sudo; root cron is read non-interactively (no prompt) and
+    # skipped with a note if locked.
+    echo ""
+    echo -e "  ${BOLD}Scheduled jobs on this server${NC}"
+    printf "    %-16s %-26s %s\n" "NAME" "SCHEDULE" "TYPE"
+    printf "    %-16s %-26s %s\n" "immich-backup" "${oncal:-?}" "timer"
+    local rootcron
+    if rootcron=$(sudo -n crontab -l 2>/dev/null); then
+        printf '%s\n' "$rootcron" | while IFS= read -r line; do
+            [[ "$line" =~ ^#|^[[:space:]]*$ ]] && continue
+            local sched name
+            sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
+            name=$(echo "$line" | grep -oE '[A-Za-z0-9_-]+\.sh' | head -1 | sed 's/\.sh$//')
+            [ -z "$name" ] && name="cron-job"
+            printf "    %-16s %-26s %s\n" "$name" "$sched" "cron"
+        done
+    else
+        echo -e "    ${DIM}(root cron jobs not shown — needs sudo; see federver → 14 → 1 for the full list)${NC}"
     fi
 }
 

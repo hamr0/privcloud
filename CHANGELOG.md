@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.9 — 2026-06-08
+
+### Changed
+- **Scheduled-backup Status is now clean tables instead of a raw log dump (`setup.sh`).** `privcloud → 9 → 2 → 2` (and `federver → 14 → 6 → 2`) used to print a wrapping `systemctl list-timers` line plus 10 raw log lines full of dump file paths. It now shows: a compact **schedule** block (schedule · next run · enabled · last result), a **Recent runs** table — one row per run, `✓ ran` / `✗ failed` + timestamp, no paths (collapses the multi-line per-run log) — and a **Scheduled jobs on this server** table (NAME · SCHEDULE · TYPE) covering the systemd timer and root cron jobs, so it's clear which is which. Root cron is read non-interactively (no password prompt) and skipped with a pointer to `federver → 14 → 1` if locked.
+
 ## v0.9.8 — 2026-06-08
 
 ### Changed

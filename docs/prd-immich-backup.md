@@ -86,9 +86,8 @@ truth). Each run is **full** (database + photos), no downtime:
 ### Managing it
 
 Both `privcloud` → 9 → 2 **and** `federver` → 14 → 6 open the same submenu (`step_immich_backup_menu`
-in `setup.sh`), not a one-shot: **Set up / change**, **Status** (schedule + next/last run, a clean
-recent-runs table — `✓ ran` / `✗ failed` per run, no log dump — and a table of the server's
-scheduled jobs so it's clear which is which), **Run now** (background), and **Remove** (deletes timer/service/script via
+in `setup.sh`), not a one-shot: **Set up / change**, **Status** (schedule + next/last run and a clean
+recent-runs table — `✓ ran` / `✗ failed` per run, no log dump), **Run now** (background), and **Remove** (deletes timer/service/script via
 `_immich_backup_remove`, **leaving backup files intact**). The submenu and its actions all live in
 `setup.sh` so both entry points are identical and single-source. The interactive `privcloud` menu
 loops, so `0) Back` steps up a level rather than exiting.
@@ -109,6 +108,13 @@ a single failure loses both copies and asks to confirm.
   copy on the next run.
 - **Status unchanged.** The shared script keeps the exact `Backup complete` success phrase, so
   `federver`'s Last-runs table renders without changes.
+- **Immich-only, cron-aware Status (v0.9.10).** The Status screen reports only the Immich backup
+  (full server-job list lives at `federver → 14 → 1`). It reads the timer's schedule via
+  `systemctl cat` — `systemctl show -p OnCalendar` is not a real property and always returned empty
+  (the old `Schedule: ?`). It also detects a backup scheduled via **root cron**, matching what the
+  line *runs* (`immich-backup.sh` / `immich-db` / `immich-backup.log`) rather than the word "immich",
+  and lists every match. With no timer and no readable cron it says so instead of claiming nothing is
+  scheduled; with past log runs but no live schedule it flags the backup as **OFF**.
 
 ## Security (v0.9.0, alongside this feature)
 

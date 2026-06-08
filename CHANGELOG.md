@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.10 — 2026-06-08
+
+### Fixed
+- **Scheduled-backup Status now shows the real schedule and the Immich cron jobs, instead of `?` (`setup.sh`).** `privcloud → 9 → 2 → 2` (and `federver → 14 → 6 → 2`) printed `Schedule: ?` because it read the schedule with `systemctl show … -p OnCalendar`, which is **not a queryable property** — it always returns empty (the spec is only exposed under `TimersCalendar`). It now reads `OnCalendar` via `systemctl cat` (works wherever the unit lives, including drop-ins). The same wrong call on the `federver → 14 → 1` server-jobs view is fixed too.
+
+### Changed
+- **Status is now Immich-only and detects cron-scheduled backups by behaviour (`setup.sh`).** The screen no longer dumps every root cron job; it reports just the Immich backup and points to `federver → 14 → 1` for the full server list. It finds the backup whether it runs via the `immich-backup.timer` **or** a root cron line — matching what the line *runs* (`immich-backup.sh` / `immich-db` / `immich-backup.log`), not the word "immich", so a generically-named line still registers — and lists **all** matching cron lines (human schedule · raw spec · command). When no timer exists and root cron can't be read without a password, it says so rather than claiming nothing is scheduled; when the log shows past runs but nothing schedules it now, it flags the backup as currently **OFF**.
+
 ## v0.9.9 — 2026-06-08
 
 ### Changed

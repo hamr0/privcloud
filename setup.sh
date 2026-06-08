@@ -3854,27 +3854,86 @@ _immich_backup_run() {
     info "Watch live:  tail -f /var/log/immich-backup.log"
 }
 
-# Show the schedule, a clean recent-runs table (ran/failed, no log dump), and a
-# table of all scheduled jobs on this server so it's clear which is which.
+# Immich-backup-only status (Option C): report just THIS backup's schedule and
+# recent runs, then point to federver → 14 → 1 for the full server job list —
+# no dumping of unrelated cron jobs here. The backup can be scheduled two ways,
+# detected by BEHAVIOUR (what the job runs) not by a fixed name:
+#   • systemd timer  immich-backup.timer   (federver-managed, the modern path)
+#   • a root cron line that runs the backup script / writes its log
+# A third reality is handled honestly: the log shows past runs but nothing
+# schedules it now (removed → backups OFF), and the case where we simply could
+# not read root cron without a password (never claim "off" on missing data).
 _immich_backup_status() {
-    if [ ! -f /etc/systemd/system/immich-backup.timer ]; then
-        warn "No scheduled Immich backup is configured."
-        info "Set one up: privcloud → 9 → 2  (or federver → 14 → 6)."
-        return 0
+    local mechanism="" oncal="" next="" enabled="" lastresult="" sched_human="" cron_checked=0 cron_matches=""
+
+    if [ "$(systemctl show immich-backup.timer -p LoadState --value 2>/dev/null)" = "loaded" ]; then
+        mechanism="timer"
+        # OnCalendar is NOT a queryable `systemctl show` property (reads empty →
+        # "?"). `systemctl cat` prints the unit wherever it lives, plus drop-ins.
+        oncal=$(systemctl cat immich-backup.timer 2>/dev/null | sed -n 's/^OnCalendar=//p' | head -1)
+        next=$(systemctl list-timers immich-backup.timer --no-pager 2>/dev/null | awk '/immich-backup/{print $1,$2,$3,$4; exit}')
+        enabled=$(systemctl is-enabled immich-backup.timer 2>/dev/null)
+        lastresult=$(systemctl show immich-backup.service -p Result --value 2>/dev/null)
+        sched_human="${oncal:-unknown}"
+    else
+        # No timer — look for root cron line(s) that run the Immich backup,
+        # matched by what they DO (script / db dump / log) so a generically
+        # named line still registers. ALL matches are kept (there may be more
+        # than one). sudo -n: never prompt, skip if locked.
+        local cronall
+        if cronall=$(sudo -n crontab -l 2>/dev/null); then
+            cron_checked=1
+            cron_matches=$(printf '%s\n' "$cronall" | grep -vE '^[[:space:]]*#' \
+                | grep -E 'immich-backup\.sh|immich-db|immich-backup\.log')
+        fi
+        [ -n "$cron_matches" ] && mechanism="cron"
     fi
 
-    local oncal next enabled lastresult
-    oncal=$(systemctl show immich-backup.timer -p OnCalendar --value 2>/dev/null)
-    next=$(systemctl list-timers immich-backup.timer --no-pager 2>/dev/null | awk '/immich-backup/{print $1,$2,$3,$4; exit}')
-    enabled=$(systemctl is-enabled immich-backup.timer 2>/dev/null)
-    lastresult=$(systemctl show immich-backup.service -p Result --value 2>/dev/null)
+    # When did a backup last actually run, per the log? Drives the "last run"
+    # line for cron and the "was running, now OFF" warning.
+    local last_log_run=""
+    if [ -s /var/log/immich-backup.log ]; then
+        last_log_run=$(grep -E 'Backup (complete|FAILED)' /var/log/immich-backup.log 2>/dev/null | tail -1 | sed 's/: Backup.*//')
+    fi
 
     echo ""
     echo -e "  ${BOLD}Immich backup schedule${NC}"
-    printf "    %-11s %s\n" "Schedule:" "${oncal:-?}"
-    printf "    %-11s %s\n" "Next run:" "${next:-unknown}"
-    printf "    %-11s %s\n" "Enabled:"  "${enabled:-unknown}"
-    printf "    %-11s %s\n" "Last run:" "${lastresult:-n/a}"
+    if [ "$mechanism" = "timer" ]; then
+        printf "    %-11s %s\n" "Status:"   "scheduled (systemd timer)"
+        printf "    %-11s %s\n" "Schedule:" "$sched_human"
+        printf "    %-11s %s\n" "Next run:" "${next:-unknown}"
+        printf "    %-11s %s\n" "Enabled:"  "${enabled:-unknown}"
+        printf "    %-11s %s\n" "Last run:" "${lastresult:-n/a}"
+    elif [ "$mechanism" = "cron" ]; then
+        printf "    %-11s %s\n" "Status:" "scheduled (root cron)"
+        # One row per matching cron line: human schedule, raw spec, and command.
+        printf '%s\n' "$cron_matches" | while IFS= read -r l; do
+            [ -z "$l" ] && continue
+            local spec cmd
+            spec=$(echo "$l" | awk '{print $1,$2,$3,$4,$5}')
+            cmd=$(echo "$l"  | awk '{$1=$2=$3=$4=$5=""; sub(/^ +/,""); print}')
+            printf "    %-11s %s  ${DIM}(%s)${NC}  %s\n" "Schedule:" \
+                "$(_cron_to_english "$spec" 2>/dev/null || echo "$spec")" "$spec" "$cmd"
+        done
+        printf "    %-11s %s\n" "Last run:" "${last_log_run:-n/a}"
+    elif [ "$cron_checked" -eq 1 ]; then
+        # No timer, root cron readable and carries no Immich line → genuinely none.
+        if [ -n "$last_log_run" ]; then
+            warn "NOT scheduled — Immich backups are currently OFF."
+            printf "    %-11s %s\n" "Last run:" "$last_log_run"
+            info "The log shows past runs, but nothing schedules it now (it was removed)."
+        else
+            warn "No scheduled Immich backup is configured."
+        fi
+        info "Re-enable: privcloud → 9 → 2  (or federver → 14 → 6)."
+    else
+        # No timer, and root cron could not be read without a password — don't
+        # assert "off" on data we couldn't see; tell the user how to be sure.
+        warn "No systemd timer found, and root cron couldn't be checked (needs sudo)."
+        [ -n "$last_log_run" ] && printf "    %-11s %s\n" "Last log run:" "$last_log_run"
+        info "Verify by hand:  sudo crontab -l | grep -i immich"
+        info "Or set up the managed schedule: privcloud → 9 → 2 (or federver → 14 → 6)."
+    fi
 
     # Recent runs — one row per run (the terminal log line), ✓ ran / ✗ failed,
     # no file paths. Works for both old single-line and new multi-line logs.
@@ -3893,26 +3952,10 @@ _immich_backup_status() {
         echo "    (no runs yet)"
     fi
 
-    # All scheduled jobs on this server, so it's clear which is which. systemd
-    # timers need no sudo; root cron is read non-interactively (no prompt) and
-    # skipped with a note if locked.
+    # Option C: this screen is Immich-only. The full list of everything scheduled
+    # on the server lives in its own view — point there instead of duplicating it.
     echo ""
-    echo -e "  ${BOLD}Scheduled jobs on this server${NC}"
-    printf "    %-16s %-26s %s\n" "NAME" "SCHEDULE" "TYPE"
-    printf "    %-16s %-26s %s\n" "immich-backup" "${oncal:-?}" "timer"
-    local rootcron
-    if rootcron=$(sudo -n crontab -l 2>/dev/null); then
-        printf '%s\n' "$rootcron" | while IFS= read -r line; do
-            [[ "$line" =~ ^#|^[[:space:]]*$ ]] && continue
-            local sched name
-            sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
-            name=$(echo "$line" | grep -oE '[A-Za-z0-9_-]+\.sh' | head -1 | sed 's/\.sh$//')
-            [ -z "$name" ] && name="cron-job"
-            printf "    %-16s %-26s %s\n" "$name" "$sched" "cron"
-        done
-    else
-        echo -e "    ${DIM}(root cron jobs not shown — needs sudo; see federver → 14 → 1 for the full list)${NC}"
-    fi
+    echo -e "  ${DIM}▸ Other scheduled jobs on this server → federver → 14 → 1${NC}"
 }
 
 # Remove the schedule (timer + service + script). Leaves existing backup files
@@ -4547,7 +4590,9 @@ _sync_show_status() {
     fi
     # immich-backup migrated from cron to systemd timer (federver → 14 → 5).
     # If the timer is present, prefer its OnCalendar over any legacy cron line.
-    server_timer_oncal=$(ssh "$SERVER_USER@$SERVER_IP" 'systemctl show immich-backup.timer -p OnCalendar --value 2>/dev/null' 2>/dev/null) || server_timer_oncal=""
+    # Read OnCalendar via `systemctl cat` — `systemctl show -p OnCalendar` is
+    # always empty (it isn't a show property), which is why this used to blank.
+    server_timer_oncal=$(ssh "$SERVER_USER@$SERVER_IP" 'systemctl cat immich-backup.timer 2>/dev/null | sed -n "s/^OnCalendar=//p" | head -1') || server_timer_oncal=""
 
     echo ""
     echo -e "  ${BOLD}Scheduled tasks${NC}"

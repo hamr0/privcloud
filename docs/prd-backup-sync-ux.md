@@ -73,8 +73,10 @@ You confirm by *seeing* the shape, not by decoding slashes.
   incl. the new **server → server**) and both scheduled upload/download jobs
   (`federver` → 14 → 2) — so saved cron commands match what the tree showed.
 - **Immich backup** (`privcloud` → 9), a separate program with no folder-vs-contents
-  ambiguity (fixed `privcloud-backup/{photos,postgres}` layout, only Append vs Mirror),
-  gets the same destination tree in its confirm for visual consistency.
+  ambiguity (fixed `privcloud-backup/` layout), gets the same destination tree in its confirm
+  for visual consistency. (Its backup model has since grown a one-time/scheduled split and a
+  no-downtime path — see [prd-immich-backup](prd-immich-backup.md); the tree-preview UX here is
+  unchanged.)
 
 ## Non-goals / known limitations
 

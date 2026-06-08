@@ -45,7 +45,8 @@ docker run --rm [-t] \
   --security-opt label=disable \      # don't relabel the user's photo folder (SELinux)
   --network host \                    # reach Immich at localhost:2283
   -e IMMICH_INSTANCE_URL=http://localhost:2283/api \
-  -e IMMICH_API_KEY=<key> \           # determines the destination user
+  -e IMMICH_API_KEY \                 # forwarded by name from the env (value never on argv);
+                                      #   determines the destination user
   -v <photo_path>:/import:ro \        # photos mounted read-only
   ghcr.io/immich-app/immich-cli upload --recursive [--album] /import
 ```

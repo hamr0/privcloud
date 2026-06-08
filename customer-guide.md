@@ -80,7 +80,7 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 | `update` | Check for updates and apply |
 | `upload` | Bulk upload photos via Immich CLI with API key validation |
 | `fix-gp` | Fix Google Photos Takeout metadata (dates + GPS) |
-| `backup` | Backup photos + database to external drive with progress |
+| `backup` | Back up photos + database — one-time or scheduled, with no downtime |
 
 ### From federver (server setup)
 
@@ -113,7 +113,7 @@ privcloud eliminates all of it. One command runs a full photo server on your own
   i)  Immich (privcloud)                    ← start/stop/status/update/backup
 
   -- Tools --
-  14) Manage sync and backups               ← sync jobs, Immich DB backup, disk-space monitor
+  14) Manage sync and backups               ← sync jobs, Immich backup (DB + photos), disk-space monitor
   15) Save to pass                          ← from laptop, backup everything to pass
 
   s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-7)   0)  Exit
@@ -455,7 +455,7 @@ Expect ~20-30% overhead on top of your original library for thumbnails and previ
 
 ### What to backup
 
-**Both directories.** Photos without the database = unsorted files. Database without photos = empty references.
+**Both the photos and the database.** Photos without the database = unsorted files. Database without photos = empty references. The backup grabs both (you can also pick just one).
 
 ### How to backup
 
@@ -463,25 +463,50 @@ Expect ~20-30% overhead on top of your original library for thumbnails and previ
 privcloud backup
 ```
 
-Stops server, copies photos + database + config to destination, restarts. Before running it previews the destination layout as a tree (`privcloud-backup/photos` + `/postgres`, with sizes) and asks **Append** (keep everything on the backup) vs **Mirror** (exact copy, removes files deleted from source). Incremental after first run.
+You get two choices:
+
+```
+  1) One time   — copy photos + database to a drive now
+  2) Scheduled  — recurring automatic backup (systemd timer, no downtime)
+```
+
+**Neither stops the server** — your photos stay online the whole time. Photos are copied live, and the database is dumped while it runs (a consistent snapshot).
+
+**One time** then asks *what* to back up — **Both** (default), **Photos only**, or **Database only** — and, for photos, **Append** (keep everything on the backup) vs **Mirror** (exact copy, removes files deleted from source). It previews the destination as a tree before copying. Incremental after the first run.
+
+**Scheduled** sets up an automatic backup (daily at 3am, keep 7 days; or weekly, keep 3 weeks). It runs the *same* schedule as `federver` → 14 (one source of truth, no double-runs), backs up database + photos every run, catches up if the server was off, and retries on failure. It defaults the destination to an external/USB drive and warns if you point it at the same drive as your photos (a single disk failure would lose both).
+
+> **Tip:** an external/USB drive is the point — a backup on the same disk as your photos dies with that disk.
 
 ### How often
 
-- After big imports
-- Monthly if actively taking photos
-- Before OS upgrades
+- Set up **Scheduled** once and forget it (daily or weekly)
+- Run **One time** before big imports and before OS upgrades
 
 ---
 
 ## Moving to a new machine
 
+Restore depends on how the database was backed up:
+
+**If your backup has a `postgres/` folder** (database files):
+
 1. `privcloud stop` on old machine
-2. Copy `photos` and `postgres` directories to new machine
+2. Copy the `photos` and `postgres` directories to the new machine
 3. Clone privcloud, run `privcloud install`
 4. Point config at the copied directories, make sure `DB_PASSWORD` matches
 5. `privcloud start`
 
-Everything comes back — faces, albums, search, sharing.
+**If your backup has `immich-db-*.sql.gz`** (a database dump — what no-downtime and scheduled backups produce):
+
+1. Clone privcloud, run `privcloud install`, point config at the copied `photos`
+2. `privcloud start`
+3. Load the newest dump:
+   ```bash
+   gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres
+   ```
+
+Either way, everything comes back — faces, albums, search, sharing.
 
 ---
 
@@ -1181,7 +1206,7 @@ Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 
 **Disk space alert:** `federver` → 14 → 6 sets this up. It walks you through creating a Push monitor in Uptime Kuma (Heartbeat Interval `360`, Retry Interval `60`, Max Retries `2`), you paste the URL back into the terminal, and it installs `/usr/local/bin/disk-check.sh` with a 5-minute cron. The script sends `status=up` when all mounts are under 85%, or `status=down` when any mount exceeds 85%. The first heartbeat is sent immediately at install time so the Kuma monitor goes green before you even leave the step. Uptime Kuma then alerts you via Telegram/email if configured. **If you skip the Kuma URL prompt the wizard installs nothing** — earlier versions installed the cron line anyway, leaving a silently-dead monitor.
 
-**Immich DB backup:** `federver` → 14 → 5 sets up a systemd timer (not cron) that runs `pg_dumpall` daily at 3am (keeps 7 days) or weekly (keeps 3 weeks of dumps), with `Persistent=true` so a missed run after server-off catches up at boot, and `Restart=on-failure` for 3 retries 30 min apart. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. The dumps are plain `.sql.gz` — `gunzip | psql` to restore.
+**Immich backup (scheduled):** `federver` → 14 → 5 — or `privcloud` → 9 → 2, which drives the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention) **plus** a live `rsync` of your photos into `<dest>/photos/` (append-only — it never deletes from the backup). `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to an external/USB drive and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
 
 ### Periodic (manual)
 

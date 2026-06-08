@@ -508,6 +508,8 @@ DB_PASSWORD=${db_pass}
 DB_USERNAME=postgres
 DB_DATABASE_NAME=immich
 EOF
+  # Holds the DB password — keep it readable only by the owner.
+  chmod 600 "$ENV_FILE" 2>/dev/null || true
 
   green "Config saved."
   echo "  Photos:   $upload_loc"
@@ -551,7 +553,9 @@ cmd_upload() {
       continue
     fi
 
-    if curl -sf -H "x-api-key: $api_key" http://localhost:2283/api/users/me &>/dev/null; then
+    # Pass the key via stdin (-H @-) so it never appears in the process arg list
+    # (visible to other local users via `ps`).
+    if curl -sf -H @- http://localhost:2283/api/users/me <<<"x-api-key: $api_key" &>/dev/null; then
       break
     fi
 
@@ -616,11 +620,14 @@ cmd_upload() {
   # relabeling the user's photo folder. Allocate a TTY only when we have one.
   local tflag=""
   [ -t 1 ] && tflag="-t"
-  docker run --rm $tflag \
+  # Pass the key by NAME (-e IMMICH_API_KEY), inheriting its value from the
+  # environment, so the secret is never on the `docker run` argv (which `ps`
+  # would expose to other local users).
+  IMMICH_API_KEY="$api_key" docker run --rm $tflag \
     --security-opt label=disable \
     --network host \
     -e IMMICH_INSTANCE_URL="http://localhost:2283/api" \
-    -e IMMICH_API_KEY="$api_key" \
+    -e IMMICH_API_KEY \
     -v "$photo_path":/import:ro \
     "$cli_image" upload --recursive $album_flag /import
 
@@ -630,6 +637,37 @@ cmd_upload() {
 
 cmd_backup() {
   bold "Backup privcloud"
+  echo ""
+  echo "  1) One time   — copy photos + database to a drive now"
+  echo "  2) Scheduled  — recurring automatic backup (systemd timer, no downtime)"
+  echo "  0) Back"
+  echo ""
+  printf "Choose [0-2]: "
+  read -r btype
+  case "$btype" in
+    1)        cmd_backup_once ;;
+    2)        cmd_backup_schedule ;;
+    0|""|q)   return 0 ;;
+    *)        red "Invalid choice." ;;
+  esac
+}
+
+# Hand off to setup.sh's step_immich_backup, which owns the shared
+# immich-backup.timer/.service and /usr/local/bin/immich-backup.sh. Both this
+# menu and federver's menu drive that one schedule (single source of truth).
+cmd_backup_schedule() {
+  echo ""
+  local setup="$SCRIPT_DIR/setup.sh"
+  if [ ! -f "$setup" ]; then
+    red "setup.sh not found next to privcloud ($setup)."
+    red "Scheduled backups are configured by federver's setup.sh."
+    return 1
+  fi
+  # Returns 2 on "back" — don't let that abort privcloud under set -e.
+  bash "$setup" --run step_immich_backup || true
+}
+
+cmd_backup_once() {
   echo ""
 
   local upload_loc db_loc
@@ -641,13 +679,28 @@ cmd_backup() {
     return 1
   fi
 
-  # Show what we're backing up
-  local photos_size db_size
-  photos_size="$(sudo du -sh --block-size=1G "$upload_loc" 2>/dev/null | awk '{print $1" GB"}' || echo "unknown")"
-  db_size="$(sudo du -sh --block-size=1M "$db_loc" 2>/dev/null | awk '{print $1" MB"}' || echo "unknown")"
+  # What to back up
+  echo "What to back up:"
+  echo "  1) Both — photos + database (default)"
+  echo "  2) Photos only"
+  echo "  3) Database only"
+  echo ""
+  printf "Choose [1/2/3] (default: 1): "
+  read -r scope
+  local do_photos=true do_db=true
+  case "$scope" in
+    2)     do_db=false ;;
+    3)     do_photos=false ;;
+    1|"")  ;;
+    *)     red "Invalid choice."; return 1 ;;
+  esac
 
-  echo "  Photos:   $upload_loc ($photos_size)"
-  echo "  Database: $db_loc ($db_size)"
+  # Show what we're backing up (size only what we'll copy)
+  local photos_size="-" db_size="-"
+  $do_photos && photos_size="$(sudo du -sh --block-size=1G "$upload_loc" 2>/dev/null | awk '{print $1" GB"}' || echo "unknown")"
+  $do_db     && db_size="$(sudo du -sh --block-size=1M "$db_loc" 2>/dev/null | awk '{print $1" MB"}' || echo "unknown")"
+  $do_photos && echo "  Photos:   $upload_loc ($photos_size)"
+  $do_db     && echo "  Database: $db_loc ($db_size)"
   echo ""
 
   # Get destination
@@ -668,92 +721,106 @@ cmd_backup() {
   local avail
   avail="$(df -h "$dest" 2>/dev/null | awk 'NR==2{print $4}')"
   echo ""
-  echo "  Destination will look like this:"
-  echo "    $backup_dir/"
-  echo "    ├── photos/      ($photos_size)"
-  echo "    └── postgres/    ($db_size)"
-  echo "  Available on drive: $avail"
+  echo "  Destination: $backup_dir/   (available on drive: $avail)"
   echo ""
 
-  # Check if any containers are running and stop them
-  local was_running=false
-  if run_compose ps --quiet 2>/dev/null | grep -q .; then
-    was_running=true
-    yellow "Stopping privcloud (database must be shut down for a clean backup)..."
-    echo ""
-    run_compose down
-    echo ""
-    green "Stopped."
+  # No downtime: dump the live DB instead of stopping the stack. Detect whether
+  # postgres is up — if so we dump online; if it's already down we cold-copy the
+  # data dir (also safe). Either way the running state is left untouched.
+  local pg_running=false
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx immich_postgres; then
+    pg_running=true
   fi
 
   printf "Start backup? [Y/n]: "
   read -r confirm
   if [[ "$confirm" =~ ^[Nn] ]]; then
     yellow "Cancelled."
-    if $was_running; then
-      echo "Restarting privcloud..."
-      run_compose up -d
-    fi
     return 0
   fi
 
-  echo ""
-  echo "Backup mode:"
-  echo "  1) Append — copy new/changed files, keep everything on backup (safe default)"
-  echo "  2) Mirror — exact copy of source, removes files deleted from source"
-  echo ""
-  printf "Choose [1/2] (default: 1): "
-  read -r sync_mode
+  # Photo sync mode (only relevant when copying photos)
   local rsync_delete=""
-  if [ "$sync_mode" = "2" ]; then
-    rsync_delete="--delete"
-    yellow "Mirror mode: files deleted from source will be removed from backup."
+  if $do_photos; then
+    echo ""
+    echo "Photo sync mode:"
+    echo "  1) Append — copy new/changed files, keep everything on backup (safe default)"
+    echo "  2) Mirror — exact copy of source, removes files deleted from source"
+    echo ""
+    printf "Choose [1/2] (default: 1): "
+    read -r sync_mode
+    if [ "$sync_mode" = "2" ]; then
+      rsync_delete="--delete"
+      yellow "Mirror mode: files deleted from source will be removed from backup."
+    fi
   fi
 
   echo ""
   mkdir -p "$backup_dir"
 
-  bold "Copying photos ($photos_size)..."
-  if command -v rsync &>/dev/null; then
-    if ! sudo rsync -a $rsync_delete --info=progress2 "$upload_loc/" "$backup_dir/photos/"; then
-      red "Failed to copy photos (rsync error)."
-      return 1
+  # Photos — live rsync of write-once originals; safe while Immich runs.
+  if $do_photos; then
+    bold "Copying photos ($photos_size)..."
+    if command -v rsync &>/dev/null; then
+      if ! sudo rsync -a $rsync_delete --info=progress2 "$upload_loc/" "$backup_dir/photos/"; then
+        red "Failed to copy photos (rsync error)."
+        return 1
+      fi
+    else
+      sudo cp -a "$upload_loc" "$backup_dir/photos"
     fi
-  else
-    sudo cp -a "$upload_loc" "$backup_dir/photos"
+    local photos_copied
+    photos_copied="$(sudo du -sh "$backup_dir/photos" 2>/dev/null | awk '{print $1}')"
+    green "Photos copied ($photos_copied)."
   fi
-  # Verify something was actually copied
-  local photos_copied
-  photos_copied="$(sudo du -sh "$backup_dir/photos" 2>/dev/null | awk '{print $1}')"
-  green "Photos copied ($photos_copied)."
 
-  bold "Copying database ($db_size)..."
-  # Double-check no containers are running (postgres locks its files)
-  if run_compose ps --quiet 2>/dev/null | grep -q .; then
-    red "Containers are still running! Cannot safely copy database."
-    red "Run './privcloud stop' first, then retry backup."
-    return 1
-  fi
-  if command -v rsync &>/dev/null; then
-    if ! sudo rsync -a $rsync_delete --info=progress2 "$db_loc/" "$backup_dir/postgres/"; then
-      red "Failed to copy database (rsync error)."
-      return 1
+  # Database — no downtime. Online pg_dump when running; cold data-dir copy when
+  # already stopped. db_method records which, so the restore hint matches.
+  local db_method=""
+  if $do_db; then
+    if $pg_running; then
+      bold "Dumping database (online, no downtime)..."
+      local ts dump
+      ts="$(date +%Y%m%d-%H%M)"
+      dump="$backup_dir/immich-db-$ts.sql.gz"
+      if docker exec immich_postgres pg_dumpall -U postgres | gzip > "$dump"; then
+        chmod 600 "$dump" 2>/dev/null || true
+        db_method="dump"
+        green "Database dumped ($(du -sh "$dump" 2>/dev/null | awk '{print $1}')) → $(basename "$dump")"
+      else
+        rm -f "$dump"   # don't leave a partial/empty dump that looks valid
+        red "Database dump failed. Is Immich healthy? Try: privcloud status"
+        return 1
+      fi
+    else
+      yellow "Immich is stopped — copying the database files directly (safe while down)."
+      # Defense-in-depth: never cold-copy a live data dir (would be corrupt).
+      if run_compose ps --quiet 2>/dev/null | grep -q .; then
+        red "Some containers are still running — cannot safely cold-copy the database."
+        red "Start Immich fully for an online dump, or './privcloud stop' first."
+        return 1
+      fi
+      if command -v rsync &>/dev/null; then
+        if ! sudo rsync -a $rsync_delete --info=progress2 "$db_loc/" "$backup_dir/postgres/"; then
+          red "Failed to copy database (rsync error)."
+          return 1
+        fi
+      else
+        sudo cp -a "$db_loc" "$backup_dir/postgres"
+      fi
+      local db_copied
+      db_copied="$(sudo du -sh "$backup_dir/postgres" 2>/dev/null | awk '{print $1}')"
+      if [ "$db_copied" = "0" ] || [ "$db_copied" = "4.0K" ]; then
+        red "Database backup appears empty ($db_copied)."
+        return 1
+      fi
+      # Make backup readable without root (postgres files are owned by container user)
+      sudo chown -R "$(id -u):$(id -g)" "$backup_dir/postgres"
+      sudo chmod -R u+rw "$backup_dir/postgres"
+      db_method="datadir"
+      green "Database copied ($db_copied)."
     fi
-  else
-    sudo cp -a "$db_loc" "$backup_dir/postgres"
   fi
-  # Verify database was actually copied
-  local db_copied
-  db_copied="$(sudo du -sh "$backup_dir/postgres" 2>/dev/null | awk '{print $1}')"
-  if [ "$db_copied" = "0" ] || [ "$db_copied" = "4.0K" ]; then
-    red "Database backup appears empty ($db_copied). Postgres may still be locked."
-    red "Make sure privcloud is stopped and try again."
-    return 1
-  fi
-  # Make backup readable without root (postgres files are owned by container user)
-  sudo chown -R "$(id -u):$(id -g)" "$backup_dir/postgres"
-  sudo chmod -R u+rw "$backup_dir/postgres"
-  green "Database copied ($db_copied)."
 
   # Copy .env so restore knows the password and config. It holds the DB
   # password, so keep the backup copy readable only by the owner.
@@ -764,22 +831,22 @@ cmd_backup() {
   echo ""
   green "Backup complete!"
   echo "  Location: $backup_dir"
-  echo "  Photos:   $backup_dir/photos"
-  echo "  Database: $backup_dir/postgres"
+  $do_photos && echo "  Photos:   $backup_dir/photos"
+  if [ "$db_method" = "dump" ]; then
+    echo "  Database: $backup_dir/immich-db-*.sql.gz (SQL dump)"
+  elif [ "$db_method" = "datadir" ]; then
+    echo "  Database: $backup_dir/postgres (data dir)"
+  fi
   echo "  Config:   $backup_dir/.env"
   echo ""
   echo "To restore on any machine:"
   echo "  1. Clone privcloud and run ./privcloud install"
-  echo "  2. Point config to the backed-up photos directory"
-  echo "  3. Copy postgres and .env back, then ./privcloud start"
-
-  if $was_running; then
-    echo ""
-    yellow "Restarting privcloud..."
-    ensure_docker
-    run_compose up -d
-    echo ""
-    green "privcloud is running again."
+  $do_photos && echo "  2. Point config to the backed-up photos directory"
+  if [ "$db_method" = "dump" ]; then
+    echo "  3. Start privcloud, then load the dump:"
+    echo "       gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres"
+  elif [ "$db_method" = "datadir" ]; then
+    echo "  3. Copy postgres/ and .env back, then ./privcloud start"
   fi
 }
 
@@ -872,7 +939,7 @@ cmd_menu() {
   echo "  6) update    Check for updates and apply"
   echo "  7) upload    Upload photos to privcloud"
   echo "  8) fix-gp    Fix Google Photos metadata (Takeout export)"
-  echo "  9) backup    Backup photos + database to external drive"
+  echo "  9) backup    Backup photos + database (one-time or scheduled)"
   echo "  0) exit"
   echo ""
   printf "Choose [0-9]: "

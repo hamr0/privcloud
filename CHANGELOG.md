@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.9.0 — 2026-06-08
+
+### Added
+- **`privcloud` → 9 (backup) now offers `1) One time` or `2) Scheduled` (`privcloud`, `setup.sh`).** The backup command used to do a single manual copy only. It now opens a two-way menu: **One time** runs an on-demand backup; **Scheduled** sets up a recurring, no-downtime automatic backup via systemd timer. The scheduled path hands off to federver's `step_immich_backup` (`bash setup.sh --run step_immich_backup`), which owns the shared `immich-backup.timer`/`.service` and `/usr/local/bin/immich-backup.sh` — so the privcloud menu and the federver main menu drive **one** schedule (single source of truth), not two competing ones.
+- **The one-time backup now lets you pick scope: `1) Both`, `2) Photos only`, `3) Database only` (`privcloud`).** Previously it always copied both.
+
+### Fixed
+- **The one-time backup no longer stops Immich (`privcloud`).** It used to run `docker compose down` so it could cold-copy the Postgres data dir, taking the whole stack offline for the duration. It now backs up with **zero downtime**: photos via a live `rsync` of the write-once originals, and the database via an **online `pg_dumpall | gzip`** (`immich-db-<ts>.sql.gz`) while the container keeps running. If Immich happens to already be stopped, it falls back to a cold data-dir copy (also safe) — either way the running state is left untouched. The restore hint adapts to whichever DB method was used (load the SQL dump via `psql`, or copy the `postgres/` dir back).
+
+### Security
+- **`.env` is now written `chmod 600` on install (`privcloud`).** The config holds `DB_PASSWORD` but was created with the default umask (world-readable `644`). It's now owner-only, matching the backup copies.
+- **The Immich API key no longer appears in any process argument list (`privcloud`).** The key-validation `curl` now passes the header via stdin (`-H @-`) instead of `-H "x-api-key: …"`, and the upload `docker run` forwards the key by name (`-e IMMICH_API_KEY`, value exported into the environment) rather than `-e IMMICH_API_KEY=<value>`. Neither command line exposes the secret to other local users via `ps`.
+- **Server-side path handling in the sync/backup SSH calls is now injection-safe (`setup.sh`).** The eight directly-executed `ssh "… '$path' …"` sites embedded user-supplied paths inside single quotes, which broke on paths containing an apostrophe (e.g. `Tom's Photos`) and allowed shell-command injection into the remote session. Paths are now quoted with a new `_shq` helper (`printf %q`). (The two command-*builder* sites that feed `_sync_execute_or_schedule` via `bash -c`/generated scripts are multi-parse and left for a separate args-not-strings refactor.)
+
+### Changed
+- **The scheduled Immich backup is now full (database + photos), with zero downtime (`setup.sh`).** Previously the timer dumped only the Postgres DB. Each run now also does a **live `rsync` of the photo originals** into `<dest>/photos/`. Both steps are safe while Immich runs: `pg_dumpall` is transactionally consistent, and `UPLOAD_LOCATION` holds write-once originals — so the stack is never stopped. Photos sync **append-only** (never `--delete`) so an unattended job can't propagate an accidental deletion; DB dumps still rotate by the retention window. The success log line keeps the exact `Backup complete` phrase the status screen parses, so the Last-runs table is unchanged.
+- **The scheduled backup destination now defaults to an external drive (`setup.sh`).** `step_immich_backup` auto-detects the mounted removable drive (`/run/media/*/*`, `/media/*/*`, `/mnt/*`) with the most free space that isn't on the same filesystem as your photos, and suggests it as the default. If you point the backup at the **same drive** as the source, it now warns that a single disk failure loses both copies and asks for confirmation.
+
 ## v0.8.9 — 2026-06-05
 
 ### Added

@@ -98,6 +98,13 @@ ssh() {
 # reachable server address before opening the menu. /dev/tcp is a bash builtin.
 _tcp_open() { timeout 2 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; }
 
+# Shell-quote a value so it survives exactly one remote shell parse over ssh.
+# Stops a path containing spaces, quotes, or metacharacters from breaking (or
+# injecting into) a remote command. Use for ANY user/config path embedded in an
+# ssh "..." string that is executed directly (one parse). Not sufficient for
+# strings later re-parsed by `bash -c` or written to scheduled scripts.
+_shq() { printf '%q' "$1"; }
+
 # Run a step with clear screen and success/fail banner.
 # Convention: a step that returns 2 means "user picked Back before doing
 # anything" — skip the banner and the Press-Enter prompt so it feels like
@@ -3595,23 +3602,65 @@ _adguard_dns_upstream_guide() {
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
+# Suggest the best external-drive destination for backups: the mounted media
+# drive with the most free space that is NOT on the same filesystem as $1 (the
+# source). Echoes "<mountpoint>/privcloud-backup", or nothing if none found.
+_pick_backup_default() {
+    local src="$1" src_fs best="" best_avail=0 mp avail fs
+    src_fs=$(df -P "$src" 2>/dev/null | awk 'NR==2{print $1}')
+    for mp in /run/media/*/* /media/*/* /mnt/*; do
+        [ -d "$mp" ] || continue
+        mountpoint -q "$mp" 2>/dev/null || continue
+        fs=$(df -P "$mp" 2>/dev/null | awk 'NR==2{print $1}')
+        [ -n "$fs" ] && [ "$fs" != "$src_fs" ] || continue
+        avail=$(df -P "$mp" 2>/dev/null | awk 'NR==2{print $4}')
+        if [ "${avail:-0}" -gt "$best_avail" ]; then best_avail=$avail; best="$mp"; fi
+    done
+    [ -n "$best" ] && echo "$best/privcloud-backup"
+    # Always succeed: a "no external drive" result is empty output, not a
+    # failure. Under `set -e` a non-zero return here would abort the caller's
+    # `default_dir=$(_pick_backup_default …)` before the fallback runs.
+    return 0
+}
+
 step_immich_backup() {
-    info "Schedules a Postgres dump of the Immich DB."
-    info "The DB contains your albums, face data, and metadata — hard to recreate."
-    info "Photo files themselves live in UPLOAD_LOCATION; back them up via Manage sync."
+    info "Schedules an automatic Immich backup (systemd timer, no downtime)."
+    info "Each run: a Postgres dump (albums, faces, metadata — hard to recreate)"
+    info "plus a live rsync of your photo originals. pg_dumpall and rsync are"
+    info "both safe while Immich runs, so the stack is never stopped."
     echo ""
 
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local DB_DATA_LOCATION default_dir
+    local DB_DATA_LOCATION UPLOAD_LOCATION default_dir src_dir
     DB_DATA_LOCATION=$(_env_get DB_DATA_LOCATION "$SCRIPT_DIR/.env")
-    default_dir="${DB_DATA_LOCATION:-/home/$SERVER_USER/data/immich/postgres}/../backups"
-    default_dir=$(realpath -m "$default_dir")
+    UPLOAD_LOCATION=$(_env_get UPLOAD_LOCATION "$SCRIPT_DIR/.env")
+    src_dir="${UPLOAD_LOCATION:-$DB_DATA_LOCATION}"
+
+    # Prefer an external/removable drive so the backup survives the source disk
+    # dying. Pick the mounted media drive with the most free space; fall back to
+    # the legacy in-tree backups dir (same drive — warned about below).
+    default_dir=$(_pick_backup_default "$src_dir")
+    default_dir=${default_dir:-$(realpath -m "${DB_DATA_LOCATION:-/home/$USER/data/immich/postgres}/../backups")}
 
     read -p "  Backup destination [${default_dir}, q=back]: " BACKUP_DIR
     [[ "$BACKUP_DIR" == "q" ]] && return 2
     BACKUP_DIR="${BACKUP_DIR:-$default_dir}"
     BACKUP_DIR=$(realpath -m "$BACKUP_DIR")
     sudo mkdir -p "$BACKUP_DIR"
+
+    # A backup on the same disk as the photos dies with that disk. Warn loudly.
+    if [ -n "$src_dir" ] && [ -e "$src_dir" ]; then
+        local src_fs dst_fs
+        src_fs=$(df -P "$src_dir" 2>/dev/null | awk 'NR==2{print $1}')
+        dst_fs=$(df -P "$BACKUP_DIR" 2>/dev/null | awk 'NR==2{print $1}')
+        if [ -n "$src_fs" ] && [ "$src_fs" == "$dst_fs" ]; then
+            warn "Destination is on the SAME drive as your photos ($src_fs)."
+            warn "A disk failure would lose the originals AND the backup."
+            warn "An external/USB drive is strongly advised."
+            local ok_same; read -p "  Continue anyway? [y/N]: " ok_same
+            [[ "$ok_same" =~ ^[Yy]$ ]] || return 2
+        fi
+    fi
 
     echo ""
     echo -e "  ${BOLD}Cadence:${NC}"
@@ -3653,25 +3702,58 @@ step_immich_backup() {
     # Last-runs table parser keeps working unchanged.
     sudo tee /usr/local/bin/immich-backup.sh > /dev/null <<'BACKUPEOF'
 #!/bin/bash
+# Full Immich backup: database (online pg_dump) + photo originals (live rsync).
+# Neither step stops the stack — pg_dumpall is transactionally consistent and
+# UPLOAD_LOCATION holds write-once originals, so both are safe while Immich runs.
+# Managed by setup.sh (federver → Immich backup) and privcloud → backup → scheduled.
 BACKUP_DIR="__BACKUP_DIR__"
+UPLOAD_LOCATION="__UPLOAD_LOCATION__"
 RETENTION_DAYS=__RETENTION__
 LOG="/var/log/immich-backup.log"
 exec >>"$LOG" 2>&1
 
 TIMESTAMP=$(date +%Y%m%d-%H%M)
 mkdir -p "$BACKUP_DIR"
+rc=0
+
+# 1) Database — logical dump, online-consistent, no downtime. Dumps stay in
+# BACKUP_DIR as immich-db-*.sql.gz and rotate by retention.
 if docker exec immich_postgres pg_dumpall -U postgres | gzip > "$BACKUP_DIR/immich-db-$TIMESTAMP.sql.gz"; then
     find "$BACKUP_DIR" -name "immich-db-*.sql.gz" -mtime +"$RETENTION_DAYS" -delete
-    echo "$(date): Backup complete → $BACKUP_DIR/immich-db-$TIMESTAMP.sql.gz"
-    exit 0
+    echo "$(date): DB dump ok → immich-db-$TIMESTAMP.sql.gz"
 else
     rc=$?
     rm -f "$BACKUP_DIR/immich-db-$TIMESTAMP.sql.gz"
+    echo "$(date): DB dump FAILED (exit $rc)"
+fi
+
+# 2) Photos — live rsync of originals into BACKUP_DIR/photos. Append only (never
+# --delete): an unattended job must not propagate an accidental deletion.
+if [ -n "$UPLOAD_LOCATION" ] && [ -d "$UPLOAD_LOCATION" ]; then
+    if command -v rsync >/dev/null 2>&1; then
+        if rsync -a "$UPLOAD_LOCATION/" "$BACKUP_DIR/photos/"; then
+            echo "$(date): Photos synced → $BACKUP_DIR/photos/"
+        else
+            rc=$?
+            echo "$(date): Photos rsync FAILED (exit $rc)"
+        fi
+    else
+        echo "$(date): rsync not found — photos skipped"; rc=1
+    fi
+else
+    echo "$(date): UPLOAD_LOCATION missing ($UPLOAD_LOCATION) — photos skipped"; rc=1
+fi
+
+# Final line is parsed by the status screen — keep the exact "Backup complete" phrase.
+if [ "$rc" -eq 0 ]; then
+    echo "$(date): Backup complete → $BACKUP_DIR"
+    exit 0
+else
     echo "$(date): Backup FAILED (exit $rc) — systemd will retry"
     exit "$rc"
 fi
 BACKUPEOF
-    sudo sed -i "s|__BACKUP_DIR__|$BACKUP_DIR|g; s|__RETENTION__|$retention_days|g" /usr/local/bin/immich-backup.sh
+    sudo sed -i "s|__BACKUP_DIR__|$BACKUP_DIR|g; s|__UPLOAD_LOCATION__|$UPLOAD_LOCATION|g; s|__RETENTION__|$retention_days|g" /usr/local/bin/immich-backup.sh
     sudo chmod +x /usr/local/bin/immich-backup.sh
 
     # systemd unit: Type=oneshot with Restart=on-failure gives us 3 retries
@@ -3710,11 +3792,14 @@ TIMEREOF
 
     echo ""
     ok "Immich backup configured (systemd timer):"
-    echo -e "    Schedule:   ${BOLD}${oncal}${NC}"
+    echo -e "    Schedule:    ${BOLD}${oncal}${NC}"
     echo -e "    Destination: ${BOLD}$BACKUP_DIR${NC}"
-    echo -e "    Retention:  ${BOLD}${retention_days} days${NC}"
-    echo -e "    Persistent: ${BOLD}yes${NC} ${DIM}(catches up missed runs)${NC}"
-    echo -e "    On failure: ${BOLD}3 retries 30min apart${NC}"
+    echo -e "    Includes:    ${BOLD}database + photos${NC} ${DIM}(no downtime)${NC}"
+    echo -e "      • DB dumps → ${DIM}$BACKUP_DIR/immich-db-*.sql.gz${NC}"
+    echo -e "      • Photos   → ${DIM}$BACKUP_DIR/photos/${NC} ${DIM}(rsync, append-only)${NC}"
+    echo -e "    Retention:   ${BOLD}${retention_days} days${NC} ${DIM}(DB dumps; photos kept as a live mirror)${NC}"
+    echo -e "    Persistent:  ${BOLD}yes${NC} ${DIM}(catches up missed runs)${NC}"
+    echo -e "    On failure:  ${BOLD}3 retries 30min apart${NC}"
     echo ""
     info "Run manually:  sudo systemctl start immich-backup.service"
     info "Check status:  systemctl status immich-backup.timer"
@@ -4711,10 +4796,10 @@ _pick_server_path() {
         fi
 
         if [[ "$validate" == "true" ]]; then
-            if ssh "$SERVER_USER@$SERVER_IP" "test -e '$server_path'" 2>/dev/null; then
+            if ssh "$SERVER_USER@$SERVER_IP" "test -e $(_shq "$server_path")" 2>/dev/null; then
                 echo ""
                 echo -e "  ${BOLD}Contents of server:$server_path:${NC}"
-                ssh "$SERVER_USER@$SERVER_IP" "if [ -d '$server_path' ]; then ls '$server_path'; else basename '$server_path'; fi"
+                ssh "$SERVER_USER@$SERVER_IP" "if [ -d $(_shq "$server_path") ]; then ls $(_shq "$server_path"); else basename $(_shq "$server_path"); fi"
                 break
             fi
             ((attempts++))
@@ -4755,7 +4840,7 @@ _pick_copy_mode() {
     # Top-level listing of the source, used only to draw the preview tree.
     local listing
     if [[ "$src_loc" == "server" ]]; then
-        listing=$(ssh "$SERVER_USER@$SERVER_IP" "ls -1 '$src_path' 2>/dev/null")
+        listing=$(ssh "$SERVER_USER@$SERVER_IP" "ls -1 $(_shq "$src_path") 2>/dev/null")
     else
         listing=$(ls -1 "$src_path" 2>/dev/null)
     fi
@@ -4861,7 +4946,7 @@ _sync_one_time_backup() {
             echo ""
             [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
 
-            ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$dest_display' && sudo chown $SERVER_USER:$SERVER_USER '$dest_display'" || { fail "Could not prepare destination."; return 1; }
+            ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p $(_shq "$dest_display") && sudo chown $SERVER_USER:$SERVER_USER $(_shq "$dest_display")" || { fail "Could not prepare destination."; return 1; }
             rsync -avh --progress "$rsync_src" "$SERVER_USER@$SERVER_IP:$dst_path/" || { fail "Backup failed."; return 1; }
             ;;
         2)
@@ -4875,7 +4960,7 @@ _sync_one_time_backup() {
             local dst_path="$local_path"
 
             local is_dir="false"
-            ssh "$SERVER_USER@$SERVER_IP" "test -d '$src_path'" 2>/dev/null && is_dir="true"
+            ssh "$SERVER_USER@$SERVER_IP" "test -d $(_shq "$src_path")" 2>/dev/null && is_dir="true"
             _pick_copy_mode "$src_path" "$is_dir" "$dst_path" "server" || return
             local rsync_src="$src_path/"
             local dest_display="$dst_path"
@@ -4946,7 +5031,7 @@ _sync_one_time_backup() {
 
             # Both paths live on the server; rsync runs there over one SSH session.
             local is_dir="false"
-            ssh "$SERVER_USER@$SERVER_IP" "test -d '$src_path'" 2>/dev/null && is_dir="true"
+            ssh "$SERVER_USER@$SERVER_IP" "test -d $(_shq "$src_path")" 2>/dev/null && is_dir="true"
             _pick_copy_mode "$src_path" "$is_dir" "$dst_path" "server" || return
             local rsync_src="$src_path/"
             local dest_display="$dst_path"
@@ -4969,7 +5054,7 @@ _sync_one_time_backup() {
 
             # -t for the interactive sudo password prompt. mkdir the destination
             # first, then copy. Single-quoted paths handle spaces (e.g. "New Backup").
-            ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p '$dest_display' && sudo rsync -avh --progress '$rsync_src' '$dst_path/'" || { fail "Backup failed."; return 1; }
+            ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p $(_shq "$dest_display") && sudo rsync -avh --progress $(_shq "$rsync_src") $(_shq "$dst_path/")" || { fail "Backup failed."; return 1; }
             ;;
     esac
 
@@ -5066,7 +5151,7 @@ step_sync() {
             _pick_local_path false || return
 
             local is_dir="false"
-            ssh "$SERVER_USER@$SERVER_IP" "test -d '$server_path'" 2>/dev/null && is_dir="true"
+            ssh "$SERVER_USER@$SERVER_IP" "test -d $(_shq "$server_path")" 2>/dev/null && is_dir="true"
             _pick_copy_mode "$server_path" "$is_dir" "$local_path" "server" || return
             local rsync_src="$server_path/"
             local dest_display="$local_path"

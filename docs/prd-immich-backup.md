@@ -76,6 +76,18 @@ truth). Each run is **full** (database + photos), no downtime:
 - Robustness inherited from the timer: `Persistent=true` catches up missed runs; 3 retries
   30 min apart on failure; logs to `/var/log/immich-backup.log` (final `Backup complete` line is
   what the `federver` status screen parses).
+- **First run is immediate.** `enable --now` only starts the *timer* (it wouldn't fire until the
+  next tick, and `Persistent=true` only catches up a tick missed during downtime — never an
+  initial run). So after setup it offers to run once now via `systemctl start --no-block` —
+  confirming it works and seeding the backup, detached so it survives an SSH disconnect.
+
+### Managing it
+
+`privcloud` → 9 → 2 is a submenu, not a one-shot: **Set up / change**, **Status**
+(`systemctl list-timers` + last result + recent log), **Run now** (background), and **Remove**
+(deletes timer/service/script via `_immich_backup_remove`, **leaving backup files intact**).
+Status/run/remove are `setup.sh` functions so the schedule remains single-source. The interactive
+`privcloud` menu loops, so `0) Back` steps up a level rather than exiting.
 
 ### Destination
 

@@ -474,7 +474,7 @@ You get two choices:
 
 **One time** then asks *what* to back up — **Both** (default), **Photos only**, or **Database only** — and, for photos, **Append** (keep everything on the backup) vs **Mirror** (exact copy, removes files deleted from source). It previews the destination as a tree before copying. Incremental after the first run.
 
-**Scheduled** sets up an automatic backup (daily at 3am, keep 7 days; or weekly, keep 3 weeks). It runs the *same* schedule as `federver` → 14 (one source of truth, no double-runs), backs up database + photos every run, catches up if the server was off, and retries on failure. It defaults the destination to an external/USB drive and warns if you point it at the same drive as your photos (a single disk failure would lose both).
+**Scheduled** is a small submenu — **set up / change**, **status** (next/last run + recent log), **run now**, and **remove** (deletes the schedule but keeps your backup files). Setting it up creates an automatic backup (daily at 3am, keep 7 days; or weekly, keep 3 weeks) that runs the *same* schedule as `federver` → 14 (one source of truth, no double-runs), backs up database + photos every run, catches up if the server was off, and retries on failure. It defaults the destination to an external/USB drive and warns if you point it at the same drive as your photos (a single disk failure would lose both). Right after setup it offers to **run the first backup now** so you can confirm it works instead of waiting for the next scheduled time.
 
 > **Tip:** an external/USB drive is the point — a backup on the same disk as your photos dies with that disk.
 

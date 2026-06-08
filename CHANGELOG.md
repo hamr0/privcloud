@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.9.3 — 2026-06-08
+
+### Added
+- **Scheduled Immich backup now runs once immediately after setup (`setup.sh`).** `enable --now` only starts the *timer*, which doesn't fire until the next scheduled tick (and `Persistent=true` only catches up a tick missed while the box was off — it never triggers an initial run). So after configuring, it now offers to **run the first backup now** to confirm it works and seed the backup, instead of waiting up to a week. The run is started with `systemctl start --no-block`, so it executes under systemd and keeps going even if the SSH session closes.
+- **Manage the scheduled backup from `privcloud` → 9 → 2 (`privcloud`, `setup.sh`).** The Scheduled option is now a submenu: **1) Set up / change**, **2) Status** (timer state, next/last run via `systemctl list-timers`, recent log), **3) Run now** (background), **4) Remove** (deletes the timer/service/script — `_immich_backup_remove` — and **keeps existing backup files**). Status/run/remove delegate to new `setup.sh` functions so the schedule stays single-source.
+- **`0) Back` on every backup menu, and the `privcloud` main menu now loops (`privcloud`).** The interactive menu used to run one command and exit; it now returns to the main menu after each action, so `0) Back` in the backup / scheduled / scope menus steps up a level and `0) exit` leaves privcloud. (CLI usage like `privcloud backup` is unchanged — still one-shot.)
+
 ## v0.9.2 — 2026-06-08
 
 ### Fixed

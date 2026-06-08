@@ -3808,9 +3808,82 @@ TIMEREOF
     echo -e "    Persistent:  ${BOLD}yes${NC} ${DIM}(catches up missed runs)${NC}"
     echo -e "    On failure:  ${BOLD}3 retries 30min apart${NC}"
     echo ""
-    info "Run manually:  sudo systemctl start immich-backup.service"
-    info "Check status:  systemctl status immich-backup.timer"
-    info "View log:      sudo tail /var/log/immich-backup.log"
+    # The timer only fires at the next scheduled tick (Persistent=true just
+    # catches up a tick missed while the box was off — it never triggers an
+    # initial run). So offer to run once now: confirms it works and seeds the
+    # first backup instead of waiting up to a week.
+    local run_now; read -p "  Run the first backup now to verify it works? [Y/n]: " run_now
+    if [[ ! "$run_now" =~ ^[Nn] ]]; then
+        _immich_backup_run
+    fi
+
+    echo ""
+    info "Manage it anytime:  privcloud → 9 → 2  (status / run now / remove)"
+    info "View log:           tail /var/log/immich-backup.log"
+}
+
+# Start the scheduled backup now, detached under systemd so it keeps running
+# even if the SSH session closes. Shows a few log lines for confidence.
+_immich_backup_run() {
+    if [ ! -x /usr/local/bin/immich-backup.sh ]; then
+        warn "No scheduled Immich backup is configured yet."
+        info "Set one up first: privcloud → 9 → 2  (or federver → 14 → 6)."
+        return 0
+    fi
+    info "Starting backup (runs under systemd — continues even if you disconnect)..."
+    sudo systemctl start --no-block immich-backup.service || { fail "Could not start the backup service."; return 1; }
+    sleep 3
+    echo ""
+    info "Recent log (it keeps running in the background):"
+    if [ -s /var/log/immich-backup.log ]; then
+        tail -n 6 /var/log/immich-backup.log 2>/dev/null | sed 's/^/    /'
+    else
+        echo "    (starting…)"
+    fi
+    echo ""
+    info "Watch live:  tail -f /var/log/immich-backup.log"
+}
+
+# Show the schedule, next/last run, and recent log for the scheduled backup.
+_immich_backup_status() {
+    if [ ! -f /etc/systemd/system/immich-backup.timer ]; then
+        warn "No scheduled Immich backup is configured."
+        info "Set one up: privcloud → 9 → 2  (or federver → 14 → 6)."
+        return 0
+    fi
+    echo ""
+    echo -e "  ${BOLD}Scheduled Immich backup${NC}"
+    systemctl list-timers immich-backup.timer --all --no-pager 2>/dev/null | sed 's/^/  /'
+    echo ""
+    echo -e "  Last run result: ${BOLD}$(systemctl show immich-backup.service -p Result --value 2>/dev/null)${NC} ${DIM}(active: $(systemctl is-active immich-backup.service 2>/dev/null))${NC}"
+    echo ""
+    echo -e "  ${BOLD}Recent log${NC} ${DIM}(/var/log/immich-backup.log)${NC}:"
+    if [ -s /var/log/immich-backup.log ]; then
+        tail -n 10 /var/log/immich-backup.log 2>/dev/null | sed 's/^/    /'
+    else
+        echo "    (no runs logged yet)"
+    fi
+}
+
+# Remove the schedule (timer + service + script). Leaves existing backup files
+# on disk untouched.
+_immich_backup_remove() {
+    if [ ! -f /etc/systemd/system/immich-backup.timer ] && [ ! -e /usr/local/bin/immich-backup.sh ]; then
+        warn "No scheduled Immich backup to remove."
+        return 0
+    fi
+    warn "This removes the SCHEDULE only — existing backup files are NOT deleted."
+    local c; read -p "  Remove the scheduled Immich backup? [y/N]: " c
+    [[ "$c" =~ ^[Yy]$ ]] || { info "Kept."; return 2; }
+    sudo systemctl disable --now immich-backup.timer 2>/dev/null || true
+    sudo rm -f /etc/systemd/system/immich-backup.timer /etc/systemd/system/immich-backup.service
+    sudo systemctl daemon-reload 2>/dev/null || true
+    sudo rm -f /usr/local/bin/immich-backup.sh
+    # Clear any legacy cron line too.
+    if sudo crontab -l 2>/dev/null | grep -q immich-backup; then
+        (sudo crontab -l 2>/dev/null | grep -v immich-backup) | sudo crontab -
+    fi
+    ok "Scheduled Immich backup removed. Backup files left intact."
 }
 
 step_disk_monitor() {

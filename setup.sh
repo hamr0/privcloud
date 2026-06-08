@@ -1,6 +1,9 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
-FEDERVER_VERSION="0.8.9"
+# Single source of truth for the version is package.json (next to this script);
+# read it at runtime so the banner never drifts. Fallback if it can't be read.
+FEDERVER_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$(dirname "${BASH_SOURCE[0]}")/package.json" 2>/dev/null)"
+FEDERVER_VERSION="${FEDERVER_VERSION:-0.9.0}"
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.

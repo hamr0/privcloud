@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.1 — 2026-06-08
+
+### Fixed
+- **The federver and privcloud banners now show the real version (`setup.sh`, `privcloud`).** Both had their own hardcoded version string that drifted from `package.json` — `setup.sh` still read `FEDERVER_VERSION="0.8.9"` after the v0.9.0 release, and `privcloud` was stuck at `VERSION="0.1.0"`. Both now read the version from `package.json` (the single source of truth) at runtime, with a fallback, so the menu can't fall behind a release again.
+
 ## v0.9.0 — 2026-06-08
 
 ### Added

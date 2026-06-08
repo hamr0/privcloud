@@ -70,8 +70,10 @@ shared artifacts — `immich-backup.timer` / `.service` and `/usr/local/bin/immi
 the `privcloud` menu and the `federver` main menu drive **one** schedule (single source of
 truth). Each run is **full** (database + photos), no downtime:
 
-- DB → `pg_dumpall | gzip`, rotated by the retention window (7 days daily / 21 days weekly).
-- Photos → live `rsync` into `<dest>/photos/`, **append-only** (never `--delete`) so an
+- Everything lands under `<dest>/immich/` so the destination can hold other backups too.
+- DB → `pg_dumpall | gzip` into `<dest>/immich/db/`, rotated by the retention window
+  (7 days daily / 21 days weekly).
+- Photos → live `rsync` into `<dest>/immich/photos/`, **append-only** (never `--delete`) so an
   unattended job can't propagate an accidental deletion.
 - Robustness inherited from the timer: `Persistent=true` catches up missed runs; 3 retries
   30 min apart on failure; logs to `/var/log/immich-backup.log` (final `Backup complete` line is

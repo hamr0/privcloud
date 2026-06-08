@@ -3722,26 +3722,30 @@ LOG="/var/log/immich-backup.log"
 exec >>"$LOG" 2>&1
 
 TIMESTAMP=$(date +%Y%m%d-%H%M)
-mkdir -p "$BACKUP_DIR"
+# Everything lives under BACKUP_DIR/immich so the destination can hold other
+# backups too: db dumps in immich/db, photo mirror in immich/photos.
+DB_DIR="$BACKUP_DIR/immich/db"
+PHOTOS_DIR="$BACKUP_DIR/immich/photos"
+mkdir -p "$DB_DIR" "$PHOTOS_DIR"
 rc=0
 
 # 1) Database — logical dump, online-consistent, no downtime. Dumps stay in
-# BACKUP_DIR as immich-db-*.sql.gz and rotate by retention.
-if docker exec immich_postgres pg_dumpall -U postgres | gzip > "$BACKUP_DIR/immich-db-$TIMESTAMP.sql.gz"; then
-    find "$BACKUP_DIR" -name "immich-db-*.sql.gz" -mtime +"$RETENTION_DAYS" -delete
-    echo "$(date): DB dump ok → immich-db-$TIMESTAMP.sql.gz"
+# immich/db as immich-db-*.sql.gz and rotate by retention.
+if docker exec immich_postgres pg_dumpall -U postgres | gzip > "$DB_DIR/immich-db-$TIMESTAMP.sql.gz"; then
+    find "$DB_DIR" -name "immich-db-*.sql.gz" -mtime +"$RETENTION_DAYS" -delete
+    echo "$(date): DB dump ok → immich/db/immich-db-$TIMESTAMP.sql.gz"
 else
     rc=$?
-    rm -f "$BACKUP_DIR/immich-db-$TIMESTAMP.sql.gz"
+    rm -f "$DB_DIR/immich-db-$TIMESTAMP.sql.gz"
     echo "$(date): DB dump FAILED (exit $rc)"
 fi
 
-# 2) Photos — live rsync of originals into BACKUP_DIR/photos. Append only (never
+# 2) Photos — live rsync of originals into immich/photos. Append only (never
 # --delete): an unattended job must not propagate an accidental deletion.
 if [ -n "$UPLOAD_LOCATION" ] && [ -d "$UPLOAD_LOCATION" ]; then
     if command -v rsync >/dev/null 2>&1; then
-        if rsync -a "$UPLOAD_LOCATION/" "$BACKUP_DIR/photos/"; then
-            echo "$(date): Photos synced → $BACKUP_DIR/photos/"
+        if rsync -a "$UPLOAD_LOCATION/" "$PHOTOS_DIR/"; then
+            echo "$(date): Photos synced → $PHOTOS_DIR/"
         else
             rc=$?
             echo "$(date): Photos rsync FAILED (exit $rc)"
@@ -3804,8 +3808,8 @@ TIMEREOF
     echo -e "    Schedule:    ${BOLD}${oncal}${NC}"
     echo -e "    Destination: ${BOLD}$BACKUP_DIR${NC}"
     echo -e "    Includes:    ${BOLD}database + photos${NC} ${DIM}(no downtime)${NC}"
-    echo -e "      • DB dumps → ${DIM}$BACKUP_DIR/immich-db-*.sql.gz${NC}"
-    echo -e "      • Photos   → ${DIM}$BACKUP_DIR/photos/${NC} ${DIM}(rsync, append-only)${NC}"
+    echo -e "      • DB dumps → ${DIM}$BACKUP_DIR/immich/db/immich-db-*.sql.gz${NC}"
+    echo -e "      • Photos   → ${DIM}$BACKUP_DIR/immich/photos/${NC} ${DIM}(rsync, append-only)${NC}"
     echo -e "    Retention:   ${BOLD}${retention_days} days${NC} ${DIM}(DB dumps; photos kept as a live mirror)${NC}"
     echo -e "    Persistent:  ${BOLD}yes${NC} ${DIM}(catches up missed runs)${NC}"
     echo -e "    On failure:  ${BOLD}3 retries 30min apart${NC}"

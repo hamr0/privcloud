@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.8 — 2026-06-08
+
+### Changed
+- **Scheduled backup now organizes its output under `<dest>/immich/` (`setup.sh`).** DB dumps go to `<dest>/immich/db/immich-db-*.sql.gz` and photos to `<dest>/immich/photos/`, instead of `<dest>/immich-db-*.sql.gz` and `<dest>/photos/` at the top level. This namespaces the backup so the destination drive can hold other things cleanly. Re-run **Set up / change schedule** (`privcloud → 9 → 2 → 1`) to regenerate the backup script with the new paths. Existing top-level `photos/` / `immich-db-*.sql.gz` from an earlier layout are left in place (photos re-sync into the new path; old dumps no longer rotate) — move or delete them if you want a tidy drive.
+
 ## v0.9.7 — 2026-06-08
 
 ### Fixed

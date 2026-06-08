@@ -497,9 +497,9 @@ Restore depends on how the database was backed up:
 4. Point config at the copied directories, make sure `DB_PASSWORD` matches
 5. `privcloud start`
 
-**If your backup has `immich-db-*.sql.gz`** (a database dump — what no-downtime and scheduled backups produce):
+**If your backup has `immich-db-*.sql.gz`** (a database dump — what no-downtime and scheduled backups produce; scheduled backups put them under `immich/db/` and photos under `immich/photos/`):
 
-1. Clone privcloud, run `privcloud install`, point config at the copied `photos`
+1. Clone privcloud, run `privcloud install`, point config at the copied photos
 2. `privcloud start`
 3. Load the newest dump:
    ```bash
@@ -1206,7 +1206,7 @@ Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 
 **Disk space alert:** `federver` → 14 → 7 sets this up. It walks you through creating a Push monitor in Uptime Kuma (Heartbeat Interval `360`, Retry Interval `60`, Max Retries `2`), you paste the URL back into the terminal, and it installs `/usr/local/bin/disk-check.sh` with a 5-minute cron. The script sends `status=up` when all mounts are under 85%, or `status=down` when any mount exceeds 85%. The first heartbeat is sent immediately at install time so the Kuma monitor goes green before you even leave the step. Uptime Kuma then alerts you via Telegram/email if configured. **If you skip the Kuma URL prompt the wizard installs nothing** — earlier versions installed the cron line anyway, leaving a silently-dead monitor.
 
-**Immich backup (scheduled):** `federver` → 14 → 6 — or `privcloud` → 9 → 2, which open the *same* management submenu (set up/change · status · run now · remove) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention) **plus** a live `rsync` of your photos into `<dest>/photos/` (append-only — it never deletes from the backup). `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to an external/USB drive and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
+**Immich backup (scheduled):** `federver` → 14 → 6 — or `privcloud` → 9 → 2, which open the *same* management submenu (set up/change · status · run now · remove) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention) **plus** a live `rsync` of your photos. Everything lands under `<dest>/immich/` — DB dumps in `<dest>/immich/db/`, photos in `<dest>/immich/photos/` (append-only — it never deletes from the backup). `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to an external/USB drive and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c <dest>/immich/db/immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
 
 ### Periodic (manual)
 

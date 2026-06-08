@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.6 — 2026-06-08
+
+### Docs
+- **README now lists Backups in "What you get" (`README.md`).** The new backup capability (one-time or scheduled systemd-timer backups of photos + Immich database, no downtime, external-drive default) wasn't mentioned in the README overview. The PRD (`docs/prd-immich-backup.md`), CHANGELOG, and customer guide already cover it.
+
 ## v0.9.5 — 2026-06-08
 
 ### Fixed

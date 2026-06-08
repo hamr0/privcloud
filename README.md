@@ -84,6 +84,7 @@ Every step is safe to re-run. Server steps auto-route via SSH; laptop steps run 
 | **Syncthing** | Real-time folder sync between your devices |
 | **Remote Desktop** | The full Fedora desktop, from any device |
 | **Watchtower** | Keeps everything up-to-date automatically |
+| **Backups** | One-time or scheduled (systemd timer) backups of your photos + Immich database — no downtime, defaults to an external drive |
 
 ---
 

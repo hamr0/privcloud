@@ -4000,25 +4000,28 @@ _immich_backup_remove() {
 # privcloud → 9 → 2 so both expose the same set up / status / run / remove.
 # `|| true` on each action: a step returning 2 (Back) must not abort under set -e.
 step_immich_backup_menu() {
-    while true; do
-        echo ""
-        echo -e "  ${BOLD}Scheduled Immich backup${NC}"
-        echo -e "    ${BOLD}1)${NC} Set up / change schedule"
-        echo -e "    ${BOLD}2)${NC} Status      ${DIM}← timer, next/last run, recent log${NC}"
-        echo -e "    ${BOLD}3)${NC} Run now     ${DIM}← start a backup in the background${NC}"
-        echo -e "    ${BOLD}4)${NC} Remove      ${DIM}← delete the schedule (keeps backup files)${NC}"
-        echo -e "    ${BOLD}0)${NC} Back"
-        echo ""
-        local c; read -p "  Choice [0-4]: " c
-        case "$c" in
-            1) step_immich_backup    || true ;;
-            2) _immich_backup_status || true ;;
-            3) _immich_backup_run    || true ;;
-            4) _immich_backup_remove || true ;;
-            0|"") return 2 ;;
-            *) fail "Invalid choice." ;;
-        esac
-    done
+    echo ""
+    echo -e "  ${BOLD}Scheduled Immich backup${NC}"
+    echo -e "    ${BOLD}1)${NC} Set up / change schedule"
+    echo -e "    ${BOLD}2)${NC} Status      ${DIM}← schedule, next/last run, recent runs${NC}"
+    echo -e "    ${BOLD}3)${NC} Run now     ${DIM}← start a backup in the background${NC}"
+    echo -e "    ${BOLD}4)${NC} Remove      ${DIM}← delete the schedule (keeps backup files)${NC}"
+    echo -e "    ${BOLD}0)${NC} Back"
+    echo ""
+    # Single pass: run one action, then return to the caller's menu (privcloud
+    # → 9 → 2 and federver → 14 → 6 both redraw a fresh menu) rather than looping
+    # here and re-prompting after each action. Back/invalid → 2 so the caller
+    # treats it as a clean "Back" with no DONE banner.
+    local c; read -p "  Choice [0-4]: " c
+    case "$c" in
+        1) step_immich_backup    || true ;;
+        2) _immich_backup_status || true ;;
+        3) _immich_backup_run    || true ;;
+        4) _immich_backup_remove || true ;;
+        0|"") return 2 ;;
+        *) fail "Invalid choice."; return 2 ;;
+    esac
+    return 0
 }
 
 step_disk_monitor() {

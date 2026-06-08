@@ -82,6 +82,8 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 | `fix-gp` | Fix Google Photos Takeout metadata (dates + GPS) |
 | `backup` | Back up photos + database — one-time or scheduled, with no downtime |
 
+Run `privcloud` with no command for the interactive menu. Pick a number and it runs on a cleared screen; press Enter when it's done and you're back at a fresh main menu — the same clear-screen flow as `federver`, so output never piles up under the menu.
+
 ### From federver (server setup)
 
 ```

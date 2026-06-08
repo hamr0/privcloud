@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.11 — 2026-06-08
+
+### Changed
+- **The `privcloud` menu now behaves like the `federver` menu — clear screen, run one action, "Press Enter", back to a fresh main menu (`privcloud`, `setup.sh`).** Every main-menu action (all 9, including backup) runs through a new `_run_action` wrapper that mirrors `setup.sh`'s `run_step`: it clears the screen, runs the action, waits for Enter so the output is readable, then redraws a clean menu. Previously actions dumped their output and the menu reprinted right underneath, so it looked like it was "asking again." The backup chooser (`cmd_backup`) and the scheduled-backup submenu (`step_immich_backup_menu`, shared with `federver → 14 → 6`) are now **single-pass** — they run one action and return to the main menu instead of looping and re-prompting after each action. CLI usage (`privcloud status`, etc.) is unchanged — no clear/pause there.
+
 ## v0.9.10 — 2026-06-08
 
 ### Fixed

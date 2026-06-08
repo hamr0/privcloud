@@ -39,6 +39,21 @@ green()  { printf "\033[32m%s\033[0m\n" "$1"; }
 yellow() { printf "\033[33m%s\033[0m\n" "$1"; }
 bold()   { printf "\033[1m%s\033[0m\n" "$1"; }
 
+# Run a menu action federver-style (mirrors setup.sh's run_step): clear the
+# screen, show a heading, run the action, then wait for Enter so its output is
+# readable before we redraw a fresh main menu. set -e is active, so `|| true`
+# keeps a non-zero return (or an action's own handled error) from aborting.
+_run_action() {
+  local label="$1"; shift
+  clear
+  bold "=== $label ==="
+  echo ""
+  "$@" || true
+  echo ""
+  printf "  Press Enter to continue..."
+  read -r _ || true
+}
+
 get_os() {
   case "$(uname -s)" in
     Linux*)
@@ -644,23 +659,22 @@ cmd_upload() {
 }
 
 cmd_backup() {
-  while true; do
-    bold "Backup privcloud"
-    echo ""
-    echo "  1) One time   — copy photos + database to a drive now"
-    echo "  2) Scheduled  — recurring automatic backup (systemd timer, no downtime)"
-    echo "  0) Back"
-    echo ""
-    printf "Choose [0-2]: "
-    read -r btype
-    case "$btype" in
-      1)        cmd_backup_once ;;
-      2)        cmd_backup_schedule ;;
-      0|""|q)   return 0 ;;
-      *)        red "Invalid choice." ;;
-    esac
-    echo ""
-  done
+  bold "Backup privcloud"
+  echo ""
+  echo "  1) One time   — copy photos + database to a drive now"
+  echo "  2) Scheduled  — recurring automatic backup (systemd timer, no downtime)"
+  echo "  0) Back"
+  echo ""
+  printf "Choose [0-2]: "
+  read -r btype
+  # Single pass: do one action and return to the main menu (the caller pauses,
+  # then redraws a fresh menu) instead of re-looping this chooser.
+  case "$btype" in
+    1)        cmd_backup_once ;;
+    2)        cmd_backup_schedule ;;
+    0|""|q)   return 0 ;;
+    *)        red "Invalid choice." ;;
+  esac
 }
 
 # Scheduled-backup management. Delegates to setup.sh's step_immich_backup_menu —
@@ -933,6 +947,7 @@ cmd_fix_gp() {
 
 cmd_menu() {
   while true; do
+    clear
     echo ""
     bold "            _            _                 _"
     bold "  _ __ _ __(_)_   _____ | | ___  _   _  __| |"
@@ -958,17 +973,17 @@ cmd_menu() {
     printf "Choose [0-9]: "
     read -r choice
     case "$choice" in
-      1|install)  cmd_install ;;
-      2|start)    cmd_start ;;
-      3|stop)     cmd_stop ;;
-      4|status)   cmd_status ;;
-      5|config)   cmd_config ;;
-      6|update)   cmd_update ;;
-      7|upload)   cmd_upload ;;
-      8|fix-gp)   cmd_fix_gp ;;
-      9|backup)   cmd_backup ;;
-      0|exit|q)   return 0 ;;
-      *)          red "Invalid choice." ;;
+      1|install)  _run_action "install" cmd_install ;;
+      2|start)    _run_action "start"   cmd_start ;;
+      3|stop)     _run_action "stop"    cmd_stop ;;
+      4|status)   _run_action "status"  cmd_status ;;
+      5|config)   _run_action "config"  cmd_config ;;
+      6|update)   _run_action "update"  cmd_update ;;
+      7|upload)   _run_action "upload"  cmd_upload ;;
+      8|fix-gp)   _run_action "fix-gp"  cmd_fix_gp ;;
+      9|backup)   _run_action "backup"  cmd_backup ;;
+      0|exit|q)   clear; return 0 ;;
+      *)          red "Invalid choice."; sleep 1 ;;
     esac
   done
 }

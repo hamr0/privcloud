@@ -89,8 +89,14 @@ Both `privcloud` → 9 → 2 **and** `federver` → 14 → 6 open the same subme
 in `setup.sh`), not a one-shot: **Set up / change**, **Status** (schedule + next/last run and a clean
 recent-runs table — `✓ ran` / `✗ failed` per run, no log dump), **Run now** (background), and **Remove** (deletes timer/service/script via
 `_immich_backup_remove`, **leaving backup files intact**). The submenu and its actions all live in
-`setup.sh` so both entry points are identical and single-source. The interactive `privcloud` menu
-loops, so `0) Back` steps up a level rather than exiting.
+`setup.sh` so both entry points are identical and single-source.
+
+**Menu flow (v0.9.11).** The submenu is **single-pass**: it runs one action and returns to the
+caller, instead of re-prompting after each. On the `privcloud` side every main-menu action — all 9,
+backup included — now goes through `_run_action` (mirrors `setup.sh`'s `run_step`): clear the screen,
+run the action, **Press Enter to continue**, then redraw a fresh main menu. So picking a backup
+action does it and drops you back to the main menu, rather than looping inside the submenu amid the
+previous output.
 
 ### Destination
 

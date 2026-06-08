@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.2 — 2026-06-08
+
+### Fixed
+- **The version banner now resolves through symlinks (`setup.sh`, `privcloud`).** v0.9.1 read the version from `package.json` next to `$(dirname "${BASH_SOURCE[0]}")`, but the installed `federver`/`privcloud` commands are **symlinks** in `/usr/local/bin` (bash doesn't resolve symlinks in `BASH_SOURCE`). So the lookup landed in `/usr/local/bin`, found no `package.json`, and silently fell back to a stale literal — the banner read `v0.9.0`. Both scripts now `readlink -f` the script path first, so they find the real `package.json` in the repo regardless of how the command was invoked.
+
 ## v0.9.1 — 2026-06-08
 
 ### Fixed

@@ -1,9 +1,13 @@
 #!/bin/bash
 # Federver — Fedora XFCE server setup & management menu
 # Single source of truth for the version is package.json (next to this script);
-# read it at runtime so the banner never drifts. Fallback if it can't be read.
-FEDERVER_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$(dirname "${BASH_SOURCE[0]}")/package.json" 2>/dev/null)"
-FEDERVER_VERSION="${FEDERVER_VERSION:-0.9.0}"
+# read it at runtime so the banner never drifts. readlink -f resolves through
+# symlinks — the installed `federver` is a symlink into the repo, so we must
+# find package.json next to the REAL script, not next to /usr/local/bin.
+_fv_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+FEDERVER_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$(dirname "$_fv_self")/package.json" 2>/dev/null)"
+FEDERVER_VERSION="${FEDERVER_VERSION:-0.9.2}"
+unset _fv_self
 #
 # HOW TO USE:
 #   Always run from your LAPTOP. Server commands auto-route via SSH.

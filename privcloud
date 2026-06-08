@@ -7,9 +7,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
-# Single source of truth for the version is package.json (next to this script).
-VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SCRIPT_DIR/package.json" 2>/dev/null)"
-VERSION="${VERSION:-0.9.0}"
+# Single source of truth for the version is package.json. readlink -f resolves
+# through symlinks (the installed `privcloud` is a symlink into the repo) so we
+# read package.json next to the REAL script, not next to /usr/local/bin.
+_pc_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
+VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$(dirname "$_pc_self")/package.json" 2>/dev/null)"
+VERSION="${VERSION:-0.9.2}"
+unset _pc_self
 ORIG_ARGS="$*"
 # ---------------------------------------------------------------------------
 # Docker group fix: re-exec under sg docker if needed (once only)

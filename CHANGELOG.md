@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.7 — 2026-06-08
+
+### Fixed
+- **"Remove" no longer reports false success when sudo is declined (`setup.sh`).** Removing the scheduled backup printed `✓ Scheduled Immich backup removed` even when every `sudo` failed (no password / Ctrl-C) — so the schedule was actually **still active** while claiming to be gone. Root cause: the submenu calls `_immich_backup_remove || true`, which disables `set -e` inside the whole function, so the failing `sudo rm`/`systemctl` commands didn't stop it reaching the success line. It now (1) acquires sudo once up front with `sudo -v` and **bails cleanly, changing nothing, if that's declined or cancelled**, and (2) **verifies** the timer/service are actually gone before claiming success — otherwise it reports the removal didn't complete and points to Status. Acquiring sudo once also means a single password prompt instead of one per command.
+- **"Run now" applies the same up-front sudo check (`setup.sh`)** so cancelling the password no longer leaves a misleading state.
+
 ## v0.9.6 — 2026-06-08
 
 ### Docs

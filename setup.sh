@@ -3832,6 +3832,10 @@ _immich_backup_run() {
         info "Set one up first: privcloud → 9 → 2  (or federver → 14 → 6)."
         return 0
     fi
+    if ! sudo -v; then
+        fail "Need sudo to start the backup — nothing was started."
+        return 1
+    fi
     info "Starting backup (runs under systemd — continues even if you disconnect)..."
     sudo systemctl start --no-block immich-backup.service || { fail "Could not start the backup service."; return 1; }
     sleep 3
@@ -3877,6 +3881,16 @@ _immich_backup_remove() {
     warn "This removes the SCHEDULE only — existing backup files are NOT deleted."
     local c; read -p "  Remove the scheduled Immich backup? [y/N]: " c
     [[ "$c" =~ ^[Yy]$ ]] || { info "Kept."; return 2; }
+
+    # Acquire sudo ONCE up front. This menu is called as `... || true`, which
+    # disables `set -e` inside the function — so without this check the sudo
+    # commands below could all fail (no password / Ctrl-C) and we'd still fall
+    # through to a false "removed". Bail cleanly instead, changing nothing.
+    if ! sudo -v; then
+        fail "Need sudo to remove the schedule — nothing was changed."
+        return 1
+    fi
+
     sudo systemctl disable --now immich-backup.timer 2>/dev/null || true
     sudo rm -f /etc/systemd/system/immich-backup.timer /etc/systemd/system/immich-backup.service
     sudo systemctl daemon-reload 2>/dev/null || true
@@ -3884,6 +3898,13 @@ _immich_backup_remove() {
     # Clear any legacy cron line too.
     if sudo crontab -l 2>/dev/null | grep -q immich-backup; then
         (sudo crontab -l 2>/dev/null | grep -v immich-backup) | sudo crontab -
+    fi
+
+    # Verify it's actually gone before claiming success.
+    if [ -f /etc/systemd/system/immich-backup.timer ] || [ -e /usr/local/bin/immich-backup.sh ]; then
+        fail "Removal did not complete — the schedule may still be active."
+        info "Check it: privcloud → 9 → 2 → 2 (Status)."
+        return 1
     fi
     ok "Scheduled Immich backup removed. Backup files left intact."
 }

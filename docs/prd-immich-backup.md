@@ -74,7 +74,11 @@ truth). Each run is **full** (database + photos), no downtime:
 - DB → `pg_dumpall | gzip` into `<dest>/immich/db/`, rotated by the retention window
   (7 days daily / 21 days weekly).
 - Photos → live `rsync` into `<dest>/immich/photos/`, **append-only** (never `--delete`) so an
-  unattended job can't propagate an accidental deletion.
+  unattended job can't propagate an accidental deletion. **Excludes** (anchored to the data root)
+  `/backups/`, `/thumbs/`, `/encoded-video/`: the first is Immich's own DB dumps (redundant — the
+  DB is already dumped into `<dest>/immich/db/`), the latter two are regenerable caches Immich
+  rebuilds after a restore. Without these the rsync copied tens of GB of throwaway data and could
+  fill the backup drive (`No space left on device`).
 - Robustness inherited from the timer: `Persistent=true` catches up missed runs; 3 retries
   30 min apart on failure; logs to `/var/log/immich-backup.log` (final `Backup complete` line is
   what the `federver` status screen parses).

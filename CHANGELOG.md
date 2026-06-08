@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.12 — 2026-06-08
+
+### Changed
+- **Scheduled photo backup no longer mirrors regenerable or redundant data (`setup.sh`).** The photo `rsync` previously copied the entire Immich data root (`rsync -a`, no excludes), which dragged along three things it shouldn't: `backups/` (Immich's *own* automatic DB dumps — redundant, since the scheduled backup already dumps the database into `<dest>/immich/db/`), and the regenerable caches `thumbs/` (thumbnails) and `encoded-video/` (transcodes). On a real library these added tens of GB and filled the backup drive, failing the run with `No space left on device`. The rsync now passes `--exclude=/backups/ --exclude=/thumbs/ --exclude=/encoded-video/` (anchored to the data root so they can't match a same-named photo subfolder), keeping the backup to the irreplaceable originals + metadata. After updating, re-run **Set up / change schedule** (`privcloud → 9 → 2 → 1`) to regenerate the script. Existing copies of those folders on the destination are not removed automatically — delete `<dest>/immich/photos/{backups,thumbs,encoded-video}` to reclaim the space (Immich rebuilds thumbs/transcodes after a restore).
+
 ## v0.9.11 — 2026-06-08
 
 ### Changed

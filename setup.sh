@@ -3742,9 +3742,18 @@ fi
 
 # 2) Photos — live rsync of originals into immich/photos. Append only (never
 # --delete): an unattended job must not propagate an accidental deletion.
+# Excludes (anchored to the data root so they can't match a same-named photo
+# subfolder): skip Immich's own DB dumps in backups/ (we already dump the DB
+# ourselves into immich/db/ — no point mirroring a second copy) and the
+# regenerable caches thumbs/ and encoded-video/ (Immich rebuilds these after a
+# restore). This keeps the backup to the irreplaceable originals + metadata.
 if [ -n "$UPLOAD_LOCATION" ] && [ -d "$UPLOAD_LOCATION" ]; then
     if command -v rsync >/dev/null 2>&1; then
-        if rsync -a "$UPLOAD_LOCATION/" "$PHOTOS_DIR/"; then
+        if rsync -a \
+            --exclude='/backups/' \
+            --exclude='/thumbs/' \
+            --exclude='/encoded-video/' \
+            "$UPLOAD_LOCATION/" "$PHOTOS_DIR/"; then
             echo "$(date): Photos synced → $PHOTOS_DIR/"
         else
             rc=$?

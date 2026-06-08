@@ -5,8 +5,10 @@
 # symlinks — the installed `federver` is a symlink into the repo, so we must
 # find package.json next to the REAL script, not next to /usr/local/bin.
 _fv_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
-FEDERVER_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$(dirname "$_fv_self")/package.json" 2>/dev/null)"
-FEDERVER_VERSION="${FEDERVER_VERSION:-0.9.2}"
+# `|| true`: a missing/unreadable package.json falls through to the literal below
+# rather than aborting (defensive — set -e is enabled later in this file).
+FEDERVER_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$(dirname "$_fv_self")/package.json" 2>/dev/null || true)"
+FEDERVER_VERSION="${FEDERVER_VERSION:-0.9.5}"
 unset _fv_self
 #
 # HOW TO USE:
@@ -3814,7 +3816,7 @@ TIMEREOF
     # first backup instead of waiting up to a week.
     local run_now; read -p "  Run the first backup now to verify it works? [Y/n]: " run_now
     if [[ ! "$run_now" =~ ^[Nn] ]]; then
-        _immich_backup_run
+        _immich_backup_run || true   # a start failure must not skip the hints below
     fi
 
     echo ""

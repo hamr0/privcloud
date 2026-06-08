@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.9.5 — 2026-06-08
+
+### Fixed
+- **The version read no longer aborts the script when `package.json` is missing (`privcloud`, `setup.sh`).** `VERSION="$(sed … package.json)"` runs under `set -e`; `sed` exits non-zero on an unreadable file, so a missing `package.json` aborted the script *before* the literal fallback could apply — defeating the fallback's whole purpose (a broken/partial checkout would make `privcloud` unusable). The command substitution is now `|| true`, so it falls through to the literal. (Same `set -e` + failing-command-substitution class as the `_pick_backup_default` fix in v0.9.0.)
+- **First-run after scheduling can't skip its closing hints (`setup.sh`).** The post-setup `_immich_backup_run` call is now `|| true`, so a `systemctl start` failure doesn't abort the step before the "manage it anytime / view log" hints under `set -e`.
+
 ## v0.9.4 — 2026-06-08
 
 ### Changed

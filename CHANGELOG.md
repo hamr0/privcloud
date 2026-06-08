@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.4 — 2026-06-08
+
+### Changed
+- **`federver` → 14 → 6 now opens the same backup management submenu as `privcloud` → 9 → 2 (`setup.sh`, `privcloud`).** It used to jump straight into "set up schedule" with no way to check status or remove it. Both menus now share one `step_immich_backup_menu` (set up / change · status · run now · remove), so the two entry points are identical and the submenu UI is single-source. `privcloud`'s scheduled option now delegates to that shared menu instead of duplicating it.
+
+### Fixed
+- **Corrected `federver → 14` option numbers in the guide (`customer-guide.md`).** Several references pointed at `14 → 5` for the Immich backup (it's `→ 6`) and `14 → 6` for the disk-space monitor (it's `→ 7`).
+
 ## v0.9.3 — 2026-06-08
 
 ### Added

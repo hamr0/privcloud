@@ -3886,6 +3886,31 @@ _immich_backup_remove() {
     ok "Scheduled Immich backup removed. Backup files left intact."
 }
 
+# Management submenu for the scheduled backup, shared by federver → 14 → 6 and
+# privcloud → 9 → 2 so both expose the same set up / status / run / remove.
+# `|| true` on each action: a step returning 2 (Back) must not abort under set -e.
+step_immich_backup_menu() {
+    while true; do
+        echo ""
+        echo -e "  ${BOLD}Scheduled Immich backup${NC}"
+        echo -e "    ${BOLD}1)${NC} Set up / change schedule"
+        echo -e "    ${BOLD}2)${NC} Status      ${DIM}← timer, next/last run, recent log${NC}"
+        echo -e "    ${BOLD}3)${NC} Run now     ${DIM}← start a backup in the background${NC}"
+        echo -e "    ${BOLD}4)${NC} Remove      ${DIM}← delete the schedule (keeps backup files)${NC}"
+        echo -e "    ${BOLD}0)${NC} Back"
+        echo ""
+        local c; read -p "  Choice [0-4]: " c
+        case "$c" in
+            1) step_immich_backup    || true ;;
+            2) _immich_backup_status || true ;;
+            3) _immich_backup_run    || true ;;
+            4) _immich_backup_remove || true ;;
+            0|"") return 2 ;;
+            *) fail "Invalid choice." ;;
+        esac
+    done
+}
+
 step_disk_monitor() {
     info "Configures a 5-minute heartbeat to your Uptime Kuma 'Disk Space' monitor."
     info "Without a Push URL the monitor stays dead — skip cleanly if Kuma isn't set up yet."
@@ -5149,7 +5174,7 @@ step_manage_sync() {
     echo -e "  ${BOLD}3)${NC} Sync - Edit job                   ${DIM}← schedule, pause, run, log, delete${NC}"
     echo -e "  ${BOLD}4)${NC} Sync - Delete a job"
     echo -e "  ${BOLD}5)${NC} Backup - One-time                 ${DIM}← ad-hoc rsync, no schedule${NC}"
-    echo -e "  ${BOLD}6)${NC} Backup - Immich DB (scheduled)    ${DIM}← daily/weekly Postgres dump, persistent timer${NC}"
+    echo -e "  ${BOLD}6)${NC} Backup - Immich (scheduled)       ${DIM}← set up / status / run / remove (DB + photos)${NC}"
     echo -e "  ${BOLD}7)${NC} Monitor - Disk space              ${DIM}← Kuma heartbeat every 5 min${NC}"
     echo -e "  ${BOLD}0)${NC} Back"
     echo ""
@@ -5160,7 +5185,7 @@ step_manage_sync() {
         3) _sync_edit_job ;;
         4) _sync_delete_job ;;
         5) _sync_one_time_backup ;;
-        6) _on_server step_immich_backup ;;
+        6) _on_server step_immich_backup_menu ;;
         7) _on_server step_disk_monitor ;;
         0) return 2 ;;
         *) fail "Invalid choice." ;;

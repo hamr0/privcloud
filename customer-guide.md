@@ -1180,7 +1180,7 @@ pass show privcloud/ssh/private_key        # SSH key
 ### Daily (automated)
 
 - **Every 5 min** — Disk space heartbeat to Uptime Kuma (alerts if any mount exceeds 85%)
-- **3:00am daily or weekly** — Immich database backup (systemd timer, set up via `federver` → 14 → 5)
+- **3:00am daily or weekly** — Immich backup (DB + photos, systemd timer, set up via `federver` → 14 → 6 or `privcloud` → 9 → 2)
 - **4:00am** — Watchtower checks for container updates
 
 ### Monitoring
@@ -1204,9 +1204,9 @@ pass show privcloud/ssh/private_key        # SSH key
 
 Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 
-**Disk space alert:** `federver` → 14 → 6 sets this up. It walks you through creating a Push monitor in Uptime Kuma (Heartbeat Interval `360`, Retry Interval `60`, Max Retries `2`), you paste the URL back into the terminal, and it installs `/usr/local/bin/disk-check.sh` with a 5-minute cron. The script sends `status=up` when all mounts are under 85%, or `status=down` when any mount exceeds 85%. The first heartbeat is sent immediately at install time so the Kuma monitor goes green before you even leave the step. Uptime Kuma then alerts you via Telegram/email if configured. **If you skip the Kuma URL prompt the wizard installs nothing** — earlier versions installed the cron line anyway, leaving a silently-dead monitor.
+**Disk space alert:** `federver` → 14 → 7 sets this up. It walks you through creating a Push monitor in Uptime Kuma (Heartbeat Interval `360`, Retry Interval `60`, Max Retries `2`), you paste the URL back into the terminal, and it installs `/usr/local/bin/disk-check.sh` with a 5-minute cron. The script sends `status=up` when all mounts are under 85%, or `status=down` when any mount exceeds 85%. The first heartbeat is sent immediately at install time so the Kuma monitor goes green before you even leave the step. Uptime Kuma then alerts you via Telegram/email if configured. **If you skip the Kuma URL prompt the wizard installs nothing** — earlier versions installed the cron line anyway, leaving a silently-dead monitor.
 
-**Immich backup (scheduled):** `federver` → 14 → 5 — or `privcloud` → 9 → 2, which drives the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention) **plus** a live `rsync` of your photos into `<dest>/photos/` (append-only — it never deletes from the backup). `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to an external/USB drive and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
+**Immich backup (scheduled):** `federver` → 14 → 6 — or `privcloud` → 9 → 2, which open the *same* management submenu (set up/change · status · run now · remove) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention) **plus** a live `rsync` of your photos into `<dest>/photos/` (append-only — it never deletes from the backup). `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to an external/USB drive and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
 
 ### Periodic (manual)
 
@@ -1463,7 +1463,7 @@ This updates `.env` and redeploys FileBrowser automatically.
 | Update system | `sudo dnf upgrade` |
 | Remote desktop | RDP client → server IP port 3389 |
 | Backup | `privcloud backup` or `sudo systemctl start immich-backup.service` |
-| Schedule backup | `federver` → **14** → **5** (Setup Immich backup) |
+| Schedule backup | `federver` → **14** → **6** (Manage Immich backup) |
 | Disk alerts | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
 | Backup to pass | `federver` → **15** (from laptop) |
 | Reset password | `federver` → **r** (FileBrowser, Immich, Navidrome, Uptime Kuma) |

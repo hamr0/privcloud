@@ -661,10 +661,9 @@ cmd_backup() {
   done
 }
 
-# Scheduled-backup submenu. The shared immich-backup.timer/.service and
-# /usr/local/bin/immich-backup.sh are owned by setup.sh's step_immich_backup
-# (single source of truth), so set up / status / run / remove all delegate to
-# setup.sh functions via --run. The privcloud menu and federver's drive one schedule.
+# Scheduled-backup management. Delegates to setup.sh's step_immich_backup_menu —
+# the SAME submenu federver → 14 → 6 uses — so set up / status / run / remove are
+# single-source and both menus drive one schedule.
 cmd_backup_schedule() {
   local setup="$SCRIPT_DIR/setup.sh"
   if [ ! -f "$setup" ]; then
@@ -672,27 +671,8 @@ cmd_backup_schedule() {
     red "Scheduled backups are configured by federver's setup.sh."
     return 1
   fi
-  while true; do
-    echo ""
-    bold "Scheduled backup"
-    echo "  1) Set up / change schedule"
-    echo "  2) Status      — timer, next/last run, recent log"
-    echo "  3) Run now     — start a backup in the background"
-    echo "  4) Remove      — delete the schedule (keeps backup files)"
-    echo "  0) Back"
-    echo ""
-    printf "Choose [0-4]: "
-    read -r s
-    # Each returns 2 on "back" — don't let that abort privcloud under set -e.
-    case "$s" in
-      1)        bash "$setup" --run step_immich_backup  || true ;;
-      2)        bash "$setup" --run _immich_backup_status || true ;;
-      3)        bash "$setup" --run _immich_backup_run    || true ;;
-      4)        bash "$setup" --run _immich_backup_remove || true ;;
-      0|""|q)   return 0 ;;
-      *)        red "Invalid choice." ;;
-    esac
-  done
+  # Returns 2 on "Back" — don't let that abort privcloud under set -e.
+  bash "$setup" --run step_immich_backup_menu || true
 }
 
 cmd_backup_once() {

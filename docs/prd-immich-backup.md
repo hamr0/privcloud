@@ -83,11 +83,12 @@ truth). Each run is **full** (database + photos), no downtime:
 
 ### Managing it
 
-`privcloud` → 9 → 2 is a submenu, not a one-shot: **Set up / change**, **Status**
-(`systemctl list-timers` + last result + recent log), **Run now** (background), and **Remove**
-(deletes timer/service/script via `_immich_backup_remove`, **leaving backup files intact**).
-Status/run/remove are `setup.sh` functions so the schedule remains single-source. The interactive
-`privcloud` menu loops, so `0) Back` steps up a level rather than exiting.
+Both `privcloud` → 9 → 2 **and** `federver` → 14 → 6 open the same submenu (`step_immich_backup_menu`
+in `setup.sh`), not a one-shot: **Set up / change**, **Status** (`systemctl list-timers` + last
+result + recent log), **Run now** (background), and **Remove** (deletes timer/service/script via
+`_immich_backup_remove`, **leaving backup files intact**). The submenu and its actions all live in
+`setup.sh` so both entry points are identical and single-source. The interactive `privcloud` menu
+loops, so `0) Back` steps up a level rather than exiting.
 
 ### Destination
 

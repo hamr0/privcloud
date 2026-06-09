@@ -16,7 +16,10 @@ _pc_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_S
 VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$(dirname "$_pc_self")/package.json" 2>/dev/null || true)"
 VERSION="${VERSION:-0.9.5}"
 unset _pc_self
-ORIG_ARGS="$*"
+# Original argv kept as an ARRAY (not a lossy "$*" join) so the sg-docker
+# re-exec below can re-quote each argument with %q — preserving args that
+# contain spaces (e.g. --album "My Trip") instead of word-splitting them.
+ORIG_ARGV=("$@")
 # ---------------------------------------------------------------------------
 # Docker group fix: re-exec under sg docker if needed (once only)
 # ---------------------------------------------------------------------------
@@ -25,7 +28,7 @@ if [ "${PRIVCLOUD_SG_DONE:-}" != "1" ]; then
   if ! docker info &>/dev/null 2>&1; then
     if id -nG "$USER" 2>/dev/null | grep -qw docker; then
       export PRIVCLOUD_SG_DONE=1
-      exec sg docker "$0 $*"
+      exec sg docker "$(printf '%q ' "$0" "${ORIG_ARGV[@]}")"
     fi
   fi
 fi
@@ -171,7 +174,7 @@ ensure_docker() {
         fi
         # Re-exec with sg to activate group
         export PRIVCLOUD_SG_DONE=1
-        exec sg docker "$0 $ORIG_ARGS"
+        exec sg docker "$(printf '%q ' "$0" "${ORIG_ARGV[@]}")"
       fi
       ;;
   esac
@@ -523,7 +526,10 @@ cmd_config() {
     db_pass="privcloud_$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)"
   fi
 
-  cat > "$ENV_FILE" << EOF
+  # Holds the DB password — create it 0600 from the start (umask in a subshell,
+  # no world-readable window) rather than create-then-chmod.
+  ( umask 077
+    cat > "$ENV_FILE" << EOF
 UPLOAD_LOCATION=${upload_loc}
 DB_DATA_LOCATION=${db_loc}
 IMMICH_VERSION=release
@@ -531,7 +537,9 @@ DB_PASSWORD=${db_pass}
 DB_USERNAME=postgres
 DB_DATABASE_NAME=immich
 EOF
-  # Holds the DB password — keep it readable only by the owner.
+  )
+  # Belt-and-suspenders: also tighten an already-existing .env (truncating a
+  # pre-existing file with `>` keeps its old, possibly looser, permissions).
   chmod 600 "$ENV_FILE" 2>/dev/null || true
 
   green "Config saved."

@@ -5383,8 +5383,16 @@ step_sync() {
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-            local pre_cmd="ssh -t $SERVER_USER@$SERVER_IP \"sudo mkdir -p '$dest_display' && sudo chown $SERVER_USER:$SERVER_USER '$dest_display'\""
-            local rsync_cmd="rsync -avh --progress \"$rsync_src\" \"$SERVER_USER@$SERVER_IP:$server_path/\""
+            # Shell-quote every interpolated path with _shq (printf %q): these
+            # strings are run via `bash -c` AND written verbatim into a scheduled
+            # job script, so an unquoted path with a space/quote/$/backtick would
+            # word-split or inject. The mkdir runs on the SERVER, so quote it once
+            # for the remote shell, then quote the whole ssh command for the local
+            # one. rsync's -s (--protect-args) stops the remote shell from
+            # re-splitting the path, so _shq only has to satisfy the local shell.
+            local remote_mkdir="sudo mkdir -p $(_shq "$dest_display") && sudo chown $(_shq "$SERVER_USER:$SERVER_USER") $(_shq "$dest_display")"
+            local pre_cmd="ssh -t $(_shq "$SERVER_USER@$SERVER_IP") $(_shq "$remote_mkdir")"
+            local rsync_cmd="rsync -avh --progress -s $(_shq "$rsync_src") $(_shq "$SERVER_USER@$SERVER_IP:$server_path/")"
             _sync_execute_or_schedule "upload" "$local_path" "$dest_display" "$rsync_cmd" "$pre_cmd"
             ;;
 
@@ -5413,8 +5421,11 @@ step_sync() {
             echo -e "  To:   $dest_display"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-            local pre_cmd="sudo mkdir -p \"$dest_display\""
-            local rsync_cmd="rsync -avh --progress \"$SERVER_USER@$SERVER_IP:$rsync_src\" \"$local_path/\""
+            # Shell-quote every path with _shq (see the upload branch): the dest
+            # mkdir runs locally here; rsync -s (--protect-args) keeps the remote
+            # source path from being re-split by the server's shell.
+            local pre_cmd="sudo mkdir -p $(_shq "$dest_display")"
+            local rsync_cmd="rsync -avh --progress -s $(_shq "$SERVER_USER@$SERVER_IP:$rsync_src") $(_shq "$local_path/")"
             _sync_execute_or_schedule "download" "$server_path" "$dest_display" "$rsync_cmd" "$pre_cmd"
             ;;
 

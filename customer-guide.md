@@ -579,6 +579,14 @@ Run `docker logs <container_name> --tail 20` to see the error. Common causes:
 - Docker image pulls during install/update
 - Nothing else — no telemetry, no analytics
 
+### LAN exposure and access model
+
+The service UIs — Immich (`2283`), Navidrome (`4533`), FileBrowser (`8080`), Uptime Kuma (`3001`) — listen on all interfaces, and `federver`'s default firewall rules open those ports to your local network. **Any device on your home WiFi/LAN can reach them**, and they speak plain **HTTP (no TLS)** on the LAN, so anything able to sniff your network can read the traffic (including login credentials). Treat your home network as the trust boundary:
+
+- **Set a strong password on every UI.** FileBrowser's admin password is auto-generated at deploy (saved to `~/.privcloud/filebrowser.pass`); for the others you create the admin account on first visit. FileBrowser is the most sensitive — it serves your files directly.
+- **For remote access, use Tailscale** (`federver` → 8) — it's an encrypted private network. **Never port-forward these ports to the public internet.**
+- The Postgres database is **not** exposed on any port — it's reachable only by the other containers, never from the LAN.
+
 ---
 
 # Home server setup

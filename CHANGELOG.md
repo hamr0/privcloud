@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.14 — 2026-06-09
+
+### Security
+- **Scheduled sync jobs now shell-quote every path before building the command (`setup.sh`).** The upload/download builders in `step_sync` interpolated picked paths into `pre_cmd` / `rsync_cmd` with hand-written quotes, and those strings are both run via `bash -c` **and** written verbatim into the generated `~/.local/bin/sync-<job>.sh` (which cron/systemd then run). A source/destination path containing a quote, `$`, backtick, or `;` could break out and inject a command. Every interpolation now goes through `_shq` (`printf %q`) — the same discipline the rest of the file already used — and rsync gains `-s` / `--protect-args` so the remote shell can't re-split paths. Verified on both execution paths (direct run and the persisted job script): a hostile path lands as a single inert rsync argument, and normal paths produce the same command as before. Practical impact was low (the paths come from the operator's own interactive pickers), but the gap is closed.
+- **`.env.example` placeholder password now matches the auto-regenerate guard (`.env.example`).** The template shipped `DB_PASSWORD=changeme`, but `privcloud config`'s "replace the placeholder with a generated password" check looked for `changeme_use_a_real_password` — so a database stood up from the bare template kept a trivially-guessable password. The template now carries the recognised placeholder (and a comment explaining it), so the supported install path regenerates it. Blast radius was already bounded — Postgres is not exposed on any host port — but credentials should never default weak. (The guard itself was left unchanged on purpose: making it also match `changeme` could regenerate the password of an *already-initialised* `changeme` database and lock it out.)
+- **`privcloud` `.env` is created `0600` from the start (`privcloud`).** The config write was create-then-`chmod`, leaving a brief window where the file holding the DB password was world-readable. It's now written inside a `( umask 077; … )` subshell; the trailing `chmod 600` is kept to also tighten a pre-existing file (truncating with `>` keeps the old mode).
+- **`privcloud` re-quotes its arguments when re-running under `sg docker` (`privcloud`).** The docker-group re-exec passed `"$0 $*"` as one shell string, which both word-split arguments and could self-inject. It now keeps the original argv as an array and re-quotes with `printf %q`, which also fixes a real bug — arguments with spaces (e.g. `--album "My Trip"`) were being split before.
+
+### Docs
+- **Customer guide documents the LAN exposure / access model (`customer-guide.md`).** A new "LAN exposure and access model" note under Privacy & security spells out that the service UIs are reachable by any device on the home network over plain HTTP, that Tailscale (not port-forwarding) is the way to reach them remotely, and that Postgres is not exposed on any port. (Binding the UIs to localhost-only or adding TLS would change the intended at-home LAN access, so this is documented rather than changed.)
+
 ## v0.9.13 — 2026-06-09
 
 ### Changed

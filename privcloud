@@ -659,36 +659,46 @@ cmd_upload() {
 }
 
 cmd_backup() {
-  bold "Backup privcloud"
+  local B=$'\033[1m' D=$'\033[2m' N=$'\033[0m'
+  bold "Backup privcloud — Immich photos + database"
   echo ""
-  echo "  1) One time   — copy photos + database to a drive now"
-  echo "  2) Scheduled  — recurring automatic backup (systemd timer, no downtime)"
-  echo "  0) Back"
+  printf "  ${B}1)${N} %-22s ${D}← copy to a drive now, no schedule${N}\n"      "One-time"
+  printf "  ${B}2)${N} %-22s ${D}← weekly systemd timer, no downtime${N}\n"     "Scheduled - Set up"
+  printf "  ${B}3)${N} %-22s ${D}← schedule, next/last run, recent runs${N}\n"  "Scheduled - Status"
+  printf "  ${B}4)${N} %-22s ${D}← start a backup in the background${N}\n"      "Scheduled - Run now"
+  printf "  ${B}5)${N} %-22s ${D}← delete the schedule (keeps files)${N}\n"     "Scheduled - Remove"
+  printf "  ${B}0)${N} Back\n"
   echo ""
-  printf "Choose [0-2]: "
+  printf "Choose [0-5]: "
   read -r btype
   # Single pass: do one action and return to the main menu (the caller pauses,
-  # then redraws a fresh menu) instead of re-looping this chooser.
+  # then redraws a fresh menu) instead of re-looping this chooser. The four
+  # scheduled actions delegate straight to setup.sh's individual steps — the
+  # SAME functions federver → 14 → 6 drives — so there's no extra submenu and
+  # both tools manage one schedule.
   case "$btype" in
     1)        cmd_backup_once ;;
-    2)        cmd_backup_schedule ;;
+    2)        cmd_backup_sched step_immich_backup ;;
+    3)        cmd_backup_sched _immich_backup_status ;;
+    4)        cmd_backup_sched _immich_backup_run ;;
+    5)        cmd_backup_sched _immich_backup_remove ;;
     0|""|q)   return 0 ;;
     *)        red "Invalid choice." ;;
   esac
 }
 
-# Scheduled-backup management. Delegates to setup.sh's step_immich_backup_menu —
-# the SAME submenu federver → 14 → 6 uses — so set up / status / run / remove are
-# single-source and both menus drive one schedule.
-cmd_backup_schedule() {
+# Run one scheduled-backup action from setup.sh (federver's step_immich_* funcs),
+# so set up / status / run / remove stay single-source across both tools.
+cmd_backup_sched() {
+  local fn="$1"
   local setup="$SCRIPT_DIR/setup.sh"
   if [ ! -f "$setup" ]; then
     red "setup.sh not found next to privcloud ($setup)."
     red "Scheduled backups are configured by federver's setup.sh."
     return 1
   fi
-  # Returns 2 on "Back" — don't let that abort privcloud under set -e.
-  bash "$setup" --run step_immich_backup_menu || true
+  # A step returning 2 (Back) must not abort privcloud under set -e.
+  bash "$setup" --run "$fn" || true
 }
 
 cmd_backup_once() {

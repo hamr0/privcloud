@@ -465,25 +465,28 @@ Expect ~20-30% overhead on top of your original library for thumbnails and previ
 privcloud backup
 ```
 
-You get two choices:
+One flat menu — no drill-down — with the one-time backup and the four scheduled actions all at the same level:
 
 ```
-  1) One time   — copy photos + database to a drive now
-  2) Scheduled  — recurring automatic backup (systemd timer, no downtime)
+  1) One-time             ← copy to a drive now, no schedule
+  2) Scheduled - Set up   ← weekly systemd timer, no downtime
+  3) Scheduled - Status   ← schedule, next/last run, recent runs
+  4) Scheduled - Run now  ← start a backup in the background
+  5) Scheduled - Remove   ← delete the schedule (keeps files)
 ```
 
 **Neither stops the server** — your photos stay online the whole time. Photos are copied live, and the database is dumped while it runs (a consistent snapshot).
 
-**One time** then asks *what* to back up — **Both** (default), **Photos only**, or **Database only** — and, for photos, **Append** (keep everything on the backup) vs **Mirror** (exact copy, removes files deleted from source). It previews the destination as a tree before copying. Incremental after the first run.
+**One-time** then asks *what* to back up — **Both** (default), **Photos only**, or **Database only** — and, for photos, **Append** (keep everything on the backup) vs **Mirror** (exact copy, removes files deleted from source). It previews the destination as a tree before copying. Incremental after the first run. (This is the *Immich* one-time backup — distinct from the generic rsync at `federver` → 14 → 5.)
 
-**Scheduled** is a small submenu — **set up / change**, **status** (the backup's schedule, next/last run, and a clean recent-runs table), **run now**, and **remove** (deletes the schedule but keeps your backup files). The status screen shows *your Immich backup* whether it runs as a systemd timer or a root cron job, and points you to `federver` → 14 → 1 for the full list of everything scheduled on the server. Setting it up creates an automatic backup (daily at 3am, keep 7 days; or weekly, keep 3 weeks) that runs the *same* schedule as `federver` → 14 (one source of truth, no double-runs), backs up database + photos every run, catches up if the server was off, and retries on failure. It defaults the destination to an external/USB drive and warns if you point it at the same drive as your photos (a single disk failure would lose both). Right after setup it offers to **run the first backup now** so you can confirm it works instead of waiting for the next scheduled time.
+**Scheduled - Set up** creates an automatic backup (daily at 3am, keep 7 days; or weekly, keep 3 weeks) that runs the *same* schedule as `federver` → 14 → 6 (one source of truth, no double-runs), backs up database + photos every run, catches up if the server was off, and retries on failure. It defaults the destination to an external/USB drive and warns if you point it at the same drive as your photos (a single disk failure would lose both). Right after setup it offers to **run the first backup now** so you can confirm it works instead of waiting for the next scheduled time. **Status** shows *your Immich backup* — schedule, next run, and a recent-runs history — in the **same table layout** as `federver` → 14 → 1 (and points you there for everything else scheduled on the server), whether the backup runs as a systemd timer or a root cron job. **Remove** deletes the schedule but keeps your backup files.
 
 > **Tip:** an external/USB drive is the point — a backup on the same disk as your photos dies with that disk.
 
 ### How often
 
-- Set up **Scheduled** once and forget it (daily or weekly)
-- Run **One time** before big imports and before OS upgrades
+- Set up **Scheduled - Set up** once and forget it (daily or weekly)
+- Run **One-time** before big imports and before OS upgrades
 
 ---
 

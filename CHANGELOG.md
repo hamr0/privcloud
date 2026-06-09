@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.9.13 — 2026-06-09
+
+### Changed
+- **The `privcloud` Backup menu is now flat — no `One time` / `Scheduled` drill-down (`privcloud`).** The one-time backup and the four scheduled actions sit at one level, in the same aligned `←`-hint style as `federver` → 14: `1) One-time`, `2) Scheduled - Set up`, `3) Scheduled - Status`, `4) Scheduled - Run now`, `5) Scheduled - Remove`. Options 2–5 delegate straight to `setup.sh`'s individual steps (`step_immich_backup`, `_immich_backup_status`, `_immich_backup_run`, `_immich_backup_remove`) — the **same** functions `federver` → 14 → 6 drives — so there's no extra submenu and both tools still manage one schedule. The header now reads "Backup privcloud — Immich photos + database" to distinguish privcloud's one-time backup (Immich photos + DB) from the generic rsync at `federver` → 14 → 5, which is a different operation with the same name.
+- **Scheduled-backup Status now uses the same table layout as the server fleet view (`setup.sh`).** `_immich_backup_status` (privcloud → 9 → 3, the flattened Status action) previously printed a key/value schedule block + a `✓ ran` list. It now renders in the identical style as `federver` → 14 → 1 (`_sync_show_status`): a **Scheduled tasks** table (Name · Schedule · When · Type · Note) and a **Last runs** table (one row per run, newest last, up to 8 — `✓ ok` / `✗ failed`). Detail the fleet table has no columns for is preserved: next-run + enabled-state ride in the Note column, and the 8-run history becomes the Last-runs rows. Still Immich-only, still points to `14 → 1` for everything else; all four detection branches (systemd timer / legacy cron / OFF / cron-unreadable) render in-table with the actionable guidance kept below.
+
+### Fixed
+- **Corrected the `federver` → 14 cross-reference notes in the Scheduled-tasks table (`setup.sh`).** The `federver` → 14 → 1 status table tagged `immich-backup` with `(14 → 5)` and `disk-check` with `(14 → 6)`, but the menu had since been renumbered — they're `→ 6` and `→ 7`. The notes (timer row, legacy-cron row, and disk-check row) and a stale code comment now match the live menu. (The guide's copy of these numbers was fixed back in v0.9.4; the table code carried the old values until now.)
+
 ## v0.9.12 — 2026-06-08
 
 ### Changed

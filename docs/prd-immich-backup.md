@@ -40,10 +40,20 @@ Meanwhile the one-time flow always copied *both* photos and DB with no way to gr
 **Option B, with a two-way menu and a single shared schedule.**
 
 ```
-privcloud → 9  Backup
-  1) One time   — copy photos + database to a drive now
-  2) Scheduled  — recurring automatic backup (systemd timer, no downtime)
+privcloud → 9  Backup  (Immich photos + database)
+  1) One-time             ← copy to a drive now, no schedule
+  2) Scheduled - Set up   ← weekly systemd timer, no downtime
+  3) Scheduled - Status   ← schedule, next/last run, recent runs
+  4) Scheduled - Run now  ← start a backup in the background
+  5) Scheduled - Remove   ← delete the schedule (keeps files)
 ```
+
+**Flat menu (v0.9.13).** The one-time backup and the four scheduled actions sit at one level —
+no `One time` / `Scheduled` chooser → submenu drill-down. Options 2–5 delegate straight to
+`setup.sh`'s individual steps (`step_immich_backup`, `_immich_backup_status`, `_immich_backup_run`,
+`_immich_backup_remove`) — the same functions `federver` → 14 → 6 drives — so there's no extra
+submenu and both tools still manage one schedule. Layout mirrors `federver` → 14's aligned
+`←`-hint style.
 
 ### One time
 
@@ -89,11 +99,18 @@ truth). Each run is **full** (database + photos), no downtime:
 
 ### Managing it
 
-Both `privcloud` → 9 → 2 **and** `federver` → 14 → 6 open the same submenu (`step_immich_backup_menu`
-in `setup.sh`), not a one-shot: **Set up / change**, **Status** (schedule + next/last run and a clean
-recent-runs table — `✓ ran` / `✗ failed` per run, no log dump), **Run now** (background), and **Remove** (deletes timer/service/script via
-`_immich_backup_remove`, **leaving backup files intact**). The submenu and its actions all live in
-`setup.sh` so both entry points are identical and single-source.
+`federver` → 14 → 6 opens the shared submenu (`step_immich_backup_menu` in `setup.sh`); on the
+`privcloud` side the same four actions are flattened into the top-level Backup menu (v0.9.13).
+Either way they run the same set: **Set up / change**, **Status**, **Run now** (background), and
+**Remove** (deletes timer/service/script via `_immich_backup_remove`, **leaving backup files
+intact**). All actions live in `setup.sh` so both entry points are single-source.
+
+**Status format (v0.9.13).** `_immich_backup_status` renders in the **same table layout** as the
+fleet view `federver` → 14 → 1 (`_sync_show_status`): a **Scheduled tasks** table
+(Name · Schedule · When · Type · Note — next-run and enabled-state ride in Note) and a **Last runs**
+table (one row per run, newest last, up to 8 — `✓ ok` / `✗ failed`, no log dump). It stays
+Immich-only and points to `14 → 1` for everything else on the server. Works whether the backup runs
+as a systemd timer or a legacy root cron line; honest about OFF / unreadable-cron states.
 
 **Menu flow (v0.9.11).** The submenu is **single-pass**: it runs one action and returns to the
 caller, instead of re-prompting after each. On the `privcloud` side every main-menu action — all 9,

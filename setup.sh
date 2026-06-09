@@ -3905,60 +3905,77 @@ _immich_backup_status() {
         last_log_run=$(grep -E 'Backup (complete|FAILED)' /var/log/immich-backup.log 2>/dev/null | tail -1 | sed 's/: Backup.*//')
     fi
 
+    # Same table styling as federver → 14 → 1 (_sync_show_status): one BLUE rule,
+    # a BOLD header, and the identical %-20s %-18s %-16s %-10s %s column widths —
+    # so this Immich-only view reads as the same "clean status" the fleet view does.
+    local RULE="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
     echo ""
-    echo -e "  ${BOLD}Immich backup schedule${NC}"
+    echo -e "  ${BOLD}Scheduled tasks${NC}"
+    echo -e "  ${BLUE}${RULE}${NC}"
+    printf "  ${BOLD}%-20s %-18s %-16s %-10s %s${NC}\n" "Name" "Schedule" "When" "Type" "Note"
+    echo -e "  ${BLUE}${RULE}${NC}"
+
     if [ "$mechanism" = "timer" ]; then
-        printf "    %-11s %s\n" "Status:"   "scheduled (systemd timer)"
-        printf "    %-11s %s\n" "Schedule:" "$sched_human"
-        printf "    %-11s %s\n" "Next run:" "${next:-unknown}"
-        printf "    %-11s %s\n" "Enabled:"  "${enabled:-unknown}"
-        printf "    %-11s %s\n" "Last run:" "${lastresult:-n/a}"
+        # Next-run + enabled state ride in the Note column (the fleet table has no
+        # dedicated columns for them) so the detail isn't lost to the table format.
+        local note="next: ${next:-unknown}"
+        [ "$enabled" = "enabled" ] || note="DISABLED — ${note}"
+        printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "${oncal:-unknown}" "systemd" "backup" "$note"
     elif [ "$mechanism" = "cron" ]; then
-        printf "    %-11s %s\n" "Status:" "scheduled (root cron)"
-        # One row per matching cron line: human schedule, raw spec, and command.
+        # One row per matching cron line; human schedule in When, raw spec in Schedule.
         printf '%s\n' "$cron_matches" | while IFS= read -r l; do
             [ -z "$l" ] && continue
-            local spec cmd
+            local spec when
             spec=$(echo "$l" | awk '{print $1,$2,$3,$4,$5}')
-            cmd=$(echo "$l"  | awk '{$1=$2=$3=$4=$5=""; sub(/^ +/,""); print}')
-            printf "    %-11s %s  ${DIM}(%s)${NC}  %s\n" "Schedule:" \
-                "$(_cron_to_english "$spec" 2>/dev/null || echo "$spec")" "$spec" "$cmd"
+            when=$(_cron_to_english "$spec" 2>/dev/null || echo "$spec")
+            printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$spec" "$when" "backup" "(legacy cron)"
         done
-        printf "    %-11s %s\n" "Last run:" "${last_log_run:-n/a}"
     elif [ "$cron_checked" -eq 1 ]; then
-        # No timer, root cron readable and carries no Immich line → genuinely none.
+        # No timer, root cron readable, no Immich line → genuinely off.
         if [ -n "$last_log_run" ]; then
-            warn "NOT scheduled — Immich backups are currently OFF."
-            printf "    %-11s %s\n" "Last run:" "$last_log_run"
-            info "The log shows past runs, but nothing schedules it now (it was removed)."
+            printf "  %-20s %-18s %-16s %-10s ${YELLOW}%s${NC}\n" "immich-backup" "—" "OFF" "backup" "removed — log shows past runs"
         else
-            warn "No scheduled Immich backup is configured."
+            printf "  %-20s %-18s %-16s %-10s ${YELLOW}%s${NC}\n" "immich-backup" "—" "none" "backup" "not configured"
         fi
-        info "Re-enable: privcloud → 9 → 2  (or federver → 14 → 6)."
     else
-        # No timer, and root cron could not be read without a password — don't
-        # assert "off" on data we couldn't see; tell the user how to be sure.
-        warn "No systemd timer found, and root cron couldn't be checked (needs sudo)."
-        [ -n "$last_log_run" ] && printf "    %-11s %s\n" "Last log run:" "$last_log_run"
-        info "Verify by hand:  sudo crontab -l | grep -i immich"
-        info "Or set up the managed schedule: privcloud → 9 → 2 (or federver → 14 → 6)."
+        # Couldn't read root cron without a password — never assert "off" on data
+        # we couldn't see.
+        printf "  %-20s %-18s %-16s %-10s ${DIM}%s${NC}\n" "immich-backup" "?" "?" "backup" "root cron unreadable (needs sudo)"
     fi
 
-    # Recent runs — one row per run (the terminal log line), ✓ ran / ✗ failed,
-    # no file paths. Works for both old single-line and new multi-line logs.
+    # Last runs — same table as the fleet view, but one row PER run (newest last,
+    # up to 8) so the Immich detail view keeps its history instead of a single row.
     echo ""
-    echo -e "  ${BOLD}Recent runs${NC} ${DIM}(newest last)${NC}"
+    echo -e "  ${BOLD}Last runs${NC}"
+    echo -e "  ${BLUE}${RULE}${NC}"
+    printf "  ${BOLD}%-20s %-20s %s${NC}\n" "Name" "Last run" "Status"
+    echo -e "  ${BLUE}${RULE}${NC}"
     if [ -s /var/log/immich-backup.log ] && grep -qE 'Backup (complete|FAILED)' /var/log/immich-backup.log 2>/dev/null; then
         grep -E 'Backup (complete|FAILED)' /var/log/immich-backup.log | tail -n 8 | while IFS= read -r line; do
-            local when=${line%%: Backup*}
+            local when=${line%%: Backup*} status
             if [[ "$line" == *"Backup complete"* ]]; then
-                echo -e "    ${GREEN}✓${NC} ran     $when"
+                status="${GREEN}✓ ok${NC}"
             else
-                echo -e "    ${RED}✗${NC} failed  $when"
+                status="${RED}✗ failed${NC}"
             fi
+            printf "  %-20s %-20s " "immich-backup" "$when"
+            echo -e "$status"
         done
     else
-        echo "    (no runs yet)"
+        printf "  %-20s %-20s ${DIM}%s${NC}\n" "immich-backup" "never" "—"
+    fi
+
+    # For the "off"/"unreadable" states, keep the actionable guidance the table
+    # rows can't carry — but below the tables so the clean layout stays intact.
+    if [ "$mechanism" != "timer" ] && [ "$mechanism" != "cron" ]; then
+        echo ""
+        if [ "$cron_checked" -eq 1 ]; then
+            info "Re-enable:  Backup → Scheduled - Set up  (privcloud → 9 → 2, or federver → 14 → 6)."
+        else
+            info "Verify by hand:  sudo crontab -l | grep -i immich"
+            info "Set up the schedule:  Backup → Scheduled - Set up  (privcloud → 9 → 2, or federver → 14 → 6)."
+        fi
     fi
 
     # Option C: this screen is Immich-only. The full list of everything scheduled
@@ -4600,7 +4617,7 @@ _sync_show_status() {
             [[ -x /usr/local/bin/disk-check.sh ]]    && echo "*/5 * * * * /usr/local/bin/disk-check.sh"
         ' 2>/dev/null) || server_crons=""
     fi
-    # immich-backup migrated from cron to systemd timer (federver → 14 → 5).
+    # immich-backup migrated from cron to systemd timer (federver → 14 → 6).
     # If the timer is present, prefer its OnCalendar over any legacy cron line.
     # Read OnCalendar via `systemctl cat` — `systemctl show -p OnCalendar` is
     # always empty (it isn't a show property), which is why this used to blank.
@@ -4615,7 +4632,7 @@ _sync_show_status() {
     # Render immich-backup from systemd timer if available, else fall back
     # to the legacy cron line.
     if [[ -n "$server_timer_oncal" ]]; then
-        printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$server_timer_oncal" "systemd" "backup" "(14 → 5)"
+        printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$server_timer_oncal" "systemd" "backup" "(14 → 6)"
     fi
     if [[ -n "$server_crons" ]]; then
         echo "$server_crons" | while IFS= read -r line; do
@@ -4624,12 +4641,12 @@ _sync_show_status() {
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
                 when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$sched" "$when" "backup" "(14 → 5, legacy cron)"
+                printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$sched" "$when" "backup" "(14 → 6, legacy cron)"
             elif echo "$line" | grep -q "disk-check"; then
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
                 when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %s\n" "disk-check" "$sched" "$when" "monitor" "(14 → 6)"
+                printf "  %-20s %-18s %-16s %-10s %s\n" "disk-check" "$sched" "$when" "monitor" "(14 → 7)"
             fi
         done
     fi

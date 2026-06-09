@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.17 — 2026-06-09
+
+### Fixed
+- **"Remove" now handles a cron-only Immich backup, and actually clears the cron line it detects (`setup.sh`).** Two related gaps in `_immich_backup_remove`: (1) the early guard checked only for the systemd timer file and the managed script, so a backup scheduled *solely* via a legacy root-cron line (no timer, no `/usr/local/bin/immich-backup.sh`) reported "No scheduled Immich backup to remove" while Status still showed it scheduled — leaving a backup running that the user thought was gone. The guard now also detects a readable cron line. (2) The cron-removal step matched only the literal string `immich-backup`, but detection matches what the line *runs* (`immich-backup.sh|immich-db|immich-backup.log`) — so a line running e.g. an `immich-db` dump was detected/listed but never removed. Removal now uses the same pattern, and the post-removal verification checks the timer, the script, **and** any remaining active cron line before claiming success. Low likelihood (the tool moved off cron to a systemd timer in v0.9.10; only old or hand-made installs hit this), but it closes a false-"removed" path.
+
 ## v0.9.16 — 2026-06-09
 
 ### Fixed

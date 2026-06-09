@@ -3985,7 +3985,14 @@ _immich_backup_status() {
 # Remove the schedule (timer + service + script). Leaves existing backup files
 # on disk untouched.
 _immich_backup_remove() {
-    if [ ! -f /etc/systemd/system/immich-backup.timer ] && [ ! -e /usr/local/bin/immich-backup.sh ]; then
+    # A schedule can take three forms: the systemd timer, the managed script, or
+    # a legacy root-cron line (matched by what it RUNS, readable without a
+    # password). Detect the cron form too — otherwise a cron-only schedule (no
+    # timer, no script) would bail here as "nothing to remove" while Status still
+    # reports it scheduled, leaving a backup running that the user thinks is gone.
+    local legacy_cron
+    legacy_cron=$(sudo -n crontab -l 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -E 'immich-backup\.sh|immich-db|immich-backup\.log')
+    if [ ! -f /etc/systemd/system/immich-backup.timer ] && [ ! -e /usr/local/bin/immich-backup.sh ] && [ -z "$legacy_cron" ]; then
         warn "No scheduled Immich backup to remove."
         return 0
     fi
@@ -4005,12 +4012,9 @@ _immich_backup_remove() {
         printf "    %-13s %s\n" "Service:" "immich-backup.service"
     fi
     [ -e /usr/local/bin/immich-backup.sh ] && printf "    %-13s %s\n" "Script:" "/usr/local/bin/immich-backup.sh"
-    # Legacy root-cron line, if any and if readable without a password.
-    local cronmatch
-    cronmatch=$(sudo -n crontab -l 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -E 'immich-backup\.sh|immich-db|immich-backup\.log')
-    if [ -n "$cronmatch" ]; then
+    if [ -n "$legacy_cron" ]; then
         printf "    %-13s\n" "Legacy cron:"
-        printf '%s\n' "$cronmatch" | sed 's/^/      /'
+        printf '%s\n' "$legacy_cron" | sed 's/^/      /'
     fi
 
     echo ""
@@ -4031,13 +4035,19 @@ _immich_backup_remove() {
     sudo rm -f /etc/systemd/system/immich-backup.timer /etc/systemd/system/immich-backup.service
     sudo systemctl daemon-reload 2>/dev/null || true
     sudo rm -f /usr/local/bin/immich-backup.sh
-    # Clear any legacy cron line too.
-    if sudo crontab -l 2>/dev/null | grep -q immich-backup; then
-        (sudo crontab -l 2>/dev/null | grep -v immich-backup) | sudo crontab -
+    # Clear any legacy cron line too — match the SAME pattern detection uses (what
+    # the line RUNS), not just the literal "immich-backup", so a line that runs an
+    # immich-db dump is actually removed instead of detected-but-left-behind.
+    local cron_pat='immich-backup\.sh|immich-db|immich-backup\.log'
+    if sudo crontab -l 2>/dev/null | grep -qE "$cron_pat"; then
+        (sudo crontab -l 2>/dev/null | grep -vE "$cron_pat") | sudo crontab -
     fi
 
-    # Verify it's actually gone before claiming success.
-    if [ -f /etc/systemd/system/immich-backup.timer ] || [ -e /usr/local/bin/immich-backup.sh ]; then
+    # Verify it's actually gone before claiming success — timer, script, AND any
+    # active (non-comment) cron line.
+    local cron_left
+    cron_left=$(sudo crontab -l 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -E "$cron_pat")
+    if [ -f /etc/systemd/system/immich-backup.timer ] || [ -e /usr/local/bin/immich-backup.sh ] || [ -n "$cron_left" ]; then
         fail "Removal did not complete — the schedule may still be active."
         info "Check it: privcloud → 9 → 3 (Scheduled - Status)."
         return 1

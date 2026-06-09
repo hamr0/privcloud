@@ -579,13 +579,18 @@ Run `docker logs <container_name> --tail 20` to see the error. Common causes:
 - Docker image pulls during install/update
 - Nothing else — no telemetry, no analytics
 
-### LAN exposure and access model
+### Accepted security tradeoffs (by design)
 
-The service UIs — Immich (`2283`), Navidrome (`4533`), FileBrowser (`8080`), Uptime Kuma (`3001`) — listen on all interfaces, and `federver`'s default firewall rules open those ports to your local network. **Any device on your home WiFi/LAN can reach them**, and they speak plain **HTTP (no TLS)** on the LAN, so anything able to sniff your network can read the traffic (including login credentials). Treat your home network as the trust boundary:
+A couple of things a formal security audit will flag. They're **deliberate choices**, sound for a self-hosted home server — documented here so they're on the record, not because they need fixing.
 
-- **Set a strong password on every UI.** FileBrowser's admin password is auto-generated at deploy (saved to `~/.privcloud/filebrowser.pass`); for the others you create the admin account on first visit. FileBrowser is the most sensitive — it serves your files directly.
-- **For remote access, use Tailscale** (`federver` → 8) — it's an encrypted private network. **Never port-forward these ports to the public internet.**
-- The Postgres database is **not** exposed on any port — it's reachable only by the other containers, never from the LAN.
+**1. Service UIs are reachable on your LAN over plain HTTP.** Immich (`2283`), Navidrome (`4533`), FileBrowser (`8080`), and Uptime Kuma (`3001`) listen on all interfaces, and `federver`'s firewall opens those ports to your local network — so any device on your home WiFi can reach them, unencrypted.
+
+- *Why this is fine:* your home LAN is the trust boundary, and **Tailscale** (`federver` → 8) gives you encrypted access both at home and away — that's the intended path in and out. The Postgres database is **not** exposed on any port (containers only). Locking the UIs to Tailscale-only would add real friction for little gain on a trusted home network, so we don't.
+- *Still do this:* set a strong password on every UI (FileBrowser's is auto-generated at deploy → `~/.privcloud/filebrowser.pass`; the rest you set on first visit), and **never port-forward these ports to the public internet** — use Tailscale for remote access.
+
+**2. Containers auto-update to the latest images (Watchtower).** The stack pins floating tags (`:latest` / Immich `:release`) and Watchtower pulls newer versions nightly at 4am. An audit calls this an unpinned-dependency / supply-chain risk.
+
+- *Why this is fine:* every service here — Immich, Navidrome, FileBrowser, AdGuard, Uptime Kuma — is widely adopted and actively maintained. A faulty release is caught and rolled back fast because so many people run them, and auto-updates mean you get security patches without lifting a finger. Pinning would trade that away. The convenience and free security patching outweigh the low risk of a bad upstream push (which you can roll back anyway).
 
 ---
 

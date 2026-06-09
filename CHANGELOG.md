@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.18 — 2026-06-09
+
+### Docs
+- **Documented the two deliberate security tradeoffs under Privacy & security (`customer-guide.md`).** Replaced the "LAN exposure" note with an **"Accepted security tradeoffs (by design)"** section recording the two things a security audit flags and *why they're intentional*, not defects: (1) the service UIs are LAN-reachable over plain HTTP — fine because the home LAN is the trust boundary and Tailscale gives encrypted access in and out (Postgres stays unexposed); locking the UIs to Tailscale-only adds friction for little gain. (2) Watchtower auto-updates containers from floating tags — fine because the images (Immich, Navidrome, FileBrowser, AdGuard, Uptime Kuma) are widely adopted and actively maintained, a bad release is rolled back quickly, and auto-updates deliver security patches hands-free; pinning would trade that away. Keeps the practical advice (strong passwords per UI, never port-forward, use Tailscale for remote).
+
 ## v0.9.17 — 2026-06-09
 
 ### Fixed

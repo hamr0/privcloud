@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.16 — 2026-06-09
+
+### Fixed
+- **Corrected stale menu paths left over from the v0.9.13 backup-menu flatten (`setup.sh`, `customer-guide.md`).** Flattening `privcloud`'s Backup menu turned the old `9 → 2 → N` submenu into flat options `9 → 1..5`, but a few hints/comments still pointed at the old paths: "Manage it anytime: `9 → 2` (status / run now / remove)" and "Check it: `9 → 2 → 2` (Status)" now point at `9` / `9 → 3`; the `step_immich_backup_menu` comments no longer claim `privcloud` drives that submenu (it's federver-only since the flatten — privcloud calls the step functions directly); and the customer guide's "privcloud → 9 → 2 … same management submenu" line now describes the flat menu. (The surviving `9 → 2` references all correctly mean "Scheduled - Set up".)
+
+### Removed
+- **Dead variables in `_immich_backup_status` (`setup.sh`).** The v0.9.13 table rewrite stopped using `sched_human` and `lastresult`, but both were still assigned — `lastresult` also spent a `systemctl show …Result` subprocess for a value nothing read. Removed.
+
 ## v0.9.15 — 2026-06-09
 
 ### Changed

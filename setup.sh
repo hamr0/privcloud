@@ -3833,7 +3833,7 @@ TIMEREOF
     fi
 
     echo ""
-    info "Manage it anytime:  privcloud → 9 → 2  (status / run now / remove)"
+    info "Manage it anytime:  privcloud → 9  (Scheduled - Status / Run now / Remove)"
     info "View log:           tail /var/log/immich-backup.log"
 }
 
@@ -3873,7 +3873,7 @@ _immich_backup_run() {
 # schedules it now (removed → backups OFF), and the case where we simply could
 # not read root cron without a password (never claim "off" on missing data).
 _immich_backup_status() {
-    local mechanism="" oncal="" next="" enabled="" lastresult="" sched_human="" cron_checked=0 cron_matches=""
+    local mechanism="" oncal="" next="" enabled="" cron_checked=0 cron_matches=""
 
     if [ "$(systemctl show immich-backup.timer -p LoadState --value 2>/dev/null)" = "loaded" ]; then
         mechanism="timer"
@@ -3882,8 +3882,6 @@ _immich_backup_status() {
         oncal=$(systemctl cat immich-backup.timer 2>/dev/null | sed -n 's/^OnCalendar=//p' | head -1)
         next=$(systemctl list-timers immich-backup.timer --no-pager 2>/dev/null | awk '/immich-backup/{print $1,$2,$3,$4; exit}')
         enabled=$(systemctl is-enabled immich-backup.timer 2>/dev/null)
-        lastresult=$(systemctl show immich-backup.service -p Result --value 2>/dev/null)
-        sched_human="${oncal:-unknown}"
     else
         # No timer — look for root cron line(s) that run the Immich backup,
         # matched by what they DO (script / db dump / log) so a generically
@@ -4041,14 +4039,16 @@ _immich_backup_remove() {
     # Verify it's actually gone before claiming success.
     if [ -f /etc/systemd/system/immich-backup.timer ] || [ -e /usr/local/bin/immich-backup.sh ]; then
         fail "Removal did not complete — the schedule may still be active."
-        info "Check it: privcloud → 9 → 2 → 2 (Status)."
+        info "Check it: privcloud → 9 → 3 (Scheduled - Status)."
         return 1
     fi
     ok "Scheduled Immich backup removed. Backup files left intact."
 }
 
-# Management submenu for the scheduled backup, shared by federver → 14 → 6 and
-# privcloud → 9 → 2 so both expose the same set up / status / run / remove.
+# Management submenu for the scheduled backup, used by federver → 14 → 6.
+# (privcloud's Backup menu was flattened in v0.9.13 — it calls step_immich_backup
+# / _immich_backup_status / _immich_backup_run / _immich_backup_remove directly
+# rather than going through this submenu, but drives the same single schedule.)
 # `|| true` on each action: a step returning 2 (Back) must not abort under set -e.
 step_immich_backup_menu() {
     echo ""
@@ -4059,10 +4059,10 @@ step_immich_backup_menu() {
     echo -e "    ${BOLD}4)${NC} Remove      ${DIM}← delete the schedule (keeps backup files)${NC}"
     echo -e "    ${BOLD}0)${NC} Back"
     echo ""
-    # Single pass: run one action, then return to the caller's menu (privcloud
-    # → 9 → 2 and federver → 14 → 6 both redraw a fresh menu) rather than looping
-    # here and re-prompting after each action. Back/invalid → 2 so the caller
-    # treats it as a clean "Back" with no DONE banner.
+    # Single pass: run one action, then return to the caller's menu (federver
+    # → 14 → 6 redraws a fresh menu) rather than looping here and re-prompting
+    # after each action. Back/invalid → 2 so the caller treats it as a clean
+    # "Back" with no DONE banner.
     local c; read -p "  Choice [0-4]: " c
     case "$c" in
         1) step_immich_backup    || true ;;

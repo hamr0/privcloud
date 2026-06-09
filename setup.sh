@@ -3991,8 +3991,33 @@ _immich_backup_remove() {
         warn "No scheduled Immich backup to remove."
         return 0
     fi
+
+    # Show exactly WHAT will be removed before asking, so this isn't a blind
+    # delete. There's only ONE Immich backup schedule by design — the
+    # immich-backup.* timer/service/script (plus any legacy root-cron remnant) —
+    # so this lists those specific artifacts and the cadence, not "some job".
+    # Other scheduled tasks (sync jobs, disk-check) are separate and untouched.
+    echo ""
+    echo -e "  ${BOLD}About to remove the Immich backup schedule:${NC}"
+    if [ "$(systemctl show immich-backup.timer -p LoadState --value 2>/dev/null)" = "loaded" ]; then
+        local oncal next
+        oncal=$(systemctl cat immich-backup.timer 2>/dev/null | sed -n 's/^OnCalendar=//p' | head -1)
+        next=$(systemctl list-timers immich-backup.timer --no-pager 2>/dev/null | awk '/immich-backup/{print $1,$2,$3,$4; exit}')
+        printf "    %-13s %s\n" "Timer:"   "immich-backup.timer  ${DIM}(${oncal:-unknown}${next:+, next $next})${NC}"
+        printf "    %-13s %s\n" "Service:" "immich-backup.service"
+    fi
+    [ -e /usr/local/bin/immich-backup.sh ] && printf "    %-13s %s\n" "Script:" "/usr/local/bin/immich-backup.sh"
+    # Legacy root-cron line, if any and if readable without a password.
+    local cronmatch
+    cronmatch=$(sudo -n crontab -l 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -E 'immich-backup\.sh|immich-db|immich-backup\.log')
+    if [ -n "$cronmatch" ]; then
+        printf "    %-13s\n" "Legacy cron:"
+        printf '%s\n' "$cronmatch" | sed 's/^/      /'
+    fi
+
+    echo ""
     warn "This removes the SCHEDULE only — existing backup files are NOT deleted."
-    local c; read -p "  Remove the scheduled Immich backup? [y/N]: " c
+    local c; read -p "  Remove this scheduled Immich backup? [y/N]: " c
     [[ "$c" =~ ^[Yy]$ ]] || { info "Kept."; return 2; }
 
     # Acquire sudo ONCE up front. This menu is called as `... || true`, which

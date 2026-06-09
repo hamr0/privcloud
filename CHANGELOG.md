@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.9.15 — 2026-06-09
+
+### Changed
+- **"Remove" now shows exactly what it will delete before asking (`setup.sh`).** `_immich_backup_remove` (Backup → Scheduled - Remove, and `federver` → 14 → 6 → 4) jumped straight to "Remove the scheduled Immich backup? [y/N]" without naming *which* schedule — so it read like a blind delete. It now prints an "About to remove" summary first: the timer (with its cadence and next run), the service, the script path, and any legacy root-cron line it found. There is only one Immich backup schedule by design (the `immich-backup.*` timer/service/script is single-source across both menus), so this is transparency, not a chooser — and other scheduled tasks (sync jobs, disk-check) are separate and untouched.
+
 ## v0.9.14 — 2026-06-09
 
 ### Security

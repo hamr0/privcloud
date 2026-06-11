@@ -5250,11 +5250,21 @@ _sync_one_time_backup() {
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
 
+            # Immich backups (and other system data) are root-owned, so a plain
+            # rsync run as your normal SSH user dies with "permission denied".
+            # Probe (as your user) for any unreadable path under the source; if
+            # there is one, the server side has to read it as root.
+            local needs_priv=false
+            if ssh "$SERVER_USER@$SERVER_IP" "find $(_shq "$src_path") ! -readable -print -quit 2>/dev/null" | grep -q .; then
+                needs_priv=true
+            fi
+
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↓ One-time download: server → laptop${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
             echo -e "  To:   $dest_display"
+            $needs_priv && echo -e "  ${DIM}Source is root-owned — federver reads it under sudo (you'll be prompted once).${NC}"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             read -p "  Proceed? [y/N] " -n 1 -r
@@ -5262,7 +5272,49 @@ _sync_one_time_backup() {
             [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
 
             mkdir -p "$dst_path" || { fail "Could not create destination."; return 1; }
-            rsync -avh --progress "$SERVER_USER@$SERVER_IP:$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
+            if $needs_priv; then
+                # Root-owned source: rsync can't read it as your user, and we can't
+                # hand rsync's own SSH session an interactive sudo (a primed sudo
+                # ticket doesn't carry across SSH logins — sudo keys it per parent
+                # process). So stream a tar of the tree through ONE SSH exec where
+                # WE own both ends of the pipe: the sudo password goes in over the
+                # encrypted stdin to `sudo -S`, the archive comes back on stdout.
+                # The password is read silently, passed via a printf BUILTIN (never
+                # a process, so never in `ps`), never written anywhere, and unset
+                # right after. Files extract owned by you (non-root tar can't
+                # restore root ownership). The original backup stays root-owned;
+                # nothing privileged is left enabled on the server.
+                #
+                # tar's working dir mirrors rsync's folder/contents distinction:
+                #   dir, contents → cd into the source, archive "."   (its contents land in dst)
+                #   dir, folder   → cd into the parent, archive the basename (the dir lands in dst)
+                #   single file   → cd into the parent, archive the name (the file lands in dst);
+                #                   _pick_copy_mode forces "contents" for a file, but `tar -C
+                #                   <file>` is invalid, so a file must take the parent/basename form.
+                local tar_cd tar_arg
+                if [[ "$is_dir" == "true" && "$copy_mode" == "contents" ]]; then
+                    tar_cd="$src_path"; tar_arg="."
+                else
+                    tar_cd=$(dirname "$src_path"); tar_arg=$(basename "$src_path")
+                fi
+
+                local server_pw
+                read -rsp "  federver sudo password: " server_pw; echo
+                info "Copying (no per-file progress for privileged copies)…"
+                # -p '' silences sudo's own prompt (we render our own); stderr is
+                # dropped so the prompt text can't corrupt the tar stream.
+                printf '%s\n' "$server_pw" \
+                  | ssh "$SERVER_USER@$SERVER_IP" "sudo -S -p '' tar -C $(_shq "$tar_cd") -cf - $(_shq "$tar_arg") 2>/dev/null" \
+                  | tar -C "$dst_path" -xf -
+                local st=("${PIPESTATUS[@]}")   # 0=printf 1=ssh/sudo/tar-c 2=tar-x
+                unset server_pw
+                if [ "${st[1]}" -ne 0 ] || [ "${st[2]}" -ne 0 ]; then
+                    fail "Privileged download failed (sudo exit ${st[1]}, extract ${st[2]}) — wrong password or unreachable server. Nothing was changed on the server; re-run to overwrite any partial files on the laptop."
+                    return 1
+                fi
+            else
+                rsync -avh --progress "$SERVER_USER@$SERVER_IP:$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
+            fi
             ;;
         3)
             echo ""

@@ -1098,7 +1098,7 @@ Menu is organised by category — `Status` spans everything, then `Sync -` entri
 - **Delete files** (option 2 → 3) — remove files on the laptop or server side.
 - **Backup - One-time** (option 5) — ad-hoc rsync that runs once and leaves nothing behind: no cron entry, no timer, no saved script. Pick a direction:
   - **Upload** — laptop → server
-  - **Download** — server → laptop
+  - **Download** — server → laptop. If the source is root-owned (most often an Immich backup, which is owned by root because the backup job runs as root), a plain copy can't read it — so Download notices that and pulls it under `sudo`, prompting once for the server password. The files arrive owned by you; the backup on the server is untouched and stays root-owned. Ordinary (your-own) files download with no prompt, as before.
   - **Local** — laptop → laptop (e.g. to a USB drive plugged into the laptop)
   - **Server** — server → server (e.g. `/mnt/data` → a backup drive plugged into the server), copied with `sudo rsync` directly on the server without routing the bytes through the laptop
   Pick source + destination using the same pickers as Sync - New (USB drives are auto-listed with their size), see the same plain-words copy choice + tree preview of the result, confirm `y/N`. Built for "I want a backup right now, not on a schedule."

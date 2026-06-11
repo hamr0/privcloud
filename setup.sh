@@ -5250,43 +5250,68 @@ _sync_one_time_backup() {
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
 
-            # Immich backups (and other system data) are root-owned, so a plain
-            # rsync run as your normal SSH user dies with "permission denied".
-            # Probe (as your user) for any unreadable path under the source; if
-            # there is one, the server side has to read it as root.
+            # A privileged copy can be needed on EITHER end, independently:
+            #  • Source unreadable as your SSH user (root-owned Immich backup) →
+            #    read it on the server under sudo.
+            #  • Destination not writable as you (e.g. a USB drive whose mount root
+            #    is root-owned) → write it locally under sudo.
+            # Probe each. Source: look for any unreadable path (as your user).
             local needs_priv=false
             if ssh "$SERVER_USER@$SERVER_IP" "find $(_shq "$src_path") ! -readable -print -quit 2>/dev/null" | grep -q .; then
                 needs_priv=true
             fi
+            # Destination: is the deepest already-existing ancestor writable by you?
+            local dst_needs_priv=false _probe="$dst_path"
+            while [ -n "$_probe" ] && [ "$_probe" != "/" ] && [ ! -e "$_probe" ]; do _probe=$(dirname "$_probe"); done
+            [ -n "$_probe" ] && [ ! -w "$_probe" ] && dst_needs_priv=true
 
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↓ One-time download: server → laptop${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
             echo -e "  To:   $dest_display"
-            $needs_priv && echo -e "  ${DIM}Source is root-owned — federver reads it under sudo (you'll be prompted once).${NC}"
+            $needs_priv     && echo -e "  ${DIM}Source is root-owned — federver reads it under sudo.${NC}"
+            $dst_needs_priv && echo -e "  ${DIM}Destination isn't writable — it's written under local sudo.${NC}"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             read -p "  Proceed? [y/N] " -n 1 -r
             echo ""
             [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
 
-            mkdir -p "$dst_path" || { fail "Could not create destination."; return 1; }
-            if $needs_priv; then
-                # Root-owned source: rsync can't read it as your user, and we can't
-                # hand rsync's own SSH session an interactive sudo (a primed sudo
-                # ticket doesn't carry across SSH logins — sudo keys it per parent
-                # process). So stream a tar of the tree through ONE SSH exec where
-                # WE own both ends of the pipe: the sudo password goes in over the
-                # encrypted stdin to `sudo -S`, the archive comes back on stdout.
-                # The password is read silently, passed via a printf BUILTIN (never
-                # a process, so never in `ps`), never written anywhere, and unset
-                # right after. Files extract owned by you (non-root tar can't
-                # restore root ownership). The original backup stays root-owned;
-                # nothing privileged is left enabled on the server.
+            # Authorize LOCAL sudo for this one copy, if the destination needs it.
+            # Local sudo tickets survive between commands (same controlling terminal
+            # → tty_tickets matches), so the same grant covers the mkdir and the
+            # copy. If WE had to prompt for it (it wasn't already cached/NOPASSWD),
+            # remember that so we can drop the ticket again at the end — the point
+            # is to lend sudo for this copy, not to leave it open afterwards.
+            local dst_sudo="" primed_sudo=false
+            if $dst_needs_priv; then
+                dst_sudo="sudo -n"
+                if ! sudo -n true 2>/dev/null; then
+                    info "Local sudo is needed to write to ${dst_path}."
+                    sudo -v || { fail "Local sudo failed — nothing copied."; return 1; }
+                    primed_sudo=true
+                fi
+            fi
+
+            $dst_sudo mkdir -p "$dst_path" || { $primed_sudo && sudo -k 2>/dev/null; fail "Could not create destination."; return 1; }
+
+            if $needs_priv || $dst_needs_priv; then
+                # At least one end needs sudo. rsync can't take an interactive sudo
+                # on its own SSH login (a primed ticket doesn't carry across SSH
+                # logins — sudo keys it per parent process), so stream a tar through
+                # one pipeline where WE own both ends:
+                #   reader  = ssh [sudo -S] tar -cf -   (server side; sudo only if source root-owned)
+                #   writer  = [sudo -n] tar -xf -       (laptop side; sudo only if dest unwritable)
+                # The server sudo password goes in over the encrypted SSH stdin via
+                # a printf BUILTIN (never in `ps`), is read silently, and is unset
+                # right after; the local sudo password is the interactive prompt
+                # above. The printf stage is always present (empty when the source
+                # isn't privileged — tar ignores its stdin) so PIPESTATUS indices
+                # are stable: [0]=printf [1]=ssh/read [2]=write.
                 #
                 # tar's working dir mirrors rsync's folder/contents distinction:
-                #   dir, contents → cd into the source, archive "."   (its contents land in dst)
+                #   dir, contents → cd into the source, archive "."   (contents land in dst)
                 #   dir, folder   → cd into the parent, archive the basename (the dir lands in dst)
                 #   single file   → cd into the parent, archive the name (the file lands in dst);
                 #                   _pick_copy_mode forces "contents" for a file, but `tar -C
@@ -5298,18 +5323,33 @@ _sync_one_time_backup() {
                     tar_cd=$(dirname "$src_path"); tar_arg=$(basename "$src_path")
                 fi
 
-                local server_pw
-                read -rsp "  federver sudo password: " server_pw; echo
+                # -p '' silences sudo's own prompt; remote stderr is dropped so it
+                # can't corrupt the tar stream.
+                local remote_cmd="tar -C $(_shq "$tar_cd") -cf - $(_shq "$tar_arg") 2>/dev/null"
+                local server_pw=""
+                if $needs_priv; then
+                    read -rsp "  federver sudo password: " server_pw; echo
+                    remote_cmd="sudo -S -p '' $remote_cmd"
+                fi
+
                 info "Copying (no per-file progress for privileged copies)…"
-                # -p '' silences sudo's own prompt (we render our own); stderr is
-                # dropped so the prompt text can't corrupt the tar stream.
+                # The trailing `&& … || …` puts the pipeline in an AND-OR list,
+                # which is exempt from `set -e`, so we always reach the PIPESTATUS
+                # check (and the error message) even if a caller didn't neutralize
+                # errexit. Capturing in both branches keeps PIPESTATUS intact.
+                # --no-same-owner/--no-same-permissions: when the writer runs as root
+                # (dest under sudo) don't let a server-supplied archive restore
+                # setuid/setgid bits or foreign ownership onto the laptop — otherwise
+                # a compromised server could land a setuid-root file here.
+                local st
                 printf '%s\n' "$server_pw" \
-                  | ssh "$SERVER_USER@$SERVER_IP" "sudo -S -p '' tar -C $(_shq "$tar_cd") -cf - $(_shq "$tar_arg") 2>/dev/null" \
-                  | tar -C "$dst_path" -xf -
-                local st=("${PIPESTATUS[@]}")   # 0=printf 1=ssh/sudo/tar-c 2=tar-x
+                  | ssh "$SERVER_USER@$SERVER_IP" "$remote_cmd" \
+                  | $dst_sudo tar --no-same-owner --no-same-permissions -C "$dst_path" -xf - \
+                  && st=("${PIPESTATUS[@]}") || st=("${PIPESTATUS[@]}")   # 0=printf 1=ssh/read 2=write
                 unset server_pw
+                $primed_sudo && sudo -k 2>/dev/null   # drop the one-time ticket we opened
                 if [ "${st[1]}" -ne 0 ] || [ "${st[2]}" -ne 0 ]; then
-                    fail "Privileged download failed (sudo exit ${st[1]}, extract ${st[2]}) — wrong password or unreachable server. Nothing was changed on the server; re-run to overwrite any partial files on the laptop."
+                    fail "Download failed (read exit ${st[1]}, write exit ${st[2]}) — wrong password, unreachable server, or a write error. Nothing was changed on the server; re-run to overwrite any partial files on the laptop."
                     return 1
                 fi
             else

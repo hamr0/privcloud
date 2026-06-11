@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.9.20 — 2026-06-11
+
+### Added
+- **One-time Download now also handles a non-writable local destination (`setup.sh`).** v0.9.19 taught Download to read a root-owned *source* under sudo; live testing then hit the mirror-image wall on the *destination* — copying a backup onto a USB drive whose mount root is root-owned failed with `mkdir "/run/media/<user>/<drive>/…" failed: Permission denied (13)` because rsync writes as your user. Download now probes the destination too (is the deepest already-existing ancestor writable by you?) and, when it isn't, writes under **local** sudo. Local sudo is authorized once up front (`sudo -v`, or skipped if NOPASSWD/cached) — local tickets persist between commands (same controlling terminal → `tty_tickets` matches), so the same grant covers the `mkdir` and the copy. The grant is **one-time**: if Download had to prompt for it, it drops the ticket (`sudo -k`) when the copy finishes — providing sudo for this copy without leaving it open; if sudo was already cached/NOPASSWD it's left untouched (not ours to close), restoring the exact pre-copy state. The two ends are independent: source-root-owned, dest-unwritable, both, or neither are each handled.
+- The source-priv and dest-priv paths are now **one tar pipeline** — `printf | ssh [sudo -S] tar -cf - | [sudo -n] tar -xf -` — where the reader runs under server sudo only if the source is root-owned and the writer runs under local sudo only if the destination is unwritable. The `printf` stage is always present (empty, ignored by tar, when the source isn't privileged) so `PIPESTATUS` indices stay fixed at `[0]=printf [1]=read [2]=write`. When the writer runs as root it adds `--no-same-owner --no-same-permissions`, so a server-supplied archive can't restore **setuid/setgid** bits or foreign ownership onto the laptop (a compromised server can't land a setuid-root file). The plain `rsync --progress` path is unchanged and still used whenever **neither** end needs sudo. The server sudo password still goes in over encrypted SSH stdin via a `printf` builtin (never in `ps`) and is unset right after; the local sudo password is sudo's own interactive prompt.
+
+### Fixed
+- **Privileged Download error handling no longer depends on the caller suppressing `errexit` (`setup.sh`).** The `PIPESTATUS` check sat after a bare pipeline; under `set -e` (active in `setup.sh`) a failed pipeline would abort before the check unless the caller neutralized errexit (which `run_step`'s `|| rc=$?` happens to do). The pipeline is now the left side of an `&& … || …` capture, which is exempt from `set -e`, so the failure message and clean `return 1` are reached regardless of how the function is called — with `PIPESTATUS` preserved intact in both branches.
+
 ## v0.9.19 — 2026-06-11
 
 ### Added

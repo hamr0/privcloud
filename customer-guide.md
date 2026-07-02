@@ -555,6 +555,18 @@ Enable transcoding: Administration → Video Transcoding → H.264.
 
 Run `privcloud fix-gp` on Google Takeout exports before uploading. For other sources, check if files have EXIF data.
 
+### Immich won't start right after a major update
+
+Immich tracks `:release`, so Watchtower can auto-pull a **breaking major** overnight. Immich **v3** replaced its database engine (dropped pgvecto.rs for VectorChord), which needs a one-time, ordered migration — a plain auto-update to v3 on the old database won't start.
+
+If `immich_server` is down after an update and `docker logs immich_server --tail 40` mentions the vector extension / pgvecto.rs:
+1. Back up first: `docker exec immich_postgres pg_dumpall -U postgres | gzip > ~/immich-db-backup.sql.gz`
+2. Set the database image in `~/privcloud/docker-compose.yml` to the bundled dual-extension image `ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0`.
+3. Pin `IMMICH_VERSION` in `~/privcloud/.env` to the **last working version** (e.g. `v2.7.5`), `docker compose up -d`, and let it migrate to VectorChord.
+4. Once healthy, set `IMMICH_VERSION` back to `release` and `docker compose pull && docker compose up -d`.
+
+See the [VectorChord migration guide](https://docs.immich.app/administration/postgres-standalone/) for details.
+
 ### Container keeps restarting
 
 Run `docker logs <container_name> --tail 20` to see the error. Common causes:
@@ -591,6 +603,7 @@ A couple of things a formal security audit will flag. They're **deliberate choic
 **2. Containers auto-update to the latest images (Watchtower).** The stack pins floating tags (`:latest` / Immich `:release`) and Watchtower pulls newer versions nightly at 4am. An audit calls this an unpinned-dependency / supply-chain risk.
 
 - *Why this is fine:* every service here — Immich, Navidrome, FileBrowser, AdGuard, Uptime Kuma — is widely adopted and actively maintained. A faulty release is caught and rolled back fast because so many people run them, and auto-updates mean you get security patches without lifting a finger. Pinning would trade that away. The convenience and free security patching outweigh the low risk of a bad upstream push (which you can roll back anyway).
+- *The one thing to watch — Immich majors:* because Immich tracks `:release`, a breaking major (like v3, which dropped the old pgvecto.rs database engine for VectorChord) auto-pulls too and can need a one-time, ordered database migration. If Immich ever fails to start right after a nightly update, that's the likely cause — see the VectorChord migration note in the Immich docs.
 
 ---
 

@@ -900,17 +900,20 @@ cmd_update() {
 
   ensure_docker
 
-  # Snapshot current image IDs
+  # Snapshot current image IDs. Track the tag actually in use (IMMICH_VERSION),
+  # not a hardcoded :release, so the update diff is meaningful when pinned to v3.
+  local ver
+  ver="$(env_get IMMICH_VERSION 2>/dev/null || echo release)"
   local before_server before_ml
-  before_server="$(docker images -q ghcr.io/immich-app/immich-server:release 2>/dev/null || echo "")"
-  before_ml="$(docker images -q ghcr.io/immich-app/immich-machine-learning:release 2>/dev/null || echo "")"
+  before_server="$(docker images -q ghcr.io/immich-app/immich-server:${ver} 2>/dev/null || echo "")"
+  before_ml="$(docker images -q ghcr.io/immich-app/immich-machine-learning:${ver} 2>/dev/null || echo "")"
 
   echo "Checking for updates..."
   run_compose pull --quiet 2>/dev/null
 
   local after_server after_ml
-  after_server="$(docker images -q ghcr.io/immich-app/immich-server:release 2>/dev/null || echo "")"
-  after_ml="$(docker images -q ghcr.io/immich-app/immich-machine-learning:release 2>/dev/null || echo "")"
+  after_server="$(docker images -q ghcr.io/immich-app/immich-server:${ver} 2>/dev/null || echo "")"
+  after_ml="$(docker images -q ghcr.io/immich-app/immich-machine-learning:${ver} 2>/dev/null || echo "")"
 
   if [ "$before_server" = "$after_server" ] && [ "$before_ml" = "$after_ml" ]; then
     green "Already up to date."

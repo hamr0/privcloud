@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.21 — 2026-07-02
+
+### Changed
+- **Immich database engine moved from pgvecto.rs to VectorChord for Immich v3 (`docker-compose.yml`).** Immich **v3.0.0** dropped the `pgvecto.rs` extension the stack had used since the start (`docker.io/tensorchord/pgvecto-rs:pg14-v0.2.0`); v3 requires **VectorChord**. The `database` service now uses Immich's official bundled image `ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0`, which ships **both** `vchord` and the legacy `pgvectors` extension so an existing pgvecto.rs data directory auto-migrates on first start under a v2.x server — no manual SQL. Added `shm_size: 128mb` (VectorChord benefits from more shared memory) and a commented `DB_STORAGE_TYPE: 'HDD'` hint for installs whose Postgres data lives on a spinning disk rather than SSD. `IMMICH_VERSION` stays on `:release` — Watchtower keeps auto-updating within the major line. The one caveat, now documented, is that a future breaking major (v4+) can again need an ordered migration; see the new troubleshooting entry.
+- **`privcloud update` diffs the tag actually in use, not a hardcoded `:release`.** The update command snapshotted image IDs for `ghcr.io/immich-app/immich-server:release` (and `-machine-learning`) regardless of the configured `IMMICH_VERSION`; if the stack is ever pinned to a specific version the "before/after" diff compared the wrong tag and mis-reported "already up to date." It now reads `IMMICH_VERSION` from `.env` (falling back to `release`) and diffs `:${ver}`.
+
+### Docs
+- **New PRD documenting the v3 / VectorChord database migration (`docs/prd-immich-v3-vectorchord.md`).** Records the breaking change, the two accepted-safety backups (logical `pg_dumpall` + a cold copy of the data dir), the ordered migration sequence (pin to the last v2 → swap DB image → let v2 auto-migrate to VectorChord → bump to v3), and the rollback path.
+- **Guide: new troubleshooting entry "Immich won't start right after a major update" (`customer-guide.md`).** Walks a non-technical user through the VectorChord recovery if a nightly auto-update to a breaking major leaves `immich_server` down, and updates the Watchtower "accepted tradeoff" note to name Immich majors as the one thing to watch.
+
 ## v0.9.20 — 2026-06-11
 
 ### Added

@@ -557,15 +557,15 @@ Run `privcloud fix-gp` on Google Takeout exports before uploading. For other sou
 
 ### Immich won't start right after a major update
 
-Immich tracks `:release`, so Watchtower can auto-pull a **breaking major** overnight. Immich **v3** replaced its database engine (dropped pgvecto.rs for VectorChord), which needs a one-time, ordered migration — a plain auto-update to v3 on the old database won't start.
+Immich is pinned to its major tag (`IMMICH_VERSION=v3`), so a breaking major won't arrive on its own — but when you **deliberately** bump the major (e.g. `v3` → `v4` in `~/privcloud/.env`), it can need a one-time, ordered database migration first. (v3 itself replaced the pgvecto.rs database engine with VectorChord.)
 
-If `immich_server` is down after an update and `docker logs immich_server --tail 40` mentions the vector extension / pgvecto.rs:
+If `immich_server` is down after you bump the major and `docker logs immich_server --tail 40` mentions the vector extension:
 1. Back up first: `docker exec immich_postgres pg_dumpall -U postgres | gzip > ~/immich-db-backup.sql.gz`
-2. Set the database image in `~/privcloud/docker-compose.yml` to the bundled dual-extension image `ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0`.
-3. Pin `IMMICH_VERSION` in `~/privcloud/.env` to the **last working version** (e.g. `v2.7.5`), `docker compose up -d`, and let it migrate to VectorChord.
-4. Once healthy, set `IMMICH_VERSION` back to `release` and `docker compose pull && docker compose up -d`.
+2. Set the database image in `~/privcloud/docker-compose.yml` to the new version's bundled dual-extension image (check the Immich release notes / their `docker-compose.yml`).
+3. Pin `IMMICH_VERSION` back to the **last working major** (e.g. `v3`), `docker compose up -d`, and let it migrate.
+4. Once healthy, set `IMMICH_VERSION` to the new major and `docker compose pull && docker compose up -d`.
 
-See the [VectorChord migration guide](https://docs.immich.app/administration/postgres-standalone/) for details.
+For the v2→v3 (pgvecto.rs → VectorChord) specifics, see the [Immich database docs](https://docs.immich.app/administration/postgres-standalone/).
 
 ### Container keeps restarting
 
@@ -600,10 +600,10 @@ A couple of things a formal security audit will flag. They're **deliberate choic
 - *Why this is fine:* your home LAN is the trust boundary, and **Tailscale** (`federver` → 8) gives you encrypted access both at home and away — that's the intended path in and out. The Postgres database is **not** exposed on any port (containers only). Locking the UIs to Tailscale-only would add real friction for little gain on a trusted home network, so we don't.
 - *Still do this:* set a strong password on every UI (FileBrowser's is auto-generated at deploy → `~/.privcloud/filebrowser.pass`; the rest you set on first visit), and **never port-forward these ports to the public internet** — use Tailscale for remote access.
 
-**2. Containers auto-update to the latest images (Watchtower).** The stack pins floating tags (`:latest` / Immich `:release`) and Watchtower pulls newer versions nightly at 4am. An audit calls this an unpinned-dependency / supply-chain risk.
+**2. Containers auto-update to the latest images (Watchtower).** The stack pins floating tags (`:latest`, and Immich to its major tag `:v3`) and Watchtower pulls newer versions nightly at 4am. An audit calls this an unpinned-dependency / supply-chain risk.
 
 - *Why this is fine:* every service here — Immich, Navidrome, FileBrowser, AdGuard, Uptime Kuma — is widely adopted and actively maintained. A faulty release is caught and rolled back fast because so many people run them, and auto-updates mean you get security patches without lifting a finger. Pinning would trade that away. The convenience and free security patching outweigh the low risk of a bad upstream push (which you can roll back anyway).
-- *The one thing to watch — Immich majors:* because Immich tracks `:release`, a breaking major (like v3, which dropped the old pgvecto.rs database engine for VectorChord) auto-pulls too and can need a one-time, ordered database migration. If Immich ever fails to start right after a nightly update, that's the likely cause — see the VectorChord migration note in the Immich docs.
+- *Majors stay a manual gate:* Immich is pinned to its **major** tag (`IMMICH_VERSION=v3`), so Watchtower auto-applies every `v3.x.y` patch and minor but will **not** jump to a breaking major (v4) on its own. Crossing to the next major is a deliberate one-line change (`v3` → `v4` in `~/privcloud/.env`) done after reading the release notes — because a major can need a one-time, ordered database migration (v3 itself dropped pgvecto.rs for VectorChord). Postgres and Redis are version-pinned too, so the database engine never changes underneath you by surprise.
 
 ---
 

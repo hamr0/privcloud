@@ -65,15 +65,19 @@ case, reload the logical dump into a fresh database. Assets on disk are never to
 
 ## Decisions
 
-- **Stay on `:release`, not a pinned `:v3`.** Keeps the deliberate auto-update behavior (see
-  the "accepted security tradeoffs" in the customer guide). Accepted cost: a future breaking
-  major (v4+) can again require this ordered migration and won't be caught by auto-update — a
-  troubleshooting entry now documents the recovery.
+- **Pin Immich to its major tag `v3`, not the floating `:release` (v0.9.22).** `:v3` and
+  `:release` point to the same image today, so auto-updates are unchanged — Watchtower still
+  applies every `v3.x.y` patch/minor nightly. The difference is only at the major boundary:
+  `:v3` won't auto-jump to v4 (which could again need an ordered migration), so crossing a
+  major becomes a deliberate one-line `.env` bump. Simplest "update freely, don't break"
+  posture. (v0.9.21 initially kept `:release`; reversed the next day.) Postgres/Redis stay
+  exact-pinned so the DB engine never changes on its own.
 - **Keep the existing `pg_isready` healthcheck** rather than Immich's `healthcheck: disable:
   false`; it works against the new image and is more informative.
 
 ## Outcome
 
-Live server migrated cleanly: v2.7.5 (pgvecto.rs) → VectorChord auto-migration → v3.0.0, all
-services healthy, zero errors. Backups retained under `~/immich-backups/` and
-`…/immich/postgres.bak-pre-v3-*` for a safety window.
+Live server migrated cleanly: v2.7.5 (pgvecto.rs) → VectorChord auto-migration → v3.0.x, all
+services healthy, zero errors, now pinned to `:v3` (running v3.0.1). Backups retained on the
+SSD: logical dump `~/immich-backups/immich-db-pre-v3-*.sql.gz` and the flattened cold data
+dir `~/immich-backups/postgres-pre-3.0` for a safety window.

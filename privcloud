@@ -532,7 +532,7 @@ cmd_config() {
     cat > "$ENV_FILE" << EOF
 UPLOAD_LOCATION=${upload_loc}
 DB_DATA_LOCATION=${db_loc}
-IMMICH_VERSION=release
+IMMICH_VERSION=v3
 DB_PASSWORD=${db_pass}
 DB_USERNAME=postgres
 DB_DATABASE_NAME=immich

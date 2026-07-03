@@ -9,6 +9,9 @@
 ### Docs
 - Guide + PRD updated to describe the major-tag pin (majors are a deliberate manual gate, not an overnight surprise) rather than the `:release` framing.
 
+### Ops (live server, no repo change)
+- Removed the throwaway `alpine` helper image used during the migration's root-owned file copy. Kept the **pre-3.0 rollback set** for a safety window: `tensorchord/pgvecto-rs:pg14-v0.2.0` (old DB engine), `immich-server:v2.7.5` + `immich-machine-learning:v2.7.5` (old app), and the `~/immich-backups/postgres-pre-3.0` data backup. Together these allow a full rollback to the pre-v3 state; clear them (~6 GB) once v3 has settled. Watchtower's `CLEANUP=true` only prunes images *it* replaced, so these manual-migration leftovers were removed/retained by hand.
+
 ## v0.9.21 — 2026-07-02
 
 ### Changed

@@ -28,3 +28,13 @@ Self-hosted home server and photo backup. Two tools in one repo:
 **Stack:** Docker Compose, bash scripts, Fedora XFCE 43.
 
 **Hardware:** HP ProDesk 400 G4 DM, 16GB RAM, 256GB NVMe + 1TB USB HDD.
+
+<!-- MEMORY:START -->
+@.claude/remember/MEMORY.md
+<!-- MEMORY:END -->
+
+<!-- AGENT_RULES:START -->
+Consult when building something new or adding a feature — a standards guide, not hot
+context like MEMORY.md above:
+@.claude/remember/AGENT_RULES.md
+<!-- AGENT_RULES:END -->

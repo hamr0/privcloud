@@ -2,9 +2,17 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`step_adguard` (menu `federver → 10`) failed with a Docker name conflict if AdGuard had been stopped (not removed).** The idempotency check only looked at *running* containers (`docker ps`), so a stopped-but-existing `adguard` container wasn't recognized — the step fell through to `docker run --name adguard`, which Docker refused because that name was still taken. Now checks `docker ps -a` (running **or** stopped); if it finds the container stopped, it runs `docker start adguard` instead of trying to create a new one. Audited every other Docker-backed step (`syncthing`, `immich`, `navidrome`, `filebrowser`, `uptime-kuma`) — all others use `docker compose up -d` (idempotent by design) or already checked `docker ps -a`, so this was an AdGuard-only landmine.
+
 ### Changed
 
 - **Agent/IDE scratch gitignored and de-tracked.** `.gitignore` now default-denies every dot-directory (`.*/`), re-admitting only what ships (`.github/`). Per-machine agent/IDE state (`.claude/`, `.litectx/`, `.idea/`, …) regenerates locally and only added noise and churn; any already-committed copies are removed from tracking (local files kept on disk). Repo hygiene only.
+
+### Docs
+- **AdGuard upstream DNS-over-HTTPS was silently breaking real browsing — recommendation changed to plain DNS.** `customer-guide.md`'s own "Upstream + fallback DNS" guidance told users to set the upstream to `https://.../dns-query` (DoH). On the live federver box, AdGuard's DoH client to Quad9 (`dns10.quad9.net`) was failing with `unexpected EOF` on a large fraction of fresh queries — a known Go HTTP/2 idle-connection-reuse failure mode, not a network or ISP problem (manual one-off `curl` to the same DoH endpoint succeeded instantly every time; only AdGuard's persistent-connection client hit it). Symptom in the browser: pages loaded their shell but never finished — every *new* subdomain a page needed (CDN assets, fonts, trackers) sat waiting on a query that silently died. Guide now recommends **plain DNS** (`9.9.9.9` / `149.112.112.112`, Parallel requests, fallback `1.1.1.1` / `8.8.8.8`) instead of DoH — stateless UDP has no persistent connection to go stale, so the failure mode doesn't exist. Verified fix: 6 fresh cross-domain lookups post-change, all 23–42 ms, zero errors in `docker logs adguard` afterward. **If you copied the old DoH values from an earlier version of this guide, change them** — see updated "Upstream + fallback DNS" section.
+- **AdGuard "Performance (if browsing feels slow)" section (`customer-guide.md`).** Documents the real cause of laggy browsing after pointing devices at AdGuard: the default `Rate limit = 20` (queries/sec per client) silently drops the 30–50+ DNS lookups a modern page fires on first load, so the browser stalls on timeouts. Added under the existing "Upstream + fallback DNS" section with the three knobs to change in **Settings → DNS settings** — Rate limit `20 → 0`, Optimistic caching `on`, Minimum TTL `0 → 60` — and the measured before/after. Diagnosed on the live federver box: individual lookups were already fast (15–32 ms uncached, <1 ms cached), but a 50-parallel-query burst answered only **20/50** until the rate limit was lifted, then **50/50** (~2.15 s → ~0.23 s). Settings applied live via the AdGuard UI (persisted to `/opt/adguard/conf/AdGuardHome.yaml`); no repo/service change.
 
 ## v0.9.22 — 2026-07-03
 

@@ -3357,9 +3357,16 @@ step_adguard() {
         echo ""
     fi
 
-    # ── Idempotent: already running? Open management submenu.
-    if [[ "$DRY_RUN" != "1" ]] && sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^adguard$'; then
-        ok "AdGuard is already running."
+    # ── Idempotent: container already exists (running or stopped)?
+    # Open management submenu instead of re-running `docker run`, which
+    # would collide with the existing container name.
+    if [[ "$DRY_RUN" != "1" ]] && sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^adguard$'; then
+        if sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^adguard$'; then
+            ok "AdGuard is already running."
+        else
+            warn "AdGuard container exists but is stopped. Starting it..."
+            sudo docker start adguard > /dev/null && ok "Started." || { fail "Could not start AdGuard."; return 1; }
+        fi
         echo -e "  Dashboard: ${BLUE}http://$IP${NC}"
         echo ""
         echo -e "  ${BOLD}1)${NC} Show Tailscale DNS guide"

@@ -945,28 +945,47 @@ Every tailnet device now uses AdGuard automatically. Roaming too — works from 
 - **Some sites look broken** — a filter list may be over-blocking. Click the blocked entry in Query Log → **Unblock** to whitelist that domain.
 - **Container is restarting** — something else is holding port 53. Run `sudo ss -tulpn | grep ':53 '` to find it. Usually systemd-resolved; the install step should have disabled it.
 - **Still seeing ads on Reddit/YouTube** — expected, these are first-party ads. DNS can't block them. Use uBlock / ReVanced / SmartTube.
+- **Pages load their shell but pieces never finish (images/scripts stuck "loading" forever)** — this is **not** a network, Tailscale, or ISP problem; it's AdGuard's upstream DNS silently failing on individual queries. Check `docker logs adguard | grep EOF` for `exchange failed upstream=... err="unexpected EOF"`. If you see it: your **upstream is set to DNS-over-HTTPS (`https://.../dns-query`)** — DoH's persistent connections are known to break this way against some resolvers (confirmed against Quad9's `dns10.quad9.net` on this project). Fix: switch to **plain DNS**, see below. Don't chase this as a Tailscale/router issue first — confirm the `unexpected EOF` pattern in the AdGuard logs before looking anywhere else.
 
 ### Upstream + fallback DNS (resilience)
 
-After install, set AdGuard's upstream and fallback DNS so traffic still resolves if the primary upstream fails. Open [http://federver](http://federver) → **Settings → DNS settings** and paste these:
+**Use plain DNS, not DNS-over-HTTPS.** An earlier version of this guide recommended DoH upstreams (`https://.../dns-query`) for encryption — in practice, AdGuard's DoH client hit persistent-connection failures (`unexpected EOF`) against Quad9's DoH endpoint that silently killed individual lookups, which showed up as half-loaded pages, not an obvious DNS error. A one-off `curl` to the same DoH endpoint always worked instantly — only AdGuard's long-lived HTTP/2 client hit the bug. Plain DNS (stateless UDP) has no persistent connection to go stale, so this failure mode doesn't exist. You lose upstream-query encryption from your ISP; ad-blocking and everything else is unaffected.
+
+Open [http://federver](http://federver) → **Settings → DNS settings** and paste these:
 
 | Field | Value |
 |---|---|
-| Upstream DNS servers | `https://cloudflare-dns.com/dns-query` <br> `https://dns.quad9.net/dns-query` |
-| Bootstrap DNS servers | `1.1.1.1` <br> `9.9.9.9` |
-| Fallback DNS servers | `8.8.8.8` <br> `8.8.4.4` |
+| Upstream DNS servers | `9.9.9.9` <br> `149.112.112.112` |
+| Fallback DNS servers | `1.1.1.1` <br> `8.8.8.8` |
 | Load balancing | **Parallel requests** |
 
-Click **Apply** at the bottom. Three independent providers (Cloudflare, Quad9, Google) over encrypted DoH — ISP can't snoop DNS, and no single provider failing takes you offline. Same guide is available anytime in `federver → 12 → 2`.
+Click **Apply** at the bottom. Quad9 plain-DNS anycast pair as upstream (malware filtering, same provider as before — just not DoH), a different company (Cloudflare/Google) as fallback so a Quad9-side outage doesn't take you offline. Same guide is available anytime in `federver → 12 → 2`.
 
 **What each field does and why these values:**
 
 | Field | Purpose | Why these values |
 |---|---|---|
-| Upstream | Where DNS queries actually go | DoH = encrypted, privacy from ISP. Cloudflare = fast. Quad9 = malware filter. |
-| Bootstrap | How to reach the upstream first time (chicken-and-egg: can't resolve `cloudflare-dns.com` by name before DNS works) | Plain IPs of Cloudflare + Quad9, matches upstream providers |
-| Fallback | Used if both upstreams are unreachable | Different company (Google) — a single-provider outage doesn't kill DNS |
+| Upstream | Where DNS queries actually go | Plain DNS to Quad9 — malware filter, no DoH connection-reuse bug |
+| Fallback | Used if both upstreams are unreachable | Different company (Cloudflare + Google) — a single-provider outage doesn't kill DNS |
 | Load balancing (Parallel requests) | Queries both upstreams at the same time, uses whichever answers first | Lowest latency + automatic failover |
+
+**If you already have DoH upstreams configured from an earlier install, change them** — that config is what caused the "unexpected EOF" partial-page-load bug above.
+
+### Performance (if browsing feels slow)
+
+If pages feel laggy after pointing devices at AdGuard, it's almost always the **rate limit**, not slow DNS. AdGuard ships with `Rate limit = 20` (queries/sec per client) to protect *public* resolvers from abuse. A single modern web page fires 30–50+ DNS lookups on first load (CDNs, fonts, trackers, embeds); past the 20th, AdGuard **silently drops** them, so the browser waits on timeouts and retries — that's the stall. On a trusted home LAN this limit only hurts you.
+
+Open [http://federver](http://federver) → **Settings → DNS settings** and set:
+
+| Field | Default | Set to | Why |
+|---|---|---|---|
+| Rate limit | `20` | **`0`** | Disables per-client throttling. The fix — safe on a private LAN. |
+| Optimistic caching | off | **on** | Answers from cache instantly even when an entry just expired, then refreshes it in the background. |
+| Minimum TTL (`cache_ttl_min`) | `0` | **`60`** | Keeps short-TTL domains cached longer → more instant (<1 ms) hits. |
+
+Click **Apply**. Verified impact (`old.reddit.com` etc., 50 parallel uncached lookups): **20/50 answered → 50/50**, and burst time **~2.15 s → ~0.23 s**. Individual lookups were already fast (15–32 ms uncached, <1 ms cached); the rate limit was the whole problem.
+
+> These are UI changes applied live — no container restart. AdGuard persists them to `/opt/adguard/conf/AdGuardHome.yaml`.
 
 ---
 

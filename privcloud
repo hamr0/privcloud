@@ -14,7 +14,7 @@ _pc_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_S
 # `|| true`: a missing/unreadable package.json must fall through to the literal
 # below, not abort the script under `set -e` (sed exits non-zero on a bad file).
 VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$(dirname "$_pc_self")/package.json" 2>/dev/null || true)"
-VERSION="${VERSION:-0.9.5}"
+VERSION="${VERSION:-unknown}"
 unset _pc_self
 # Original argv kept as an ARRAY (not a lossy "$*" join) so the sg-docker
 # re-exec below can re-quote each argument with %q — preserving args that
@@ -25,7 +25,7 @@ ORIG_ARGV=("$@")
 # ---------------------------------------------------------------------------
 
 if [ "${PRIVCLOUD_SG_DONE:-}" != "1" ]; then
-  if ! docker info &>/dev/null 2>&1; then
+  if ! docker info &>/dev/null; then
     if id -nG "$USER" 2>/dev/null | grep -qw docker; then
       export PRIVCLOUD_SG_DONE=1
       exec sg docker "$(printf '%q ' "$0" "${ORIG_ARGV[@]}")"
@@ -347,6 +347,11 @@ cmd_start() {
 }
 
 cmd_stop() {
+  if [ ! -f "$ENV_FILE" ]; then
+    red "Not set up yet. Run: privcloud install"
+    exit 1
+  fi
+
   ensure_docker
 
   bold "privcloud stop"
@@ -895,6 +900,11 @@ cmd_backup_once() {
 }
 
 cmd_update() {
+  if [ ! -f "$ENV_FILE" ]; then
+    red "Not set up yet. Run: privcloud install"
+    exit 1
+  fi
+
   bold "privcloud update"
   echo ""
 

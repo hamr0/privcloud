@@ -2,9 +2,15 @@
 
 ## [Unreleased]
 
+## v0.9.23 — 2026-08-24
+
 ### Fixed
 
 - **`step_adguard` (menu `federver → 10`) failed with a Docker name conflict if AdGuard had been stopped (not removed).** The idempotency check only looked at *running* containers (`docker ps`), so a stopped-but-existing `adguard` container wasn't recognized — the step fell through to `docker run --name adguard`, which Docker refused because that name was still taken. Now checks `docker ps -a` (running **or** stopped); if it finds the container stopped, it runs `docker start adguard` instead of trying to create a new one. Audited every other Docker-backed step (`syncthing`, `immich`, `navidrome`, `filebrowser`, `uptime-kuma`) — all others use `docker compose up -d` (idempotent by design) or already checked `docker ps -a`, so this was an AdGuard-only landmine.
+- **`_adguard_dns_upstream_guide()` (`federver → 10 → 2`) still printed the broken DoH config after the fix above shipped.** Caught by code review: the in-script "show upstream DNS guide" menu option was never updated alongside `customer-guide.md`, so it walked users through re-entering the exact `https://.../dns-query` values that cause the `unexpected EOF` bug below. Now matches the guide: plain DNS to Quad9, Cloudflare+Google fallback.
+- **`privcloud stop` and `privcloud update` skipped the "not installed" guard `privcloud start` already has.** Running either before `privcloud install`/`config` surfaced a raw `docker compose` env-file error (`couldn't find env file: ...`) instead of a clear message. Both now check for `.env` first and print `Not set up yet. Run: privcloud install`, matching `cmd_start`.
+- **`VERSION` fallback in `privcloud` was a hardcoded literal (`0.9.5`), 17 releases stale.** If `package.json` is ever unreadable, the banner would silently print a specific-looking but wrong version instead of signaling the read failed. Falls back to `unknown` now.
+- Redundant stderr redirect (`&>/dev/null 2>&1`) in `privcloud`'s Docker-group re-exec check cleaned up to the single-redirect idiom used elsewhere in the file.
 
 ### Changed
 

@@ -58,7 +58,7 @@ that folder out of it.
 - **"Random" reshuffles often, it's not a fixed daily set.** A `"sort": "random"` playlist
   gets a new order on (re)load, not "the same list all of Tuesday, new one Wednesday."
   If you want a stable-then-rotating daily playlist, that's Tier 3 in
-  `docs/prd-music-recommendations.md` (a small cron script).
+  `docs/product/prd-music-recommendations.md` (a small cron script).
 - **Field names can vary slightly by Navidrome version.** If a playlist shows up empty,
   check the Navidrome log for a parse error and confirm the field name against the docs:
   https://www.navidrome.org/docs/usage/smartplaylists/

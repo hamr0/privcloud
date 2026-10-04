@@ -1,12 +1,13 @@
 # Changelog
 
-## [Unreleased]
+## v0.10.0 — 2026-10-04
 
 ### Fixed
 
 - **Tailscale showed "connected" after the node key had expired.** When a node key expires, `tailscaled` keeps running and `tailscale status` / `tailscale ip -4` still succeed, so every Tailscale check in `setup.sh` (`step_tailscale`, `step_status`, the laptop/server service lists and the unified Start/Stop/Restart picker) kept reporting a healthy tunnel while the server was actually logged out of the tailnet. The real-world symptom: phones could no longer reach Immich or Navidrome via `federver`, and AdGuard DNS over Tailscale stopped answering, with nothing in the menu hinting why. All checks now read `BackendState` from `tailscale status --json` through one helper (`_ts_state`, no `jq` dependency, shipped to the server with `declare -f` so laptop and server are judged identically): `Running` means up and logged in, `NeedsLogin` is shown in red as **logged out** with the fix (`sudo tailscale up`), and the "Service URLs (remote via Tailscale)" block in Status is only printed when the server is actually `Running`. The unified picker now reports `logged out` instead of `disconnected` for that case.
 - **The remaining `tailscale ip -4` "is it connected?" checks reported a stale IP as a live tunnel on an expired-key node.** The first fix moved the menus onto `BackendState`, but five call sites still treated "`tailscale ip -4` printed something" as connected, and an expired node keeps printing its last IP. A new tiny predicate, `_ts_running` (true only when the `_ts_state` record is `Running`; no argument checks the local node), now gates all of them: the post-install check after `sudo tailscale up` (no more "Tailscale connected! IP: 100.x" when the login URL was closed without approving), the server-side "Service URLs (remote via Tailscale)" block, the AdGuard pre-check, and both Save-to-pass uses. AdGuard on a server that is not `Running` now shows the existing "Tailscale is not installed (or not connected)." warning together with the key state, and skips the Tailscale DNS guide instead of walking you through it on a dead tunnel. Save-to-pass ships `_ts_state` / `_ts_running` to the server with `declare -f`, and when the server is not `Running` it skips `privcloud/server/tailscale_ip` and the Tailscale URLs in the services note, printing a warning rather than storing a stale address.
 - **A logged-out or fresh node claimed "Key: never expires".** `_ts_state` treated a missing `KeyExpiry` as "expiry disabled" even when the `Self` object was absent (`tailscale logout`, a fresh install, a stopped node reports `"Self": null`), so the menu showed red "logged out" beside a green "never expires" and suppressed the expiry hint. `disabled` is now emitted only when `Self` is present and has no `KeyExpiry`; with no `Self` the key reads "unknown".
+- **Dry-run mode misreported a missing Tailscale binary as installed.** `_ts_state` used `command -v tailscale`, which finds the `DRY_RUN` wrapper function instead of the real binary, so `--dry-run` on a machine without Tailscale believed it was present. It now uses `type -P tailscale` (binaries on `PATH` only). The three ad-hoc `cut -d' ' -f4` parses of the state record were folded into one `_ts_ip` helper; no behaviour change outside dry-run.
 
 ### Changed
 
@@ -17,6 +18,10 @@
 
 - **Key-expiry line in Tailscale views.** `federver -> Tailscale` shows a `Key:` row for the laptop and server, and Status shows `TS key:`, with the expiry date and days remaining. It turns yellow under 30 days, red once expired, and reads "never expires" if expiry is disabled for the machine.
 - **Server hint to disable key expiry.** The server section of the Tailscale menu, and the main Status page (`s`) under the `TS key:` line, print where to switch it off (login.tailscale.com/admin/machines -> this machine -> Disable key expiry), since a headless server silently dropping off the tailnet is the failure this change exists to surface.
+
+### Docs
+
+- **`customer-guide.md` covers Tailscale login state and key expiry.** New "Logged out and key expiry" section explains that "connected" means `BackendState` is `Running`, what the red **logged out** wording means, the `Key:` / `TS key:` rows and their colour thresholds, and where to disable key expiry for a headless server. The unified status description, the AdGuard Tailscale pre-check and DNS-guide wording, and the Save-to-pass `tailscale_ip` note now reflect that a logged-out node is treated as not connected.
 
 ## v0.9.23 — 2026-08-24
 

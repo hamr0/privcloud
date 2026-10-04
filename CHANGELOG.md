@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tailscale showed "connected" after the node key had expired.** When a node key expires, `tailscaled` keeps running and `tailscale status` / `tailscale ip -4` still succeed, so every Tailscale check in `setup.sh` (`step_tailscale`, `step_status`, the laptop/server service lists and the unified Start/Stop/Restart picker) kept reporting a healthy tunnel while the server was actually logged out of the tailnet. The real-world symptom: phones could no longer reach Immich or Navidrome via `federver`, and AdGuard DNS over Tailscale stopped answering, with nothing in the menu hinting why. All checks now read `BackendState` from `tailscale status --json` through one helper (`_ts_state`, no `jq` dependency, shipped to the server with `declare -f` so laptop and server are judged identically): `Running` means up and logged in, `NeedsLogin` is shown in red as **logged out** with the fix (`sudo tailscale up`), and the "Service URLs (remote via Tailscale)" block in Status is only printed when the server is actually `Running`. The unified picker now reports `logged out` instead of `disconnected` for that case.
+
+### Added
+
+- **Key-expiry line in Tailscale views.** `federver -> Tailscale` shows a `Key:` row for the laptop and server, and Status shows `TS key:`, with the expiry date and days remaining. It turns yellow under 30 days, red once expired, and reads "never expires" if expiry is disabled for the machine.
+- **Server hint to disable key expiry.** The server section of the Tailscale menu, and the main Status page (`s`) under the `TS key:` line, print where to switch it off (login.tailscale.com/admin/machines -> this machine -> Disable key expiry), since a headless server silently dropping off the tailnet is the failure this change exists to surface.
+
 ## v0.9.23 — 2026-08-24
 
 ### Fixed

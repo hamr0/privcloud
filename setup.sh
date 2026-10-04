@@ -553,22 +553,79 @@ step_firewall() {
     esac
 }
 
+# One-line Tailscale record: "<BackendState> <key-expiry date|disabled|-> <days left|-> <ip|->".
+# BackendState is the only reliable "up AND logged in" signal: after the node
+# key expires, tailscaled stays active and `tailscale status` / `tailscale ip`
+# can still succeed, but the state is NeedsLogin. Self-contained (no jq) so it
+# can be shipped to the server with `declare -f _ts_state`.
+_ts_state() {
+    command -v tailscale &>/dev/null || { echo "NotInstalled - - -"; return; }
+    local js state exp days="-" ip
+    js=$(tailscale status --self --peers=false --json 2>/dev/null) || true
+    state=$(sed -n 's/.*"BackendState": *"\([^"]*\)".*/\1/p' <<<"$js" | head -1)
+    exp=$(sed -n 's/.*"KeyExpiry": *"\([^"]*\)".*/\1/p' <<<"$js" | head -1)
+    if [[ -n "$exp" ]]; then
+        days=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
+        exp=${exp%%T*}
+    else
+        exp=disabled
+    fi
+    ip=$(tailscale ip -4 2>/dev/null | head -1)
+    echo "${state:-Stopped} $exp $days ${ip:--}"
+}
+
+# Colored one-word state for a _ts_state record.
+_ts_word() {
+    case "${1%% *}" in
+        Running)      echo "${GREEN}connected${NC}" ;;
+        NeedsLogin)   echo "${RED}logged out${NC} ${DIM}(key expired - run: sudo tailscale up)${NC}" ;;
+        NotInstalled) echo "${DIM}not installed${NC}" ;;
+        *)            echo "${RED}disconnected${NC} ${DIM}(${1%% *})${NC}" ;;
+    esac
+}
+
+# Key-expiry label for a _ts_state record. Expiry < 30 days goes yellow.
+_ts_key() {
+    local state exp days ip
+    read -r state exp days ip <<<"$1"
+    if [[ "$exp" == disabled ]]; then echo "${GREEN}never expires${NC}"
+    elif [[ "$days" == - ]];   then echo "${DIM}unknown${NC}"
+    elif (( days <= 0 ));      then echo "${RED}expired $exp${NC}"
+    elif (( days < 30 ));      then echo "${YELLOW}expires $exp (${days} days)${NC}"
+    else echo "expires $exp ${DIM}(${days} days)${NC}"
+    fi
+}
+
+# Hint to turn off key expiry for a _ts_state record. Silent when expiry is
+# already disabled, Tailscale is not installed, or there is no record.
+_ts_expiry_hint() {
+    local state exp rest
+    read -r state exp rest <<<"$1"
+    [[ -n "$state" && "$state" != NotInstalled && "$exp" != disabled ]] || return 0
+    echo -e "    ${DIM}Turn off expiry: login.tailscale.com/admin/machines -> this machine -> ... -> Disable key expiry${NC}"
+}
+
+# State / IP / Key lines for one side. $2=server adds the hint to turn off
+# key expiry: a server should never silently drop off the tailnet.
+_ts_print_state() {
+    local state exp days ip
+    read -r state exp days ip <<<"$1"
+    echo -e "    State:  $(_ts_word "$1")"
+    echo -e "    IP:     ${BOLD}$ip${NC}"
+    echo -e "    Key:    $(_ts_key "$1")"
+    [[ "$2" == server ]] && _ts_expiry_hint "$1"
+    return 0
+}
+
 _ts_status() {
     echo ""
     if ! command -v tailscale &>/dev/null; then
         fail "Tailscale not installed."
         return 1
     fi
-    local ts_ip
-    ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
     echo -e "  ${BOLD}Tailscale status${NC}"
-    if [[ -n "$ts_ip" ]]; then
-        echo -e "    State:  ${GREEN}connected${NC}"
-        echo -e "    IP:     ${BOLD}$ts_ip${NC}"
-        echo -e "    Host:   ${BOLD}$(hostname)${NC} ${DIM}(MagicDNS)${NC}"
-    else
-        echo -e "    State:  ${RED}not connected${NC}"
-    fi
+    _ts_print_state "$(_ts_state)" server
+    echo -e "    Host:   ${BOLD}$(hostname)${NC} ${DIM}(MagicDNS)${NC}"
     echo ""
     tailscale status 2>/dev/null | sed 's/^/    /' || true
 }
@@ -680,7 +737,7 @@ _ts_install_laptop() {
     fi
 
     # Bring the laptop up on the tailnet if it isn't already
-    if tailscale ip -4 &>/dev/null; then
+    if [[ "$(_ts_state)" == Running* ]]; then
         local laptop_ts_ip
         laptop_ts_ip=$(tailscale ip -4)
         ok "Laptop already on the tailnet: $laptop_ts_ip"
@@ -787,23 +844,16 @@ step_tailscale() {
 
     # Both installed — show status + unified management submenu
     echo -e "  ${BOLD}── Laptop ──${NC}"
-    local laptop_ip
-    laptop_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
-    echo -e "    State:  $(if tailscale status &>/dev/null; then echo "${GREEN}connected${NC}"; else echo "${RED}disconnected${NC}"; fi)"
-    echo -e "    IP:     $laptop_ip"
+    _ts_print_state "$(_ts_state)"
     echo ""
 
     echo -e "  ${BOLD}── Server ──${NC}"
-    ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_TS_STATUS'
-        ts_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
-        if tailscale status &>/dev/null; then
-            echo "    State:  connected"
-        else
-            echo "    State:  disconnected"
-        fi
-        echo "    IP:     $ts_ip"
-        echo "    Host:   $(hostname) (MagicDNS)"
-REMOTE_TS_STATUS
+    local srv_out srv_ts srv_host
+    srv_out=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_state); _ts_state; hostname" 2>/dev/null) \
+        || srv_out="Unreachable - - -"
+    srv_ts=$(head -1 <<<"$srv_out"); srv_host=$(sed -n 2p <<<"$srv_out")
+    _ts_print_state "$srv_ts" server
+    [[ -n "$srv_host" ]] && echo -e "    Host:   ${BOLD}$srv_host${NC} ${DIM}(MagicDNS)${NC}"
 
     echo ""
     echo -e "  ${BOLD}1)${NC} Refresh status"
@@ -1700,12 +1750,10 @@ _services_logs() {
 # the laptop, used by step_status and step_services_wrapper.
 _show_laptop_services() {
     echo -e "  ${BOLD}Laptop services${NC}"
-    local ts_state="${RED}stopped${NC}" st_state="${RED}stopped${NC}"
-    if command -v tailscale &>/dev/null && tailscale status &>/dev/null; then
-        local ip
-        ip=$(tailscale ip -4 2>/dev/null || echo "")
-        ts_state="${GREEN}connected${NC}  ${DIM}($ip)${NC}"
-    fi
+    local st_state="${RED}stopped${NC}" ts_rec ts_state
+    ts_rec=$(_ts_state)
+    ts_state=$(_ts_word "$ts_rec")
+    [[ "$ts_rec" == Running* ]] && ts_state+="  ${DIM}($(cut -d' ' -f4 <<<"$ts_rec"))${NC}"
     if systemctl --user is-active syncthing &>/dev/null; then
         st_state="${GREEN}running${NC}  ${DIM}(http://localhost:8384)${NC}"
     elif ! command -v syncthing &>/dev/null; then
@@ -1723,12 +1771,12 @@ _unified_service_picker() {
     local action="$1"
 
     # ── 1. Collect laptop service states ──
-    local ts_laptop="disconnected" st_laptop="stopped"
-    if command -v tailscale &>/dev/null && tailscale status &>/dev/null; then
-        local ts_ip
-        ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
-        ts_laptop="connected${ts_ip:+ ($ts_ip)}"
-    fi
+    local ts_laptop="disconnected" st_laptop="stopped" ts_rec
+    ts_rec=$(_ts_state)
+    case "$ts_rec" in
+        Running*)    ts_laptop="connected ($(cut -d' ' -f4 <<<"$ts_rec"))" ;;
+        NeedsLogin*) ts_laptop="logged out" ;;
+    esac
     if systemctl --user is-active syncthing &>/dev/null; then
         st_laptop="running"
     elif ! command -v syncthing &>/dev/null; then
@@ -1746,9 +1794,11 @@ _unified_service_picker() {
     # ── 3. Extract Tailscale server state ──
     local ts_server="disconnected"
     local ts_server_raw
-    ts_server_raw=$(ssh "$SERVER_USER@$SERVER_IP" \
-        'tailscale status &>/dev/null && echo "connected" || echo "disconnected"' 2>/dev/null) || true
-    [[ -n "$ts_server_raw" ]] && ts_server="$ts_server_raw"
+    ts_server_raw=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_state); _ts_state" 2>/dev/null) || true
+    case "$ts_server_raw" in
+        Running*)    ts_server="connected" ;;
+        NeedsLogin*) ts_server="logged out" ;;
+    esac
 
     # ── 4. Extract Syncthing server state from docker data ──
     local st_server="not created"
@@ -5622,10 +5672,10 @@ step_status() {
 
     if [[ "$remote" == "true" ]]; then
         local server_info
-        server_info=$(ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_STATUS'
+        server_info=$( { declare -f _ts_state; cat <<'REMOTE_STATUS'
             echo "@@HOSTNAME@@$(hostname)"
             echo "@@IP@@$(hostname -I | awk '{print $1}')"
-            echo "@@TS_IP@@$(tailscale ip -4 2>/dev/null || echo 'not connected')"
+            echo "@@TS_STATE@@$(_ts_state)"
             echo "@@UPTIME@@$(uptime -p 2>/dev/null | sed 's/^up //')"
             echo "@@LOAD@@$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null)"
             echo "@@FILES@@$(grep FILES_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
@@ -5646,11 +5696,11 @@ step_status() {
             df -h 2>/dev/null | awk 'NR>1 && $1 ~ /^\/dev\// && $1 !~ /loop/ && !seen[$1]++'
             echo "@@DISK_END@@"
 REMOTE_STATUS
-        ) || { fail "Cannot reach server at $SERVER_IP."; return 1; }
+        } | ssh "$SERVER_USER@$SERVER_IP" bash -s ) || { fail "Cannot reach server at $SERVER_IP."; return 1; }
 
         HOSTNAME=$(echo "$server_info" | grep '@@HOSTNAME@@' | sed 's/@@HOSTNAME@@//')
         IP=$(echo "$server_info" | grep '@@IP@@' | sed 's/@@IP@@//')
-        TS_IP=$(echo "$server_info" | grep '@@TS_IP@@' | sed 's/@@TS_IP@@//')
+        TS_STATE=$(echo "$server_info" | grep '@@TS_STATE@@' | sed 's/@@TS_STATE@@//')
         UPTIME=$(echo "$server_info" | grep '@@UPTIME@@' | sed 's/@@UPTIME@@//')
         LOAD=$(echo "$server_info" | grep '@@LOAD@@' | sed 's/@@LOAD@@//')
         FILES=$(echo "$server_info" | grep '@@FILES@@' | sed 's/@@FILES@@//')
@@ -5665,7 +5715,7 @@ REMOTE_STATUS
     else
         HOSTNAME=$(hostname)
         IP=$(hostname -I | awk '{print $1}')
-        TS_IP=$(tailscale ip -4 2>/dev/null || echo "not connected")
+        TS_STATE=$(_ts_state)
         UPTIME=$(uptime -p 2>/dev/null | sed 's/^up //')
         LOAD=$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null)
         local SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -5683,7 +5733,11 @@ REMOTE_STATUS
     echo -e "  ${BOLD}Server${NC}"
     echo -e "    Hostname:   $HOSTNAME"
     echo -e "    Local IP:   $IP"
-    echo -e "    Tailscale:  $TS_IP"
+    local TS_IP
+    TS_IP=$(cut -d' ' -f4 <<<"$TS_STATE"); [[ "$TS_IP" == - ]] && TS_IP=""
+    echo -e "    Tailscale:  $(_ts_word "$TS_STATE")${TS_IP:+  ${DIM}($TS_IP)${NC}}"
+    echo -e "    TS key:     $(_ts_key "$TS_STATE")"
+    _ts_expiry_hint "$TS_STATE"
     [[ -n "$UPTIME" ]] && echo -e "    Uptime:     $UPTIME"
     [[ -n "$LOAD"   ]] && echo -e "    Load avg:   $LOAD  ${DIM}(1m, 5m, 15m)${NC}"
     echo ""
@@ -5782,7 +5836,7 @@ REMOTE_STATUS
     echo "$CONTAINERS" | grep -q '^adguard|' && echo -e "    AdGuard:      ${BLUE}http://$IP${NC}"
     echo "$CONTAINERS" | grep -q '^syncthing|' && echo -e "    Syncthing:    ${BLUE}http://$IP:8384${NC}"
 
-    if [[ "$TS_IP" != "not connected" ]]; then
+    if [[ "$TS_STATE" == Running* ]]; then
         echo ""
         echo -e "  ${BOLD}Service URLs (remote via Tailscale)${NC}"
         echo -e "    Immich:       ${BLUE}http://federver:2283${NC}"

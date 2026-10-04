@@ -559,7 +559,7 @@ step_firewall() {
 # can still succeed, but the state is NeedsLogin. Self-contained (no jq) so it
 # can be shipped to the server with `declare -f _ts_state`.
 _ts_state() {
-    command -v tailscale &>/dev/null || { echo "NotInstalled - - -"; return; }
+    type -P tailscale &>/dev/null || { echo "NotInstalled - - -"; return; }
     local js state exp days="-" ip
     js=$(tailscale status --self --peers=false --json 2>/dev/null) || true
     state=$(sed -n 's/.*"BackendState": *"\([^"]*\)".*/\1/p' <<<"$js" | head -1)
@@ -573,6 +573,9 @@ _ts_state() {
     ip=$(tailscale ip -4 2>/dev/null | head -1)
     echo "${state:-Stopped} $exp $days ${ip:--}"
 }
+
+# IP field of a _ts_state record ("-" when none).
+_ts_ip() { cut -d' ' -f4 <<<"$1"; }
 
 # Colored one-word state for a _ts_state record.
 _ts_word() {
@@ -1753,7 +1756,7 @@ _show_laptop_services() {
     local st_state="${RED}stopped${NC}" ts_rec ts_state
     ts_rec=$(_ts_state)
     ts_state=$(_ts_word "$ts_rec")
-    [[ "$ts_rec" == Running* ]] && ts_state+="  ${DIM}($(cut -d' ' -f4 <<<"$ts_rec"))${NC}"
+    [[ "$ts_rec" == Running* ]] && ts_state+="  ${DIM}($(_ts_ip "$ts_rec"))${NC}"
     if systemctl --user is-active syncthing &>/dev/null; then
         st_state="${GREEN}running${NC}  ${DIM}(http://localhost:8384)${NC}"
     elif ! command -v syncthing &>/dev/null; then
@@ -1774,7 +1777,7 @@ _unified_service_picker() {
     local ts_laptop="disconnected" st_laptop="stopped" ts_rec
     ts_rec=$(_ts_state)
     case "$ts_rec" in
-        Running*)    ts_laptop="connected ($(cut -d' ' -f4 <<<"$ts_rec"))" ;;
+        Running*)    ts_laptop="connected ($(_ts_ip "$ts_rec"))" ;;
         NeedsLogin*) ts_laptop="logged out" ;;
     esac
     if systemctl --user is-active syncthing &>/dev/null; then
@@ -5734,7 +5737,7 @@ REMOTE_STATUS
     echo -e "    Hostname:   $HOSTNAME"
     echo -e "    Local IP:   $IP"
     local TS_IP
-    TS_IP=$(cut -d' ' -f4 <<<"$TS_STATE"); [[ "$TS_IP" == - ]] && TS_IP=""
+    TS_IP=$(_ts_ip "$TS_STATE"); [[ "$TS_IP" == - ]] && TS_IP=""
     echo -e "    Tailscale:  $(_ts_word "$TS_STATE")${TS_IP:+  ${DIM}($TS_IP)${NC}}"
     echo -e "    TS key:     $(_ts_key "$TS_STATE")"
     _ts_expiry_hint "$TS_STATE"

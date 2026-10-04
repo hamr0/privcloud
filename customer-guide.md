@@ -803,7 +803,7 @@ Tailscale only routes traffic to your server — it does NOT route all their int
 
 ### Submenu (`federver` → 8 after install)
 
-Re-running option 8 from the laptop once both sides are installed shows a unified status (laptop IP + server IP/hostname) and a both-sides management submenu:
+Re-running option 8 from the laptop once both sides are installed shows a unified status (for the laptop and the server: State, IP, and Key expiry; plus the server hostname) and a both-sides management submenu:
 
 1. **Refresh status** — both sides
 2. **Connect both** — `tailscale up` on laptop + server
@@ -813,6 +813,12 @@ Re-running option 8 from the laptop once both sides are installed shows a unifie
 6. **Uninstall both** — removes Tailscale from laptop + server. Typed-name confirmation. Phones untouched.
 
 When run directly on the server, option 8 opens a server-only submenu instead.
+
+### Logged out and key expiry
+
+"Connected" means Tailscale's `BackendState` is `Running` — up **and** logged in. When a node key expires, `tailscaled` keeps running and `tailscale ip -4` still prints the last address, but the node is `NeedsLogin`: phones can no longer reach `federver` and AdGuard DNS over Tailscale stops answering. `federver` therefore shows that case in red as **logged out (run: sudo tailscale up)** (adding "key expired" when the key's days-left is zero or below), prints `IP: -` instead of the stale address, and Save to pass skips the Tailscale IP and URLs rather than storing it.
+
+The `federver` → 8 views show a `Key:` row (expiry date and days left) for the laptop and the server, and the main Status page (`s`) shows `TS key:` — yellow under 30 days, red once expired, "never expires" if expiry is disabled for the machine. For the server, both views also print where to switch expiry off: login.tailscale.com/admin/machines → the machine → ⋯ → **Disable key expiry**, so a headless server doesn't silently drop off the tailnet.
 
 ---
 
@@ -909,7 +915,7 @@ Network-wide DNS ad and tracker blocker. Runs in Docker on the server, catches a
 
 The step flow:
 
-1. **Tailscale pre-check.** If Tailscale isn't installed, the step stops and offers to send you to step 8 first (recommended) or continue anyway for manual per-device DNS.
+1. **Tailscale pre-check.** If Tailscale isn't installed, or is installed but not logged in (`NeedsLogin`, e.g. an expired node key), the step stops and offers to send you to step 8 first (recommended) or continue anyway for manual per-device DNS.
 2. **systemd-resolved cleanup.** Fedora binds port 53 to `systemd-resolved`'s stub listener by default. The step explains exactly what it's going to change (`DNSStubListener=no` drop-in, `resolv.conf` symlink, `systemd-resolved` restart) and asks `Disable the stub listener and continue? [Y/n]` before touching anything. Local name resolution keeps working afterward — just not on port 53.
 3. **Firewall.** Opens 53/udp, 53/tcp, 80/tcp.
 4. **Minimal config pre-seed.** Writes a three-line `/opt/adguard/conf/AdGuardHome.yaml` that sets `http.address: 0.0.0.0:80`. AdGuard's own first-run wizard then runs on port 80 instead of its hardcoded default of port 3000 — so there's no port-3000 detour.
@@ -921,7 +927,7 @@ Total user input: two Enter/Y confirmations in the terminal plus AdGuard's own 4
 
 ### Point devices at AdGuard (via Tailscale)
 
-The install step prints this block when Tailscale is detected. This is the only rollout path we recommend — router-level DHCP DNS overrides are unreliable (many ISP routers reject LAN IPs), and per-device manual DNS leaks around IPv6 settings on Linux and Private Relay on iOS.
+The install step prints this block when Tailscale is installed and logged in (`Running`). This is the only rollout path we recommend — router-level DHCP DNS overrides are unreliable (many ISP routers reject LAN IPs), and per-device manual DNS leaks around IPv6 settings on Linux and Private Relay on iOS.
 
 1. Open [https://login.tailscale.com/admin/dns](https://login.tailscale.com/admin/dns)
 2. Under the **DNS** tab → **Nameservers** → **Global nameservers** → **Add nameserver** → **Custom**
@@ -1197,7 +1203,7 @@ privcloud/
 ├── server/
 │   ├── hostname              # Server hostname
 │   ├── local_ip              # Local network IP
-│   ├── tailscale_ip          # Tailscale IP (if installed)
+│   ├── tailscale_ip          # Tailscale IP (only if Tailscale is Running; skipped when logged out)
 │   └── user                  # SSH username
 ├── ssh/
 │   ├── private_key           # SSH private key (from laptop)

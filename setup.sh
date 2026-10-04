@@ -560,15 +560,18 @@ step_firewall() {
 # can be shipped to the server with `declare -f _ts_state`.
 _ts_state() {
     type -P tailscale &>/dev/null || { echo "NotInstalled - - -"; return; }
-    local js state exp days="-" ip
+    local js state exp days="-" ip self=0
     js=$(tailscale status --self --peers=false --json 2>/dev/null) || true
     state=$(sed -n 's/.*"BackendState": *"\([^"]*\)".*/\1/p' <<<"$js" | head -1)
     exp=$(sed -n 's/.*"KeyExpiry": *"\([^"]*\)".*/\1/p' <<<"$js" | head -1)
+    grep -q '"Self": *{' <<<"$js" && self=1
     if [[ -n "$exp" ]]; then
         days=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
         exp=${exp%%T*}
+    elif (( self )); then
+        exp=disabled    # Self present, no KeyExpiry: expiry turned off
     else
-        exp=disabled
+        exp=-           # no Self (logged out / fresh): key state unknown
     fi
     ip=$(tailscale ip -4 2>/dev/null | head -1)
     echo "${state:-Stopped} $exp $days ${ip:--}"
@@ -577,13 +580,29 @@ _ts_state() {
 # IP field of a _ts_state record ("-" when none).
 _ts_ip() { cut -d' ' -f4 <<<"$1"; }
 
+# True only when a _ts_state record is Running (up AND logged in). With no
+# argument, checks the local _ts_state. Prefer this over `tailscale ip -4`,
+# which still prints a stale IP after the node key expires.
+_ts_running() {
+    local rec
+    if (( $# )); then rec=$1; else rec=$(_ts_state); fi
+    [[ "${rec%% *}" == Running ]]
+}
+
 # Colored one-word state for a _ts_state record.
 _ts_word() {
-    case "${1%% *}" in
+    local state exp days ip
+    read -r state exp days ip <<<"$1"
+    case "$state" in
         Running)      echo "${GREEN}connected${NC}" ;;
-        NeedsLogin)   echo "${RED}logged out${NC} ${DIM}(key expired - run: sudo tailscale up)${NC}" ;;
+        NeedsLogin)
+            if [[ "$days" =~ ^-?[0-9]+$ ]] && (( days <= 0 )); then
+                echo "${RED}logged out${NC} ${DIM}(key expired - run: sudo tailscale up)${NC}"
+            else
+                echo "${RED}logged out${NC} ${DIM}(run: sudo tailscale up)${NC}"
+            fi ;;
         NotInstalled) echo "${DIM}not installed${NC}" ;;
-        *)            echo "${RED}disconnected${NC} ${DIM}(${1%% *})${NC}" ;;
+        *)            echo "${RED}disconnected${NC} ${DIM}($state)${NC}" ;;
     esac
 }
 
@@ -614,6 +633,7 @@ _ts_print_state() {
     local state exp days ip
     read -r state exp days ip <<<"$1"
     echo -e "    State:  $(_ts_word "$1")"
+    _ts_running "$1" || ip=-    # never show a stale IP for a node that isn't Running
     echo -e "    IP:     ${BOLD}$ip${NC}"
     echo -e "    Key:    $(_ts_key "$1")"
     [[ "$2" == server ]] && _ts_expiry_hint "$1"
@@ -696,8 +716,8 @@ _ts_install() {
     echo ""
 
     local ts_ip
-    ts_ip=$(tailscale ip -4 2>/dev/null || echo "")
-    if [[ -n "$ts_ip" ]]; then
+    if _ts_running; then
+        ts_ip=$(tailscale ip -4 2>/dev/null | head -1)
         ok "Tailscale connected! IP: $ts_ip"
         echo ""
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1559,10 +1579,10 @@ _services_status() {
     fi
 
     echo ""
-    local IP HOST TS_IP has_adguard=0
+    local IP HOST TS_IP="" has_adguard=0
     IP=$(hostname -I | awk '{print $1}')
     HOST=$(hostname)
-    TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
+    _ts_running && TS_IP=$(tailscale ip -4 2>/dev/null | head -1)
     echo "$all_names" | grep -q '^adguard$' && has_adguard=1
     local has_syncthing=0
     echo "$all_names" | grep -q '^syncthing$' && echo "$CONTAINERS" | grep '^syncthing|Up' -q && has_syncthing=1
@@ -3375,7 +3395,7 @@ step_adguard() {
         return 1
     fi
 
-    local IP TS_IP=""
+    local IP TS_IP="" ts_rec="NotInstalled - - -"
     IP=$(hostname -I | awk '{print $1}')
 
     # ── Pre-check 1: Tailscale. AdGuard is only useful if something routes
@@ -3384,11 +3404,13 @@ step_adguard() {
     # both have too many footguns — see the install-level docs). If it's
     # missing, surface that BEFORE touching the system, not at the end.
     if command -v tailscale &>/dev/null; then
-        TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
+        ts_rec=$(_ts_state)
+        _ts_running "$ts_rec" && TS_IP=$(tailscale ip -4 2>/dev/null | head -1)
     fi
     if [[ -z "$TS_IP" && "$DRY_RUN" != "1" ]]; then
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "  ${YELLOW}Tailscale is not installed (or not connected).${NC}"
+        [[ "${ts_rec%% *}" != NotInstalled ]] && echo -e "  Key: $(_ts_key "$ts_rec")"
         echo ""
         echo -e "  AdGuard needs a way to route devices' DNS lookups to it."
         echo -e "  The recommended path is ${BOLD}Tailscale global DNS${NC} — one setting,"
@@ -5737,7 +5759,7 @@ REMOTE_STATUS
     echo -e "    Hostname:   $HOSTNAME"
     echo -e "    Local IP:   $IP"
     local TS_IP
-    TS_IP=$(_ts_ip "$TS_STATE"); [[ "$TS_IP" == - ]] && TS_IP=""
+    TS_IP=""; _ts_running "$TS_STATE" && TS_IP=$(_ts_ip "$TS_STATE"); [[ "$TS_IP" == - ]] && TS_IP=""
     echo -e "    Tailscale:  $(_ts_word "$TS_STATE")${TS_IP:+  ${DIM}($TS_IP)${NC}}"
     echo -e "    TS key:     $(_ts_key "$TS_STATE")"
     _ts_expiry_hint "$TS_STATE"
@@ -5925,10 +5947,12 @@ step_save_to_pass() {
     # Fetch all data from server in one SSH call
     local server_data
     ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
-    server_data=$(ssh "$SERVER_USER@$SERVER_IP" bash -s <<'FETCH'
+    server_data=$(ssh "$SERVER_USER@$SERVER_IP" bash -s < <(declare -f _ts_state _ts_running; cat <<'FETCH'
 echo "HOSTNAME=$(hostname)"
 echo "LOCAL_IP=$(hostname -I | awk '{print $1}')"
-echo "TS_IP=$(tailscale ip -4 2>/dev/null || echo '')"
+TS_STATE=$(_ts_state)
+echo "TS_STATE=$TS_STATE"
+_ts_running "$TS_STATE" && echo "TS_IP=$(tailscale ip -4 2>/dev/null | head -1)"
 echo "---ENV---"
 cat ~/privcloud/.env 2>/dev/null || cat ~/data/.env 2>/dev/null || true
 echo "---DOCKER_COMPOSE---"
@@ -5953,7 +5977,7 @@ echo "---SYNCTHING_KEY---"
 sudo cat /opt/syncthing/config/key.pem 2>/dev/null || true
 echo "---END---"
 FETCH
-)
+))
 
     if [[ -z "$server_data" ]]; then
         fail "Could not connect to server."
@@ -5964,6 +5988,11 @@ FETCH
     local HOSTNAME=$(echo "$server_data" | grep "^HOSTNAME=" | cut -d= -f2)
     local IP=$(echo "$server_data" | grep "^LOCAL_IP=" | cut -d= -f2)
     local TS_IP=$(echo "$server_data" | grep "^TS_IP=" | cut -d= -f2)
+    local TS_STATE=$(echo "$server_data" | grep "^TS_STATE=" | cut -d= -f2-)
+    if ! _ts_running "$TS_STATE"; then
+        TS_IP=""
+        warn "Server Tailscale is not Running - skipping Tailscale IP and URLs."
+    fi
 
     # Server details
     echo "$HOSTNAME" | pass insert -e -f privcloud/server/hostname 2>/dev/null && ok "privcloud/server/hostname"

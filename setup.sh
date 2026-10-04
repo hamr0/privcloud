@@ -760,7 +760,7 @@ _ts_install_laptop() {
     fi
 
     # Bring the laptop up on the tailnet if it isn't already
-    if [[ "$(_ts_state)" == Running* ]]; then
+    if _ts_running; then
         local laptop_ts_ip
         laptop_ts_ip=$(tailscale ip -4)
         ok "Laptop already on the tailnet: $laptop_ts_ip"

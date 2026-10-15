@@ -114,6 +114,91 @@ _tcp_open() { timeout 2 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; }
 # strings later re-parsed by `bash -c` or written to scheduled scripts.
 _shq() { printf '%q' "$1"; }
 
+# Run a read-only shell snippet on the server (non-TTY, no sudo) and print its
+# stdout. Prints "unreachable" if the ssh itself fails, so callers can tell
+# "not installed" (empty output) from "couldn't ask".
+_server_probe() {
+    local out
+    out=$(ssh "$SERVER_USER@$SERVER_IP" "$1" 2>/dev/null) || { echo "unreachable"; return; }
+    echo "$out"
+}
+
+# Prompt once for the server's sudo password and check it. sudo's cached
+# credential does not cross ssh sessions, so root reads from a non-TTY session
+# need the password supplied each time over ssh's encrypted stdin (the same
+# `sudo -S -p ''` pattern the privileged Download uses). On success the
+# password is left in _SRV_PW for the caller's printf-builtin pipe (never argv,
+# never echoed) and the caller MUST `unset _SRV_PW`. Returns 0 ok; 1 wrong
+# password; 2 server unreachable. Caller reports - nothing is read on failure.
+_server_sudo_pw_prompt() {
+    local rc
+    _SRV_PW=""
+    read -rsp "  federver sudo password: " _SRV_PW; echo
+    printf '%s\n' "$_SRV_PW" | ssh "$SERVER_USER@$SERVER_IP" "sudo -S -p '' true" > /dev/null 2>&1 && return 0
+    rc=$?
+    unset _SRV_PW
+    (( rc == 255 )) && return 2
+    return 1
+}
+
+# Gate for a two-sided service's laptop menu (Syncthing, Tailscale).
+#   $1 label   $2 laptop state ("" = not installed)   $3 server state ("" = not installed)
+#   $4 fn that installs the laptop side   $5 fn that installs the server side
+#   $6 fn "<side>" that uninstalls one side ("laptop" | "server"), typed confirm + verify
+# Returns 10 when both sides are installed (caller continues to its full menu).
+# Anything else is the final result for the caller to return: 2 = user backed
+# out / nothing changed (run_step skips the DONE banner), 1 = failure.
+# Opening the menu never installs anything by itself.
+_two_sided_gate() {
+    local label="$1" lap="$2" srv="$3" inst_lap="$4" inst_srv="$5" uninst="$6" reply
+    if [[ "$srv" == "unreachable" ]]; then
+        fail "Cannot reach the server at $SERVER_IP - changing nothing."
+        return 1
+    fi
+    [[ -n "$lap" && -n "$srv" ]] && return 10
+
+    if [[ -z "$lap" && -z "$srv" ]]; then
+        warn "$label isn't installed."
+        read -rp "  Install it now? [y/N] " reply || reply=""
+        if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+            info "Not installing."
+            return 2
+        fi
+        "$inst_lap" || return 1
+        echo -e "  ${BOLD}── Server side ──${NC}"
+        _on_server "$inst_srv" || return $?
+        return 0
+    fi
+
+    # Partial: exactly one side present.
+    echo -e "  Laptop: ${lap:-${YELLOW}not installed${NC}}"
+    echo -e "  Server: ${srv:-${YELLOW}not installed${NC}}"
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Install the missing side"
+    echo -e "  ${BOLD}2)${NC} ${RED}Uninstall the remaining side${NC}"
+    echo -e "  ${BOLD}0)${NC} Back"
+    echo ""
+    read -rp "  Choose: " reply || reply=0
+    case "$reply" in
+        1)
+            # `|| return $?`: under set -e a bare failing call would abort the script.
+            if [[ -z "$lap" ]]; then
+                "$inst_lap" || return $?
+                return 0
+            fi
+            echo -e "  ${BOLD}── Server side ──${NC}"
+            _on_server "$inst_srv" || return $?
+            return 0
+            ;;
+        2)
+            if [[ -n "$lap" ]]; then "$uninst" laptop || return $?
+            else "$uninst" server || return $?; fi
+            return 0
+            ;;
+        *) return 2 ;;
+    esac
+}
+
 # Run a step with clear screen and success/fail banner.
 # Convention: a step that returns 2 means "user picked Back before doing
 # anything" — skip the banner and the Press-Enter prompt so it feels like
@@ -681,6 +766,14 @@ _ts_uninstall() {
     echo ""
     _confirm_delete tailscale || return 0
 
+    _ts_remove_local || return 1
+    ok "Tailscale removed."
+}
+
+# Remove Tailscale from the machine this runs on, then verify the binary is
+# really gone. logout/down can legitimately fail on an already-logged-out
+# node, so only the end state counts. Returns 0 only if verified.
+_ts_remove_local() {
     info "Bringing tailnet connection down..."
     sudo tailscale logout > /dev/null 2>&1 || true
     sudo tailscale down > /dev/null 2>&1 || true
@@ -688,7 +781,11 @@ _ts_uninstall() {
     sudo systemctl disable --now tailscaled > /dev/null 2>&1 || true
     info "Removing package..."
     sudo dnf remove -y tailscale > /dev/null 2>&1 || true
-    ok "Tailscale removed."
+    hash -r
+    if type -P tailscale > /dev/null; then
+        fail "Tailscale is still installed - dnf remove failed. Try: sudo dnf remove tailscale"
+        return 1
+    fi
 }
 
 _ts_install() {
@@ -800,12 +897,18 @@ _ts_restart_both() {
 }
 
 _ts_uninstall_both() {
+    # $1: "laptop" | "server" removes just that side (partial state); default both.
+    local side="${1:-both}" rc=0 srv
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${RED}DELETE Tailscale (both laptop and server)${NC}"
+    if [[ "$side" == both ]]; then
+        echo -e "  ${RED}DELETE Tailscale (both laptop and server)${NC}"
+    else
+        echo -e "  ${RED}DELETE Tailscale ($side only)${NC}"
+    fi
     echo ""
     echo -e "  ${BOLD}What will happen:${NC}"
-    echo -e "    ${RED}•${NC} Laptop: tailscale logout + disable tailscaled + dnf remove"
-    echo -e "    ${RED}•${NC} Server: tailscale logout + disable tailscaled + dnf remove"
+    [[ "$side" != server ]] && echo -e "    ${RED}•${NC} Laptop: tailscale logout + disable tailscaled + dnf remove"
+    [[ "$side" != laptop ]] && echo -e "    ${RED}•${NC} Server: tailscale logout + disable tailscaled + dnf remove"
     echo ""
     echo -e "  ${BOLD}Consequences:${NC}"
     echo -e "    ${YELLOW}•${NC} No remote access to the server from anywhere"
@@ -820,22 +923,26 @@ _ts_uninstall_both() {
     echo ""
     _confirm_delete tailscale || return 0
 
-    info "Removing from laptop..."
-    sudo tailscale logout > /dev/null 2>&1 || true
-    sudo tailscale down > /dev/null 2>&1 || true
-    sudo systemctl disable --now tailscaled > /dev/null 2>&1 || true
-    sudo dnf remove -y tailscale > /dev/null 2>&1 || true
-    ok "Laptop: removed."
+    if [[ "$side" != server ]]; then
+        info "Removing from laptop..."
+        if _ts_remove_local; then ok "Laptop: removed."; else fail "Laptop: NOT removed."; rc=1; fi
+    fi
 
-    info "Removing from server..."
-    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
-    ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_TS_UNINSTALL'
-        sudo tailscale logout > /dev/null 2>&1 || true
-        sudo tailscale down > /dev/null 2>&1 || true
-        sudo systemctl disable --now tailscaled > /dev/null 2>&1 || true
-        sudo dnf remove -y tailscale > /dev/null 2>&1 || true
-REMOTE_TS_UNINSTALL
-    ok "Server: removed."
+    if [[ "$side" != laptop ]]; then
+        info "Removing from server..."
+        # One TTY session so sudo's password prompt works and its cached
+        # credential covers every command (a separate non-TTY session gets no
+        # credential and every sudo silently fails).
+        ssh -t "$SERVER_USER@$SERVER_IP" 'sudo tailscale logout >/dev/null 2>&1; sudo tailscale down >/dev/null 2>&1; sudo systemctl disable --now tailscaled >/dev/null 2>&1; sudo dnf remove -y tailscale >/dev/null 2>&1' 2>/dev/null || true
+        # Verify the end state; don't trust that the commands ran.
+        srv=$(_server_probe 'type -P tailscale >/dev/null && echo installed')
+        case "$srv" in
+            "")          ok "Server: removed." ;;
+            unreachable) fail "Server: could not confirm removal (server unreachable)."; rc=1 ;;
+            *)           fail "Server: Tailscale is still installed - sudo/dnf remove failed. Try on the server: sudo dnf remove tailscale"; rc=1 ;;
+        esac
+    fi
+    return $rc
 }
 
 step_tailscale() {
@@ -850,20 +957,13 @@ step_tailscale() {
     info "without port forwarding. Like a private VPN."
     echo ""
 
-    # Check if both sides have Tailscale
-    local laptop_installed=false server_installed=false
-    command -v tailscale &>/dev/null && laptop_installed=true
-    ssh "$SERVER_USER@$SERVER_IP" "command -v tailscale" &>/dev/null && server_installed=true
-
-    # Fresh install: install both sides
-    if [[ "$laptop_installed" == false || "$server_installed" == false ]]; then
-        [[ "$laptop_installed" == false ]] && { _ts_install_laptop || return 1; }
-        if [[ "$server_installed" == false ]]; then
-            echo -e "  ${BOLD}── Server side ──${NC}"
-            _on_server _ts_server_step
-        fi
-        return
-    fi
+    # Which sides have Tailscale? Not both -> the gate handles it (offer to
+    # install, or manage the one side that exists); it never installs on its own.
+    local lap_state="" srv_state="" g=0
+    command -v tailscale &>/dev/null && lap_state="installed ($(_ts_state | cut -d' ' -f1))"
+    srv_state=$(_server_probe "$(declare -f _ts_state); if type -P tailscale >/dev/null; then echo \"installed (\$(_ts_state | cut -d' ' -f1))\"; fi")
+    _two_sided_gate "Tailscale" "$lap_state" "$srv_state" _ts_install_laptop "_ts_server_step" _ts_uninstall_both || g=$?
+    (( g == 10 )) || return $g
 
     # Both installed — show status + unified management submenu
     echo -e "  ${BOLD}── Laptop ──${NC}"
@@ -2312,6 +2412,24 @@ _syncthing_show_paths() {
     info "(Pairings and folder shares are kept — they live in /opt/syncthing.)"
 }
 
+# True only when the docker query SUCCEEDED and the named container is absent.
+# A failed query (permissions, daemon down) must not read as "removed".
+_container_gone() {
+    local names
+    names=$(sudo docker ps -a --format '{{.Names}}' 2>/dev/null) || return 1
+    ! grep -qx "$1" <<<"$names"
+}
+
+# Close Syncthing's firewall ports; non-zero if ANY firewall-cmd step failed.
+# Self-contained so it can be shipped to the server with `declare -f`.
+_syncthing_fw_close() {
+    sudo firewall-cmd --permanent --remove-port=8384/tcp  > /dev/null 2>&1 \
+        && sudo firewall-cmd --permanent --remove-port=22000/tcp > /dev/null 2>&1 \
+        && sudo firewall-cmd --permanent --remove-port=22000/udp > /dev/null 2>&1 \
+        && sudo firewall-cmd --permanent --remove-port=21027/udp > /dev/null 2>&1 \
+        && sudo firewall-cmd --reload > /dev/null 2>&1
+}
+
 _syncthing_uninstall() {
     echo ""
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -2336,13 +2454,16 @@ _syncthing_uninstall() {
 
     info "Removing syncthing container..."
     sudo docker rm -f syncthing > /dev/null 2>&1 || true
+    if ! _container_gone syncthing; then
+        fail "Container 'syncthing' is still present (or docker could not be queried) - not removed."
+        return 1
+    fi
 
     info "Closing firewall ports..."
-    sudo firewall-cmd --permanent --remove-port=8384/tcp  > /dev/null 2>&1 || true
-    sudo firewall-cmd --permanent --remove-port=22000/tcp > /dev/null 2>&1 || true
-    sudo firewall-cmd --permanent --remove-port=22000/udp > /dev/null 2>&1 || true
-    sudo firewall-cmd --permanent --remove-port=21027/udp > /dev/null 2>&1 || true
-    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+    if ! _syncthing_fw_close; then
+        fail "Container removed, but the firewall ports were NOT closed (8384/tcp, 22000/tcp+udp, 21027/udp)."
+        return 1
+    fi
 
     ok "Syncthing removed."
     echo -e "  ${DIM}Config kept at /opt/syncthing. To wipe entirely:${NC} sudo rm -rf /opt/syncthing"
@@ -2593,44 +2714,91 @@ _syncthing_restart_both() {
         && ok "Server: restarted." || warn "Server: failed."
 }
 
+# Laptop half of the Syncthing uninstall. Returns 0 only if verified gone.
+_syncthing_uninstall_laptop() {
+    info "Removing from laptop..."
+    systemctl --user disable --now syncthing 2>/dev/null || true
+    sudo dnf remove -y syncthing > /dev/null 2>&1 || true
+    hash -r
+    if type -P syncthing > /dev/null; then
+        fail "Laptop: syncthing is still installed - dnf remove failed. Try: sudo dnf remove syncthing"
+        return 1
+    fi
+    ok "Laptop: removed."
+}
+
+# Server half, driven from the laptop. docker needs no sudo (the server user
+# is in the docker group), so it runs in a plain ssh and is then verified.
+# firewall-cmd does need root, and sudo's credential doesn't cross ssh
+# sessions, so it gets its own TTY session (one prompt covers every command).
+# Returns 0 only if the container is gone AND the ports are closed.
+_syncthing_uninstall_server_remote() {
+    local err state
+    info "Removing from server..."
+    err=$(ssh "$SERVER_USER@$SERVER_IP" 'docker rm -f syncthing' 2>&1 >/dev/null) || true
+    state=$(_syncthing_server_probe verify)
+    case "$state" in
+        "") ;;
+        unreachable)  fail "Server: could not confirm removal (server unreachable)."; return 1 ;;
+        docker-error) fail "Server: could not query docker to confirm removal. ${err}"; return 1 ;;
+        *)            fail "Server: container still present (${state}). ${err}"; return 1 ;;
+    esac
+    info "Closing firewall ports (sudo password may be asked)..."
+    if ! ssh -t "$SERVER_USER@$SERVER_IP" "$(declare -f _syncthing_fw_close); _syncthing_fw_close"; then
+        fail "Server: container removed, but the firewall ports were NOT closed (8384/tcp, 22000/tcp+udp, 21027/udp)."
+        return 1
+    fi
+    ok "Server: removed."
+}
+
 _syncthing_uninstall_both() {
+    # $1: "laptop" | "server" removes just that side (partial state); default both.
+    local side="${1:-both}" rc=0
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${RED}DELETE Syncthing (both laptop and server)${NC}"
+    if [[ "$side" == both ]]; then
+        echo -e "  ${RED}DELETE Syncthing (both laptop and server)${NC}"
+    else
+        echo -e "  ${RED}DELETE Syncthing ($side only)${NC}"
+    fi
     echo ""
     echo -e "  ${BOLD}What will happen:${NC}"
-    echo -e "    ${RED}•${NC} Laptop: systemctl --user disable --now syncthing + dnf remove"
-    echo -e "    ${RED}•${NC} Server: stop + remove Docker container, close firewall ports"
+    [[ "$side" != server ]] && echo -e "    ${RED}•${NC} Laptop: systemctl --user disable --now syncthing + dnf remove"
+    [[ "$side" != laptop ]] && echo -e "    ${RED}•${NC} Server: stop + remove Docker container, close firewall ports"
     echo ""
     echo -e "  ${BOLD}Consequences:${NC}"
     echo -e "    ${YELLOW}•${NC} Real-time file sync between all devices stops"
     echo ""
     echo -e "  ${BOLD}Kept:${NC}"
-    echo -e "    ${GREEN}•${NC} Server: /opt/syncthing/ (identity, config, pairings)"
-    echo -e "    ${GREEN}•${NC} Laptop: ~/.local/state/syncthing/ (identity, config)"
+    [[ "$side" != laptop ]] && echo -e "    ${GREEN}•${NC} Server: /opt/syncthing/ (identity, config, pairings)"
+    [[ "$side" != server ]] && echo -e "    ${GREEN}•${NC} Laptop: ~/.local/state/syncthing/ (identity, config)"
     echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     _confirm_delete syncthing || return 0
 
-    info "Removing from laptop..."
-    systemctl --user disable --now syncthing 2>/dev/null || true
-    sudo dnf remove -y syncthing > /dev/null 2>&1 || true
-    ok "Laptop: removed."
+    [[ "$side" != server ]] && { _syncthing_uninstall_laptop || rc=1; }
+    [[ "$side" != laptop ]] && { _syncthing_uninstall_server_remote || rc=1; }
 
-    info "Removing from server..."
-    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
-    ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_UNINSTALL'
-        sudo docker rm -f syncthing > /dev/null 2>&1 || true
-        sudo firewall-cmd --permanent --remove-port=8384/tcp  > /dev/null 2>&1 || true
-        sudo firewall-cmd --permanent --remove-port=22000/tcp > /dev/null 2>&1 || true
-        sudo firewall-cmd --permanent --remove-port=22000/udp > /dev/null 2>&1 || true
-        sudo firewall-cmd --permanent --remove-port=21027/udp > /dev/null 2>&1 || true
-        sudo firewall-cmd --reload > /dev/null 2>&1 || true
-REMOTE_UNINSTALL
-    ok "Server: removed."
-    echo ""
-    echo -e "  ${DIM}Server config kept at /opt/syncthing${NC}"
-    echo -e "  ${DIM}Laptop config kept at ~/.local/state/syncthing${NC}"
+    if (( rc == 0 )); then
+        echo ""
+        [[ "$side" != laptop ]] && echo -e "  ${DIM}Server config kept at /opt/syncthing${NC}"
+        [[ "$side" != server ]] && echo -e "  ${DIM}Laptop config kept at ~/.local/state/syncthing${NC}"
+    fi
+    return $rc
+}
+
+# Server-side Syncthing state for the laptop menu (read-only, non-TTY, no sudo:
+# the server user is in the docker group). Prints: running | stopped | "" (not
+# installed) | unreachable. "verify" mode also prints docker-error when docker
+# can't be queried, so a failed query never reads as "removed"; plain mode
+# treats it as not installed (unchanged detection behaviour).
+_syncthing_server_probe() {
+    local on_err=""
+    [[ "$1" == verify ]] && on_err='echo docker-error; exit 0'
+    _server_probe "n=\$(docker ps -a --format '{{.Names}}' 2>/dev/null) || { ${on_err:-exit 0}; }
+if grep -qx syncthing <<<\"\$n\"; then
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx syncthing; then echo running; else echo stopped; fi
+fi"
 }
 
 step_syncthing() {
@@ -2645,20 +2813,19 @@ step_syncthing() {
         return
     fi
 
-    # ── Laptop-side: check if both sides are installed ──
-    local laptop_installed=false server_installed=false
-    command -v syncthing &>/dev/null && laptop_installed=true
-    ssh "$SERVER_USER@$SERVER_IP" "docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'" 2>/dev/null && server_installed=true
-
-    # Fresh install: install both sides
-    if [[ "$laptop_installed" == false || "$server_installed" == false ]]; then
-        [[ "$laptop_installed" == false ]] && { _syncthing_install_laptop || return 1; }
-        if [[ "$server_installed" == false ]]; then
-            echo -e "  ${BOLD}── Server side ──${NC}"
-            _on_server _syncthing_server_step
-        fi
-        return
+    # ── Laptop-side: which sides are installed? ──
+    # Not both -> the gate handles it (offer to install, or manage the one side
+    # that exists); opening this menu never installs anything by itself.
+    local lap_state="" srv_state="" g=0
+    if command -v syncthing &>/dev/null; then
+        lap_state="installed (stopped)"
+        systemctl --user is-active syncthing &>/dev/null && lap_state="installed (running)"
     fi
+    srv_state=$(_syncthing_server_probe detect)
+    [[ "$srv_state" == "docker-error" ]] && srv_state=""
+    [[ -n "$srv_state" && "$srv_state" != unreachable ]] && srv_state="installed ($srv_state)"
+    _two_sided_gate "Syncthing" "$lap_state" "$srv_state" _syncthing_install_laptop "_syncthing_server_step" _syncthing_uninstall_both || g=$?
+    (( g == 10 )) || return $g
 
     # Both installed — show unified status + management submenu
     echo -e "  ${BOLD}── Laptop ──${NC}"
@@ -2674,8 +2841,8 @@ step_syncthing() {
     echo -e "  ${BOLD}── Server ──${NC}"
     ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_STATUS'
         state="stopped"
-        if sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'; then
-            uptime=$(sudo docker ps --filter name=syncthing --format '{{.Status}}' 2>/dev/null)
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'; then
+            uptime=$(docker ps --filter name=syncthing --format '{{.Status}}' 2>/dev/null)
             state="running  ($uptime)"
         fi
         ip=$(hostname -I | awk '{print $1}')
@@ -2684,7 +2851,7 @@ step_syncthing() {
         # Try several CLI shapes for Device ID (Syncthing 1.x vs 2.x)
         id=""
         for cmd in 'syncthing --device-id' 'syncthing show device-id' 'syncthing cli show system' 'cat /var/syncthing/config/config.xml'; do
-            id=$(sudo docker exec syncthing sh -c "$cmd" 2>/dev/null | grep -oE '[A-Z0-9]{7}(-[A-Z0-9]{7}){7}' | head -1 || echo "")
+            id=$(docker exec syncthing sh -c "$cmd" 2>/dev/null | grep -oE '[A-Z0-9]{7}(-[A-Z0-9]{7}){7}' | head -1 || echo "")
             [[ -n "$id" ]] && break
         done
         [[ -n "$id" ]] && echo "    Device ID: $id"
@@ -2709,7 +2876,7 @@ REMOTE_STATUS
             echo ""
             [[ -n "$laptop_id" ]] && echo -e "  ${BOLD}Laptop:${NC} $laptop_id"
             local server_id
-            server_id=$(ssh "$SERVER_USER@$SERVER_IP" 'for cmd in "syncthing --device-id" "syncthing show device-id" "syncthing cli show system" "cat /var/syncthing/config/config.xml"; do id=$(sudo docker exec syncthing sh -c "$cmd" 2>/dev/null | grep -oE "[A-Z0-9]{7}(-[A-Z0-9]{7}){7}" | head -1); [[ -n "$id" ]] && echo "$id" && break; done' 2>/dev/null)
+            server_id=$(ssh "$SERVER_USER@$SERVER_IP" 'for cmd in "syncthing --device-id" "syncthing show device-id" "syncthing cli show system" "cat /var/syncthing/config/config.xml"; do id=$(docker exec syncthing sh -c "$cmd" 2>/dev/null | grep -oE "[A-Z0-9]{7}(-[A-Z0-9]{7}){7}" | head -1); [[ -n "$id" ]] && echo "$id" && break; done' 2>/dev/null)
             [[ -n "$server_id" ]] && echo -e "  ${BOLD}Server:${NC} $server_id"
             ;;
         3) _syncthing_start_both ;;
@@ -2793,15 +2960,35 @@ _rdp_uninstall() {
     echo ""
     _confirm_delete xrdp || return 0
 
+    local bad=0
     info "Stopping xrdp..."
     sudo systemctl disable --now xrdp > /dev/null 2>&1 || true
     info "Re-enabling lightdm..."
-    sudo systemctl enable --now lightdm > /dev/null 2>&1 || true
+    if ! sudo systemctl enable --now lightdm > /dev/null 2>&1; then
+        fail "Could not enable/start lightdm."
+        bad=1
+    fi
     info "Closing firewall port 3389/tcp..."
-    sudo firewall-cmd --permanent --remove-port=3389/tcp > /dev/null 2>&1 || true
-    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+    if ! { sudo firewall-cmd --permanent --remove-port=3389/tcp > /dev/null 2>&1 \
+        && sudo firewall-cmd --reload > /dev/null 2>&1; }; then
+        fail "Firewall port 3389/tcp was NOT closed."
+        bad=1
+    fi
     info "Removing xrdp package..."
     sudo dnf remove -y xrdp > /dev/null 2>&1 || true
+    # Verify the end state, not that the commands ran.
+    if rpm -q xrdp > /dev/null 2>&1; then
+        fail "xrdp package is still installed - dnf remove failed. Try: sudo dnf remove xrdp"
+        bad=1
+    fi
+    if systemctl is-active --quiet xrdp 2>/dev/null || systemctl is-enabled --quiet xrdp 2>/dev/null; then
+        fail "xrdp service is still active or enabled."
+        bad=1
+    fi
+    if (( bad )); then
+        fail "Remote desktop removal did not finish - see above."
+        return 1
+    fi
     ok "Remote desktop removed."
 }
 
@@ -3044,13 +3231,30 @@ _wg_uninstall() {
     echo ""
     _confirm_delete wireguard || return 0
 
+    local bad=0
     info "Stopping wg0..."
     sudo systemctl disable --now wg-quick@wg0 > /dev/null 2>&1 || true
     info "Closing firewall port 51820/udp..."
-    sudo firewall-cmd --permanent --remove-port=51820/udp > /dev/null 2>&1 || true
-    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+    if ! { sudo firewall-cmd --permanent --remove-port=51820/udp > /dev/null 2>&1 \
+        && sudo firewall-cmd --reload > /dev/null 2>&1; }; then
+        fail "Firewall port 51820/udp was NOT closed."
+        bad=1
+    fi
     info "Removing packages..."
     sudo dnf remove -y wireguard-tools qrencode > /dev/null 2>&1 || true
+    # Verify the end state, not that the commands ran.
+    if rpm -q wireguard-tools > /dev/null 2>&1 || rpm -q qrencode > /dev/null 2>&1; then
+        fail "wireguard-tools/qrencode still installed - dnf remove failed. Try: sudo dnf remove wireguard-tools qrencode"
+        bad=1
+    fi
+    if systemctl is-active --quiet wg-quick@wg0 2>/dev/null || systemctl is-enabled --quiet wg-quick@wg0 2>/dev/null; then
+        fail "wg-quick@wg0 is still active or enabled."
+        bad=1
+    fi
+    if (( bad )); then
+        fail "WireGuard removal did not finish - see above."
+        return 1
+    fi
     ok "WireGuard removed."
     echo -e "  ${DIM}Configs kept at /etc/wireguard. To wipe entirely:${NC} sudo rm -rf /etc/wireguard"
 }
@@ -3596,7 +3800,7 @@ ADGUARDEOF
 _confirm_delete() {
     local name="$1"
     local reply
-    printf "  Type ${BOLD}${RED}${name}${NC} to DELETE (blank = cancel): "
+    printf "  Type \"${BOLD}${RED}${name}${NC}\" to confirm deletion (blank = cancel): "
     read -r reply
     if [[ -z "$reply" ]]; then
         info "Cancelled. Nothing deleted."
@@ -3632,19 +3836,34 @@ _adguard_uninstall() {
     echo ""
     _confirm_delete adguard || return 0
 
+    local bad=0
     info "Removing adguard container..."
     sudo docker rm -f adguard > /dev/null 2>&1 || true
+    if ! _container_gone adguard; then
+        fail "Container 'adguard' is still present (or docker could not be queried) - not removed."
+        return 1
+    fi
 
     info "Closing firewall ports 53/udp, 53/tcp, 80/tcp..."
-    sudo firewall-cmd --permanent --remove-port=53/udp > /dev/null 2>&1 || true
-    sudo firewall-cmd --permanent --remove-port=53/tcp > /dev/null 2>&1 || true
-    sudo firewall-cmd --permanent --remove-port=80/tcp > /dev/null 2>&1 || true
-    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+    if ! { sudo firewall-cmd --permanent --remove-port=53/udp > /dev/null 2>&1 \
+        && sudo firewall-cmd --permanent --remove-port=53/tcp > /dev/null 2>&1 \
+        && sudo firewall-cmd --permanent --remove-port=80/tcp > /dev/null 2>&1 \
+        && sudo firewall-cmd --reload > /dev/null 2>&1; }; then
+        fail "Firewall ports 53/udp, 53/tcp, 80/tcp were NOT closed."
+        bad=1
+    fi
 
     info "Re-enabling systemd-resolved stub listener..."
-    sudo rm -f /etc/systemd/resolved.conf.d/disable-stub.conf
-    sudo systemctl restart systemd-resolved > /dev/null 2>&1 || true
+    if ! { sudo rm -f /etc/systemd/resolved.conf.d/disable-stub.conf \
+        && sudo systemctl restart systemd-resolved > /dev/null 2>&1; }; then
+        fail "Could not restore systemd-resolved's stub listener."
+        bad=1
+    fi
 
+    if (( bad )); then
+        fail "AdGuard container removed, but cleanup above did not finish."
+        return 1
+    fi
     ok "AdGuard removed."
     echo -e "  ${DIM}Config kept at /opt/adguard. To wipe entirely:${NC} sudo rm -rf /opt/adguard"
 }
@@ -4728,8 +4947,17 @@ _sync_show_status() {
     # password prompt appears before any table rendering.
     local server_crons="" server_timer_oncal=""
     info "Fetching server scheduled tasks..."
-    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
-    server_crons=$(ssh "$SERVER_USER@$SERVER_IP" 'sudo crontab -l 2>/dev/null' 2>/dev/null) || true
+    local pw_rc=0
+    _server_sudo_pw_prompt || pw_rc=$?
+    if (( pw_rc == 0 )); then
+        # `|| true`: crontab -l exits 1 when root simply has no crontab.
+        server_crons=$(printf '%s\n' "$_SRV_PW" | ssh "$SERVER_USER@$SERVER_IP" "sudo -S -p '' crontab -l 2>/dev/null" 2>/dev/null) || true
+        unset _SRV_PW
+    elif (( pw_rc == 2 )); then
+        warn "Server unreachable - root crontab not read; the schedule list below is incomplete."
+    else
+        warn "Wrong sudo password - root crontab not read; the schedule list below may be incomplete (not 'no cron')."
+    fi
     if [[ -z "$server_crons" ]] || ! echo "$server_crons" | grep -qE "immich-backup|disk-check"; then
         server_crons=$(ssh "$SERVER_USER@$SERVER_IP" '
             [[ -x /usr/local/bin/immich-backup.sh ]] && echo "0 3 * * * /usr/local/bin/immich-backup.sh"
@@ -5945,9 +6173,14 @@ step_save_to_pass() {
     echo ""
 
     # Fetch all data from server in one SSH call
-    local server_data
-    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
-    server_data=$(ssh "$SERVER_USER@$SERVER_IP" bash -s < <(declare -f _ts_state _ts_running; cat <<'FETCH'
+    local server_data pw_rc=0
+    _server_sudo_pw_prompt || pw_rc=$?
+    if (( pw_rc == 2 )); then fail "Cannot reach server at $SERVER_IP - nothing saved."; return 1; fi
+    if (( pw_rc != 0 )); then fail "Wrong sudo password - nothing saved to pass."; return 1; fi
+    # stdin = password line (consumed by sudo -S), then the script. The script
+    # runs as root so the /etc and /opt reads work in this one non-TTY session;
+    # HOME is kept as the login user's so ~/privcloud/.env still resolves.
+    server_data=$(ssh "$SERVER_USER@$SERVER_IP" "sudo -S -p '' env HOME=\$HOME bash -s" < <(printf '%s\n' "$_SRV_PW"; declare -f _ts_state _ts_running; cat <<'FETCH'
 echo "HOSTNAME=$(hostname)"
 echo "LOCAL_IP=$(hostname -I | awk '{print $1}')"
 TS_STATE=$(_ts_state)
@@ -5968,7 +6201,7 @@ done
 echo "---ADGUARD---"
 sudo cat /opt/adguard/conf/AdGuardHome.yaml 2>/dev/null || true
 echo "---SYNCTHING_ID---"
-sudo docker exec syncthing syncthing --device-id 2>/dev/null || true
+docker exec syncthing syncthing --device-id 2>/dev/null || true
 echo "---SYNCTHING_CONFIG---"
 sudo cat /opt/syncthing/config/config.xml 2>/dev/null || true
 echo "---SYNCTHING_CERT---"
@@ -5978,6 +6211,7 @@ sudo cat /opt/syncthing/config/key.pem 2>/dev/null || true
 echo "---END---"
 FETCH
 ))
+    unset _SRV_PW
 
     if [[ -z "$server_data" ]]; then
         fail "Could not connect to server."

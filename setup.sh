@@ -66,6 +66,67 @@ fail() { echo -e "  ${RED}✗${NC} $1"; }
 info() { echo -e "  ${DIM}$1${NC}"; }
 warn() { echo -e "  ${YELLOW}!!${NC} $1"; }
 
+# ── Safe crontab editing ─────────────────────────────
+# Never rewrite a crontab with `(crontab -l | grep -v x; echo y) | crontab -`:
+# the reader and the writer run concurrently, and `crontab -` can truncate the
+# file before `crontab -l` has read it (root's crontab ended up empty). Always:
+# read into a variable (_cron_get), build the new text, write it with ONE
+# command (_cron_set), which re-reads and verifies. $1 is "root" (sudo crontab)
+# or "user" (the laptop user's crontab).
+_cron_cmd() { if [[ "$1" == root ]]; then sudo crontab "${@:2}"; else crontab "${@:2}"; fi; }
+
+# Print the current crontab. "No crontab yet" is an empty crontab (exit 0);
+# any other failure (sudo denied, crontab missing) returns 1.
+_cron_get() {
+    local out rc=0
+    out=$(_cron_cmd "$1" -l 2>&1) || rc=$?
+    if (( rc != 0 )); then
+        [[ "$out" == *"no crontab for"* ]] && return 0
+        return 1
+    fi
+    printf '%s' "$out"
+}
+
+# Print $1 (a crontab) without the lines matching grep flags $2 / pattern $3.
+_cron_drop() {
+    [[ -n "$1" ]] || return 0
+    printf '%s\n' "$1" | grep -v"$2" -- "$3" || true
+}
+
+# Write $2 as the whole crontab for $1, then re-read and require an exact match.
+_cron_set() {
+    local who="$1" new="$2" back
+    if [[ -z "$new" ]]; then
+        printf '' | _cron_cmd "$who" - || return 1
+    else
+        printf '%s\n' "$new" | _cron_cmd "$who" - || return 1
+    fi
+    back=$(_cron_get "$who") || return 1
+    [[ "$back" == "$new" ]]
+}
+
+# Laptop sync-job crontab edits (user crontab), each verified.
+_cron_add_sync() {  # job_name sched_spec script_path
+    local cur kept
+    cur=$(_cron_get user) || { fail "Could not read your crontab - '$1' NOT scheduled."; return 1; }
+    kept=$(_cron_drop "$cur" "" "sync-$1.sh")
+    _cron_set user "${kept:+$kept$'\n'}$2 $3" || { fail "Could not write your crontab - '$1' NOT scheduled."; return 1; }
+}
+_cron_remove_line() {  # exact line
+    local cur
+    cur=$(_cron_get user) || { fail "Could not read your crontab - cron line not removed."; return 1; }
+    _cron_set user "$(_cron_drop "$cur" F "$1")" || { fail "Could not write your crontab - cron line may still be present."; return 1; }
+}
+_cron_replace_line() {  # old_line new_line (exact whole-line match)
+    local cur l new="" first=1
+    cur=$(_cron_get user) || { fail "Could not read your crontab - nothing changed."; return 1; }
+    while IFS= read -r l; do
+        [[ "$l" == "$1" ]] && l="$2"
+        if (( first )); then new="$l"; first=0; else new+=$'\n'"$l"; fi
+    done <<<"$cur"
+    _cron_set user "$new" || { fail "Could not write your crontab - change not applied."; return 1; }
+}
+
 # ── Dry-run mode ─────────────────────────────────────
 # Invoked as `./setup.sh --dry-run`. Shims the main state-changing entry
 # points (sudo, sg, curl, ssh, tailscale up/down) with echo-only stubs, so
@@ -4048,9 +4109,12 @@ step_immich_backup() {
     esac
 
     # Tear down the legacy step-8 cron line if it exists, so we don't double-run.
-    if sudo crontab -l 2>/dev/null | grep -q immich-backup; then
+    local cur new
+    cur=$(_cron_get root) || { fail "Could not read root's crontab - legacy cron entry not touched."; return 1; }
+    if grep -q immich-backup <<<"$cur"; then
         info "Removing legacy cron entry (replaced by systemd timer)..."
-        (sudo crontab -l 2>/dev/null | grep -v immich-backup) | sudo crontab -
+        new=$(_cron_drop "$cur" "" immich-backup)
+        _cron_set root "$new" || { fail "Could not update root's crontab - legacy cron entry may still be active."; return 1; }
     fi
 
     # Install/refresh the script. Logs go to /var/log/immich-backup.log so the
@@ -4385,8 +4449,11 @@ _immich_backup_remove() {
     # the line RUNS), not just the literal "immich-backup", so a line that runs an
     # immich-db dump is actually removed instead of detected-but-left-behind.
     local cron_pat='immich-backup\.sh|immich-db|immich-backup\.log'
-    if sudo crontab -l 2>/dev/null | grep -qE "$cron_pat"; then
-        (sudo crontab -l 2>/dev/null | grep -vE "$cron_pat") | sudo crontab -
+    local cur new
+    cur=$(_cron_get root) || { fail "Could not read root's crontab - cron line not removed."; return 1; }
+    if grep -qE "$cron_pat" <<<"$cur"; then
+        new=$(_cron_drop "$cur" E "$cron_pat")
+        _cron_set root "$new" || { fail "Could not update root's crontab - the cron line may still be active."; return 1; }
     fi
 
     # Verify it's actually gone before claiming success — timer, script, AND any
@@ -4456,9 +4523,12 @@ step_disk_monitor() {
 
     if [[ -z "$push_url" ]]; then
         # Don't install a half-broken state. If a stale install exists, remove it.
-        if sudo crontab -l 2>/dev/null | grep -q disk-check; then
+        local cur new
+        cur=$(_cron_get root) || { fail "Could not read root's crontab - existing disk-check cron left as is."; return 1; }
+        if grep -q disk-check <<<"$cur"; then
             warn "Removing existing disk-check cron — no Kuma URL provided."
-            (sudo crontab -l 2>/dev/null | grep -v 'disk-check') | sudo crontab -
+            new=$(_cron_drop "$cur" "" disk-check)
+            _cron_set root "$new" || { fail "Could not update root's crontab - disk-check cron NOT removed."; return 1; }
             sudo rm -f /usr/local/bin/disk-check.sh
         fi
         info "Skipped. Re-run when you have a Kuma Push URL."
@@ -4536,7 +4606,15 @@ DISKEOF
     } | sudo tee /usr/local/bin/disk-check.sh > /dev/null
     sudo chmod +x /usr/local/bin/disk-check.sh
 
-    (sudo crontab -l 2>/dev/null | grep -v 'disk-check'; echo "*/5 * * * * /usr/local/bin/disk-check.sh") | sudo crontab -
+    local cur kept new
+    cur=$(_cron_get root) || { fail "Could not read root's crontab - disk-check NOT scheduled."; return 1; }
+    kept=$(_cron_drop "$cur" "" disk-check)
+    new="${kept:+$kept$'\n'}*/5 * * * * /usr/local/bin/disk-check.sh"
+    if ! _cron_set root "$new"; then
+        fail "Could not write root's crontab (or it did not read back as expected) - disk-check NOT scheduled."
+        info "Check it: sudo crontab -l"
+        return 1
+    fi
 
     info "Sending first heartbeat to Kuma..."
     sudo /usr/local/bin/disk-check.sh && ok "Heartbeat sent — Kuma monitor should turn green within ~6 min."
@@ -4635,7 +4713,7 @@ SYNCSCRIPT
                 info "Log:    $log_path"
                 info "Schedule: weekly (${sched_spec}), catches missed runs"
             else
-                (crontab -l 2>/dev/null | grep -v "sync-${job_name}.sh"; echo "$sched_spec $script_path") | crontab -
+                _cron_add_sync "$job_name" "$sched_spec" "$script_path" || return 1
                 ok "Scheduled sync job '${job_name}' (cron)"
                 info "Script: $script_path"
                 info "Log:    $log_path"
@@ -4912,11 +4990,11 @@ _sync_edit_job() {
                 local new_line
                 if $is_paused; then
                     new_line=$(echo "$old_line" | sed 's/^#PAUSED#//')
-                    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
+                    _cron_replace_line "$old_line" "$new_line" || return 1
                     ok "Resumed '${job_name}'"
                 else
                     new_line="#PAUSED#${old_line}"
-                    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
+                    _cron_replace_line "$old_line" "$new_line" || return 1
                     ok "Paused '${job_name}'"
                 fi
             else
@@ -4966,7 +5044,7 @@ _sync_edit_job() {
             echo ""
             _confirm_delete "sync-${job_name}" || return 0
             if [[ "$job_type" == "cron" ]]; then
-                (crontab -l 2>/dev/null | grep -vF "$old_line") | crontab -
+                _cron_remove_line "$old_line" || return 1
             else
                 _sync_remove_timer "$job_name"
             fi
@@ -4994,14 +5072,14 @@ _sync_change_schedule() {
     # If the job type is changing (cron ↔ timer), tear down the old side
     # before installing the new one.
     if [[ "$old_type" == "cron" && "$sched_kind" == "timer" ]]; then
-        (crontab -l 2>/dev/null | grep -vF "$old_line") | crontab -
+        _cron_remove_line "$old_line" || return 1
         _sync_install_timer "$job_name" "$script_path" "$sched_spec"
         ok "Schedule updated for '${job_name}' → timer (${sched_spec})"
         return
     fi
     if [[ "$old_type" == "timer" && "$sched_kind" == "cron" ]]; then
         _sync_remove_timer "$job_name"
-        (crontab -l 2>/dev/null | grep -v "sync-${job_name}.sh"; echo "$sched_spec $script_path") | crontab -
+        _cron_add_sync "$job_name" "$sched_spec" "$script_path" || return 1
         local human; human=$(_cron_to_english "$sched_spec")
         ok "Schedule updated for '${job_name}' → ${human}"
         return
@@ -5024,7 +5102,7 @@ _sync_change_schedule() {
     fi
 
     local new_line="${prefix}${sched_spec} ${rest}"
-    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
+    _cron_replace_line "$old_line" "$new_line" || return 1
 
     local human
     human=$(_cron_to_english "$sched_spec")
@@ -5035,24 +5113,37 @@ _sync_show_status() {
     # Fetch server-side crons FIRST (may prompt for sudo password) so the
     # password prompt appears before any table rendering.
     local server_crons="" server_timer_oncal=""
+    # cron_known: did we really read root's crontab? (An empty crontab is a valid
+    # read; a failed read is "unknown", never "not scheduled".)
+    local cron_known=false server_scripts=""
     info "Fetching server scheduled tasks..."
     local pw_rc=0
     _server_sudo_pw_prompt || pw_rc=$?
     if (( pw_rc == 0 )); then
-        # `|| true`: crontab -l exits 1 when root simply has no crontab.
-        server_crons=$(_server_sudo_run 'crontab -l 2>/dev/null') || true
+        # crontab -l exits 1 when root simply has no crontab, so success is
+        # signalled by the trailing marker (the script ran to the end), not the
+        # exit code. No marker = the read failed.
+        server_crons=$(_server_sudo_run 'crontab -l 2>/dev/null; echo __CRON_READ_OK__') || true
         unset _SRV_PW
+        if [[ "$server_crons" == *__CRON_READ_OK__ ]]; then
+            cron_known=true
+            server_crons="${server_crons%__CRON_READ_OK__}"
+        else
+            server_crons=""
+            warn "Could not read root's crontab - schedules below are shown as unknown."
+        fi
     elif (( pw_rc == 2 )); then
         warn "Server unreachable - root crontab not read; the schedule list below is incomplete."
     else
         warn "Wrong sudo password - root crontab not read; the schedule list below may be incomplete (not 'no cron')."
     fi
-    if [[ -z "$server_crons" ]] || ! echo "$server_crons" | grep -qE "immich-backup|disk-check"; then
-        server_crons=$(ssh "$SERVER_USER@$SERVER_IP" '
-            [[ -x /usr/local/bin/immich-backup.sh ]] && echo "0 3 * * * /usr/local/bin/immich-backup.sh"
-            [[ -x /usr/local/bin/disk-check.sh ]]    && echo "*/5 * * * * /usr/local/bin/disk-check.sh"
-        ' 2>/dev/null) || server_crons=""
-    fi
+    # Which scripts exist (never used to invent a schedule - only to show a row
+    # for them when the crontab could not be read or has no line for them).
+    server_scripts=$(ssh "$SERVER_USER@$SERVER_IP" '
+        [[ -x /usr/local/bin/immich-backup.sh ]] && echo immich-backup
+        [[ -x /usr/local/bin/disk-check.sh ]]    && echo disk-check
+        true
+    ' 2>/dev/null) || server_scripts=""
     # immich-backup migrated from cron to systemd timer (federver → 14 → 6).
     # If the timer is present, prefer its OnCalendar over any legacy cron line.
     # Read OnCalendar via `systemctl cat` — `systemctl show -p OnCalendar` is
@@ -5086,6 +5177,23 @@ _sync_show_status() {
             fi
         done
     fi
+    # Scripts installed but with no real cron line: say so, don't invent one.
+    local _n
+    for _n in immich-backup disk-check; do
+        grep -qx "$_n" <<<"$server_scripts" || continue
+        if [[ "$_n" == immich-backup ]]; then
+            [[ -n "$server_timer_oncal" ]] && continue
+            grep -q "immich-backup" <<<"$server_crons" && continue
+        else
+            grep -q "disk-check" <<<"$server_crons" && continue
+        fi
+        local _hint="14 → 7"; [[ "$_n" == immich-backup ]] && _hint="14 → 6"
+        if $cron_known; then
+            echo -e "  ${YELLOW}$(printf '%-20s %-18s' "$_n" "not scheduled")${NC} reinstall via $_hint"
+        else
+            echo -e "  ${YELLOW}$(printf '%-20s %-18s' "$_n" "schedule unknown")${NC} root crontab not read"
+        fi
+    done
 
     # Laptop-side sync crons
     local laptop_crons
@@ -5150,6 +5258,7 @@ _sync_show_status() {
     local has_server=false has_laptop=false
     [[ -n "$server_timer_oncal" ]] && has_server=true
     [[ -n "$server_crons" ]] && echo "$server_crons" | grep -qE "immich-backup|disk-check" && has_server=true
+    [[ -n "$server_scripts" ]] && has_server=true
     [[ -n "$laptop_crons" ]] && echo "$laptop_crons" | grep -q "sync-.*\.sh" && has_laptop=true
     $has_timer && has_laptop=true
     if [[ "$has_server" == "false" && "$has_laptop" == "false" ]]; then
@@ -5172,17 +5281,20 @@ _sync_show_status() {
         server_runs=$(ssh "$SERVER_USER@$SERVER_IP" '
             f=/var/log/immich-backup.log
             if [[ -r "$f" && -s "$f" ]]; then
-                printf "immich-backup|%s|%s\n" "$(stat -c "%y" "$f" | cut -c1-16)" "$(tail -n 1 "$f")"
+                printf "immich-backup|%s||%s\n" "$(stat -c "%y" "$f" | cut -c1-16)" "$(tail -n 1 "$f")"
             else
-                printf "immich-backup|never|\n"
+                printf "immich-backup|never||\n"
             fi
             # disk-check: state file "<YYYY-MM-DD HH:MM> ok|ALERT <msg>" (rewritten each run).
             f=/var/log/disk-check.last
             if [[ -r "$f" && -s "$f" ]]; then
                 l=$(head -n 1 "$f")
-                printf "disk-check|%s|%s\n" "${l:0:16}" "${l:17}"
+                # Age in seconds, computed with the server clock for both ends.
+                age=""
+                if t=$(date -d "${l:0:16}" +%s 2>/dev/null); then age=$(( $(date +%s) - t )); fi
+                printf "disk-check|%s|%s|%s\n" "${l:0:16}" "$age" "${l:17}"
             else
-                printf "disk-check|never|\n"
+                printf "disk-check|never||\n"
             fi
         ' 2>/dev/null) || server_runs=""
     fi
@@ -5194,7 +5306,7 @@ _sync_show_status() {
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     if [[ -n "$server_runs" ]]; then
-        while IFS='|' read -r name when last; do
+        while IFS='|' read -r name when age last; do
             [[ -z "$name" ]] && continue
             local status
             if [[ "$name" == "disk-check" ]]; then
@@ -5203,6 +5315,9 @@ _sync_show_status() {
                 if [[ "$when" == "never" ]]; then
                     when="—"
                     status="${DIM}no run recorded (reinstall via 14 → 7)${NC}"
+                elif [[ "$age" =~ ^-?[0-9]+$ ]] && (( age > 720 )); then
+                    # Cron runs every 5 min; >12 min old means it stopped running.
+                    status="${YELLOW}⚠ stale (last ${when})${NC}"
                 elif [[ "$last" == ok ]]; then
                     status="${GREEN}✓ ok${NC}"
                 elif [[ "$last" == ALERT\ * ]]; then
@@ -5356,7 +5471,7 @@ _sync_delete_job() {
     _confirm_delete "sync-${job_name}" || return 0
 
     if [[ "$job_type" == "cron" ]]; then
-        (crontab -l 2>/dev/null | grep -vF "$old_line") | crontab -
+        _cron_remove_line "$old_line" || return 1
     else
         _sync_remove_timer "$job_name"
     fi

@@ -145,10 +145,11 @@ _server_sudo_pw_prompt() {
 # password _SRV_PW (from _server_sudo_pw_prompt) and never trusting sudo to
 # consume it. Stdin carries the password line then the script text. The
 # remote shell reads the password into a variable (never argv, never echoed)
-# and the script into another, then pipes ONLY the password to `sudo -S`, so
-# stdin never reaches the script's interpreter: a NOPASSWD rule or cached
-# ticket (sudo never reads) just leaves the password unused. The script runs
-# via `bash -c` (HOME kept as the login user's). $1 = script text.
+# and the script into another, then pipes ONLY the password to `sudo -S`: a
+# NOPASSWD rule or cached ticket (sudo never reads) just leaves the password unused. The script runs
+# via `bash -c` (HOME kept as the login user's). Caveat: when sudo does not
+# read, bash -c inherits the pipe still holding the password line, so the
+# script must NEVER read stdin (no cat, read, docker exec -i, ...). $1 = script text.
 _server_sudo_run() {
     printf '%s\n%s\n' "$_SRV_PW" "$1" | ssh "$SERVER_USER@$SERVER_IP" \
         'IFS= read -r pw; s=$(cat); printf "%s\n" "$pw" | sudo -S -p "" env HOME="$HOME" bash -c "$s"' 2>/dev/null
@@ -781,6 +782,7 @@ _ts_uninstall() {
     echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+    (( via_ts )) && warn "You're connected to the server over Tailscale - removing it here will drop that connection."
     _confirm_delete tailscale || return 0
 
     _ts_remove_local || return 1
@@ -913,9 +915,26 @@ _ts_restart_both() {
         && ok "Server: restarted." || warn "Server: failed."
 }
 
+# True when this laptop reaches the server over Tailscale: the resolver swapped
+# SERVER_IP for SERVER_HOST_TS (roaming), or SERVER_IP is itself a tailnet
+# address (100.64.0.0/10, CGNAT range Tailscale uses). Never true on the server.
+_ts_connected_via_ts() {
+    _is_server && return 1
+    [[ -n "$SERVER_HOST_TS" && "$SERVER_IP" == "$SERVER_HOST_TS" ]] && return 0
+    [[ "$SERVER_IP" =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+$ ]]
+}
+
 _ts_uninstall_both() {
     # $1: "laptop" | "server" removes just that side (partial state); default both.
-    local side="${1:-both}" rc=0 srv srv_failed=0
+    local side="${1:-both}" rc=0 srv srv_failed=0 via_ts=0
+    _ts_connected_via_ts && via_ts=1
+    # Removing Tailscale on the server would cut the ssh session it runs over,
+    # and removing only the laptop half would leave a half-state: refuse both.
+    if (( via_ts )) && [[ "$side" != laptop ]]; then
+        fail "You're connected to the server over Tailscale - removing it there would cut this connection. Run this from home (LAN) or on the server itself."
+        [[ "$side" == both ]] && info "Nothing was changed (laptop side not removed either)."
+        return 1
+    fi
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     if [[ "$side" == both ]]; then
         echo -e "  ${RED}DELETE Tailscale (both laptop and server)${NC}"
@@ -938,6 +957,7 @@ _ts_uninstall_both() {
     echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+    (( via_ts )) && warn "You're connected to the server over Tailscale - removing it here will drop that connection."
     _confirm_delete tailscale || return 0
 
     # Server first: a laptop that reaches the server over Tailscale would cut
@@ -4445,29 +4465,68 @@ step_disk_monitor() {
         return 0
     fi
 
-    sudo tee /usr/local/bin/disk-check.sh > /dev/null <<DISKEOF
-#!/bin/bash
+    # Kuma's copied Push URL already carries "?status=up&msg=OK&ping=". Keep only
+    # the base so the script appends exactly one query string (a second "?" made
+    # Kuma read the first status=up, so "down" never registered).
+    push_url="${push_url%%\?*}"
+    local env_file
+    env_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.env"
+
+    # The monitored mounts are resolved by the script at RUN time from .env, so a
+    # moved or re-mounted data drive never leaves the monitor checking a dead path.
+    # Only the push URL and the .env location are baked in here.
+    { printf '#!/bin/bash\nPUSH_URL=%q\nENV_FILE=%q\n' "$push_url" "$env_file"
+      cat <<'DISKEOF'
 THRESHOLD=85
 LOG="/var/log/disk-check.log"
-PUSH_URL="$push_url"
-ALERT=false
 
-for mount in / /home /mnt/data; do
-    if mountpoint -q "\$mount" 2>/dev/null || [ "\$mount" = "/" ]; then
-        USAGE=\$(df "\$mount" 2>/dev/null | awk 'NR==2 {gsub("%",""); print \$5}')
-        if [ -n "\$USAGE" ] && [ "\$USAGE" -gt "\$THRESHOLD" ]; then
-            echo "\$(date): WARNING — \$mount is \${USAGE}% full" >> "\$LOG"
-            ALERT=true
-        fi
+envget() {
+    local line v
+    line=$(grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1)
+    v="${line#*=}"
+    v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+    printf '%s' "$v"
+}
+
+MOUNTS=(/)
+PROBLEMS=()
+
+# Mountpoints that back the configured data locations. A missing mount raises
+# an alert instead of being skipped.
+for key in FILES_LOCATION MUSIC_LOCATION UPLOAD_LOCATION DB_DATA_LOCATION; do
+    p=$(envget "$key")
+    [ -z "$p" ] && continue
+    case "$p" in /*) ;; *) p="$(dirname "$ENV_FILE")/$p" ;; esac
+    t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null)
+    if [ -z "$t" ]; then
+        PROBLEMS+=("$p not mounted")
+        continue
+    fi
+    # Directory sitting on / under a removable-drive prefix = the drive is absent.
+    if [ "$t" = "/" ]; then
+        case "$p" in /mnt/*|/media/*|/run/media/*) PROBLEMS+=("$p not mounted"); continue ;; esac
+    fi
+    seen=false
+    for m in "${MOUNTS[@]}"; do [ "$m" = "$t" ] && seen=true; done
+    $seen || MOUNTS+=("$t")
+done
+
+for m in "${MOUNTS[@]}"; do
+    USAGE=$(df -P "$m" 2>/dev/null | awk 'NR==2 {gsub("%",""); print $5}')
+    if [ -n "$USAGE" ] && [ "$USAGE" -gt "$THRESHOLD" ]; then
+        PROBLEMS+=("$m ${USAGE}%")
     fi
 done
 
-if \$ALERT; then
-    curl -s "\$PUSH_URL?status=down&msg=Disk+above+85%25" > /dev/null 2>&1
+if [ ${#PROBLEMS[@]} -gt 0 ]; then
+    MSG=$(IFS=,; echo "${PROBLEMS[*]}")
+    echo "$(date): WARNING - $MSG" >> "$LOG"
+    curl -s -m 15 -G --data-urlencode "status=down" --data-urlencode "msg=$MSG" "$PUSH_URL" > /dev/null 2>&1
 else
-    curl -s "\$PUSH_URL?status=up&msg=OK" > /dev/null 2>&1
+    curl -s -m 15 -G --data-urlencode "status=up" --data-urlencode "msg=OK" "$PUSH_URL" > /dev/null 2>&1
 fi
 DISKEOF
+    } | sudo tee /usr/local/bin/disk-check.sh > /dev/null
     sudo chmod +x /usr/local/bin/disk-check.sh
 
     (sudo crontab -l 2>/dev/null | grep -v 'disk-check'; echo "*/5 * * * * /usr/local/bin/disk-check.sh") | sudo crontab -

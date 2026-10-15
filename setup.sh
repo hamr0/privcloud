@@ -5644,7 +5644,24 @@ _sync_one_time_backup() {
                     remote_cmd="sudo -S -p '' $remote_cmd"
                 fi
 
-                info "Copying (no per-file progress for privileged copies)…"
+                # Optional progress bar: if `pv` is installed on the laptop, get the
+                # source's total bytes (same privilege as the read, password over
+                # stdin via the printf builtin — never on argv) and put `pv -s <bytes>`
+                # between ssh and the local tar. tar adds header/padding overhead, so
+                # the % can slightly overshoot or finish early — it's approximate. If
+                # the size lookup fails, pv still runs without -s (bytes + rate only).
+                local pv_stage=() size_cmd size_bytes=""
+                if command -v pv >/dev/null 2>&1; then
+                    size_cmd="du -sb $(_shq "$src_path") 2>/dev/null | cut -f1"
+                    $needs_priv && size_cmd="sudo -S -p '' du -sb $(_shq "$src_path") 2>/dev/null | cut -f1"
+                    size_bytes=$(printf '%s\n' "$server_pw" | ssh "$SERVER_USER@$SERVER_IP" "$size_cmd" 2>/dev/null | head -n1)
+                    pv_stage=(pv)
+                    [[ "$size_bytes" =~ ^[0-9]+$ ]] && pv_stage=(pv -s "$size_bytes")
+                    info "Copying… (progress below; % is approximate)"
+                else
+                    info "Copying (no per-file progress for privileged copies)…"
+                    echo -e "  ${DIM}Tip: sudo dnf install pv  for a progress bar with ETA${NC}"
+                fi
                 # The trailing `&& … || …` puts the pipeline in an AND-OR list,
                 # which is exempt from `set -e`, so we always reach the PIPESTATUS
                 # check (and the error message) even if a caller didn't neutralize
@@ -5653,15 +5670,24 @@ _sync_one_time_backup() {
                 # (dest under sudo) don't let a server-supplied archive restore
                 # setuid/setgid bits or foreign ownership onto the laptop — otherwise
                 # a compromised server could land a setuid-root file here.
-                local st
-                printf '%s\n' "$server_pw" \
-                  | ssh "$SERVER_USER@$SERVER_IP" "$remote_cmd" \
-                  | $dst_sudo tar --no-same-owner --no-same-permissions -C "$dst_path" -xf - \
-                  && st=("${PIPESTATUS[@]}") || st=("${PIPESTATUS[@]}")   # 0=printf 1=ssh/read 2=write
+                local st rd_i=1 wr_i=2   # no pv: 0=printf 1=ssh/read 2=write
+                if [ "${#pv_stage[@]}" -gt 0 ]; then
+                    wr_i=3               # with pv: 0=printf 1=ssh/read 2=pv 3=write
+                    printf '%s\n' "$server_pw" \
+                      | ssh "$SERVER_USER@$SERVER_IP" "$remote_cmd" \
+                      | "${pv_stage[@]}" \
+                      | $dst_sudo tar --no-same-owner --no-same-permissions -C "$dst_path" -xf - \
+                      && st=("${PIPESTATUS[@]}") || st=("${PIPESTATUS[@]}")
+                else
+                    printf '%s\n' "$server_pw" \
+                      | ssh "$SERVER_USER@$SERVER_IP" "$remote_cmd" \
+                      | $dst_sudo tar --no-same-owner --no-same-permissions -C "$dst_path" -xf - \
+                      && st=("${PIPESTATUS[@]}") || st=("${PIPESTATUS[@]}")
+                fi
                 unset server_pw
                 $primed_sudo && sudo -k 2>/dev/null   # drop the one-time ticket we opened
-                if [ "${st[1]}" -ne 0 ] || [ "${st[2]}" -ne 0 ]; then
-                    fail "Download failed (read exit ${st[1]}, write exit ${st[2]}) — wrong password, unreachable server, or a write error. Nothing was changed on the server; re-run to overwrite any partial files on the laptop."
+                if [ "${st[rd_i]}" -ne 0 ] || [ "${st[wr_i]}" -ne 0 ]; then
+                    fail "Download failed (read exit ${st[rd_i]}, write exit ${st[wr_i]}) — wrong password, unreachable server, or a write error. Nothing was changed on the server; re-run to overwrite any partial files on the laptop."
                     return 1
                 fi
             else

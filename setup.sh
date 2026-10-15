@@ -141,6 +141,19 @@ _server_sudo_pw_prompt() {
     return 1
 }
 
+# Run a script as root on the server in ONE non-TTY ssh session, using the
+# password _SRV_PW (from _server_sudo_pw_prompt) and never trusting sudo to
+# consume it. Stdin carries the password line then the script text. The
+# remote shell reads the password into a variable (never argv, never echoed)
+# and the script into another, then pipes ONLY the password to `sudo -S`, so
+# stdin never reaches the script's interpreter: a NOPASSWD rule or cached
+# ticket (sudo never reads) just leaves the password unused. The script runs
+# via `bash -c` (HOME kept as the login user's). $1 = script text.
+_server_sudo_run() {
+    printf '%s\n%s\n' "$_SRV_PW" "$1" | ssh "$SERVER_USER@$SERVER_IP" \
+        'IFS= read -r pw; s=$(cat); printf "%s\n" "$pw" | sudo -S -p "" env HOME="$HOME" bash -c "$s"' 2>/dev/null
+}
+
 # Gate for a two-sided service's laptop menu (Syncthing, Tailscale).
 #   $1 label   $2 laptop state ("" = not installed)   $3 server state ("" = not installed)
 #   $4 fn that installs the laptop side   $5 fn that installs the server side
@@ -708,7 +721,7 @@ _ts_key() {
 _ts_expiry_hint() {
     local state exp rest
     read -r state exp rest <<<"$1"
-    [[ -n "$state" && "$state" != NotInstalled && "$exp" != disabled ]] || return 0
+    [[ -n "$state" && "$state" != NotInstalled && "$state" != Unreachable && "$exp" != disabled ]] || return 0
     echo -e "    ${DIM}Turn off expiry: login.tailscale.com/admin/machines -> this machine -> ... -> Disable key expiry${NC}"
 }
 
@@ -717,6 +730,10 @@ _ts_expiry_hint() {
 _ts_print_state() {
     local state exp days ip
     read -r state exp days ip <<<"$1"
+    if [[ "$state" == Unreachable ]]; then
+        echo -e "    State:  ${RED}unreachable${NC}"
+        return 0
+    fi
     echo -e "    State:  $(_ts_word "$1")"
     _ts_running "$1" || ip=-    # never show a stale IP for a node that isn't Running
     echo -e "    IP:     ${BOLD}$ip${NC}"
@@ -898,7 +915,7 @@ _ts_restart_both() {
 
 _ts_uninstall_both() {
     # $1: "laptop" | "server" removes just that side (partial state); default both.
-    local side="${1:-both}" rc=0 srv
+    local side="${1:-both}" rc=0 srv srv_failed=0
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     if [[ "$side" == both ]]; then
         echo -e "  ${RED}DELETE Tailscale (both laptop and server)${NC}"
@@ -923,24 +940,31 @@ _ts_uninstall_both() {
     echo ""
     _confirm_delete tailscale || return 0
 
-    if [[ "$side" != server ]]; then
-        info "Removing from laptop..."
-        if _ts_remove_local; then ok "Laptop: removed."; else fail "Laptop: NOT removed."; rc=1; fi
-    fi
-
+    # Server first: a laptop that reaches the server over Tailscale would cut
+    # its own route by logging out before the server half ran.
     if [[ "$side" != laptop ]]; then
         info "Removing from server..."
         # One TTY session so sudo's password prompt works and its cached
         # credential covers every command (a separate non-TTY session gets no
         # credential and every sudo silently fails).
         ssh -t "$SERVER_USER@$SERVER_IP" 'sudo tailscale logout >/dev/null 2>&1; sudo tailscale down >/dev/null 2>&1; sudo systemctl disable --now tailscaled >/dev/null 2>&1; sudo dnf remove -y tailscale >/dev/null 2>&1' 2>/dev/null || true
-        # Verify the end state; don't trust that the commands ran.
-        srv=$(_server_probe 'type -P tailscale >/dev/null && echo installed')
+        # Verify the end state; don't trust that the commands ran. The snippet
+        # always exits 0 and names what it found, so only a real ssh failure
+        # reads as "unreachable".
+        srv=$(_server_probe 'if type -P tailscale >/dev/null; then echo installed; else echo absent; fi')
         case "$srv" in
-            "")          ok "Server: removed." ;;
+            absent)      ok "Server: removed." ;;
+            installed)   fail "Server: Tailscale is still installed - sudo/dnf remove failed. Try on the server: sudo dnf remove tailscale"; rc=1 ;;
             unreachable) fail "Server: could not confirm removal (server unreachable)."; rc=1 ;;
-            *)           fail "Server: Tailscale is still installed - sudo/dnf remove failed. Try on the server: sudo dnf remove tailscale"; rc=1 ;;
+            *)           fail "Server: could not confirm removal (unexpected probe result: $srv)."; rc=1 ;;
         esac
+        (( rc == 0 )) || srv_failed=1
+    fi
+
+    if [[ "$side" != server ]]; then
+        info "Removing from laptop..."
+        if _ts_remove_local; then ok "Laptop: removed."; else fail "Laptop: NOT removed."; rc=1; fi
+        (( srv_failed )) && warn "Server half was NOT completed - remove it on the server directly (sudo dnf remove tailscale) once it is reachable."
     fi
     return $rc
 }
@@ -4950,7 +4974,7 @@ _sync_show_status() {
     _server_sudo_pw_prompt || pw_rc=$?
     if (( pw_rc == 0 )); then
         # `|| true`: crontab -l exits 1 when root simply has no crontab.
-        server_crons=$(printf '%s\n' "$_SRV_PW" | ssh "$SERVER_USER@$SERVER_IP" "sudo -S -p '' crontab -l 2>/dev/null" 2>/dev/null) || true
+        server_crons=$(_server_sudo_run 'crontab -l 2>/dev/null') || true
         unset _SRV_PW
     elif (( pw_rc == 2 )); then
         warn "Server unreachable - root crontab not read; the schedule list below is incomplete."
@@ -6214,10 +6238,13 @@ step_save_to_pass() {
     _server_sudo_pw_prompt || pw_rc=$?
     if (( pw_rc == 2 )); then fail "Cannot reach server at $SERVER_IP - nothing saved."; return 1; fi
     if (( pw_rc != 0 )); then fail "Wrong sudo password - nothing saved to pass."; return 1; fi
-    # stdin = password line (consumed by sudo -S), then the script. The script
-    # runs as root so the /etc and /opt reads work in this one non-TTY session;
-    # HOME is kept as the login user's so ~/privcloud/.env still resolves.
-    server_data=$(ssh "$SERVER_USER@$SERVER_IP" "sudo -S -p '' env HOME=\$HOME bash -s" < <(printf '%s\n' "$_SRV_PW"; declare -f _ts_state _ts_running; cat <<'FETCH'
+    # The script runs as root (via _server_sudo_run, which keeps the password
+    # off the script's stdin) so the /etc and /opt reads work in this one
+    # non-TTY session; HOME is kept as the login user's so ~/privcloud/.env
+    # still resolves.
+    local fetch_script
+    fetch_script="$(declare -f _ts_state _ts_running)
+$(cat <<'FETCH'
 echo "HOSTNAME=$(hostname)"
 echo "LOCAL_IP=$(hostname -I | awk '{print $1}')"
 TS_STATE=$(_ts_state)
@@ -6247,7 +6274,8 @@ echo "---SYNCTHING_KEY---"
 cat /opt/syncthing/config/key.pem 2>/dev/null || true
 echo "---END---"
 FETCH
-))
+)"
+    server_data=$(_server_sudo_run "$fetch_script")
     unset _SRV_PW
 
     if [[ -z "$server_data" ]]; then

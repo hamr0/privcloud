@@ -2822,7 +2822,6 @@ step_syncthing() {
         systemctl --user is-active syncthing &>/dev/null && lap_state="installed (running)"
     fi
     srv_state=$(_syncthing_server_probe detect)
-    [[ "$srv_state" == "docker-error" ]] && srv_state=""
     [[ -n "$srv_state" && "$srv_state" != unreachable ]] && srv_state="installed ($srv_state)"
     _two_sided_gate "Syncthing" "$lap_state" "$srv_state" _syncthing_install_laptop "_syncthing_server_step" _syncthing_uninstall_both || g=$?
     (( g == 10 )) || return $g
@@ -6229,23 +6228,23 @@ cat ~/privcloud/.env 2>/dev/null || cat ~/data/.env 2>/dev/null || true
 echo "---DOCKER_COMPOSE---"
 cat ~/privcloud/docker-compose.yml 2>/dev/null || true
 echo "---WG_SERVER---"
-sudo cat /etc/wireguard/wg0.conf 2>/dev/null || true
+cat /etc/wireguard/wg0.conf 2>/dev/null || true
 echo "---WG_PEERS---"
-for f in $(sudo find /etc/wireguard -name '*.conf' ! -name 'wg0.conf' 2>/dev/null); do
+for f in $(find /etc/wireguard -name '*.conf' ! -name 'wg0.conf' 2>/dev/null); do
     echo "PEER_FILE=$(basename "$f" .conf)"
-    sudo cat "$f"
+    cat "$f"
     echo "END_PEER_FILE"
 done
 echo "---ADGUARD---"
-sudo cat /opt/adguard/conf/AdGuardHome.yaml 2>/dev/null || true
+cat /opt/adguard/conf/AdGuardHome.yaml 2>/dev/null || true
 echo "---SYNCTHING_ID---"
 docker exec syncthing syncthing --device-id 2>/dev/null || true
 echo "---SYNCTHING_CONFIG---"
-sudo cat /opt/syncthing/config/config.xml 2>/dev/null || true
+cat /opt/syncthing/config/config.xml 2>/dev/null || true
 echo "---SYNCTHING_CERT---"
-sudo cat /opt/syncthing/config/cert.pem 2>/dev/null || true
+cat /opt/syncthing/config/cert.pem 2>/dev/null || true
 echo "---SYNCTHING_KEY---"
-sudo cat /opt/syncthing/config/key.pem 2>/dev/null || true
+cat /opt/syncthing/config/key.pem 2>/dev/null || true
 echo "---END---"
 FETCH
 ))

@@ -5638,6 +5638,19 @@ _sync_one_time_backup() {
                 # -p '' silences sudo's own prompt; remote stderr is dropped so it
                 # can't corrupt the tar stream.
                 local remote_cmd="tar -C $(_shq "$tar_cd") -cf - $(_shq "$tar_arg") 2>/dev/null"
+
+                # No pv on the laptop → offer it now, before the server password
+                # prompt and the copy output (the dnf sudo prompt is the laptop's).
+                # Enter = yes. A failed install never aborts the copy.
+                if ! command -v pv >/dev/null 2>&1; then
+                    read -p "  Install pv for a progress bar? [Y/n] " -n 1 -r
+                    echo ""
+                    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                        sudo dnf install -y pv > /dev/null 2>&1 || true
+                        command -v pv >/dev/null 2>&1 || warn "pv not installed - copying without a progress bar."
+                    fi
+                fi
+
                 local server_pw=""
                 if $needs_priv; then
                     read -rsp "  federver sudo password: " server_pw; echo
@@ -5660,7 +5673,6 @@ _sync_one_time_backup() {
                     info "Copying… (progress below; % is approximate)"
                 else
                     info "Copying (no per-file progress for privileged copies)…"
-                    echo -e "  ${DIM}Tip: sudo dnf install pv  for a progress bar with ETA${NC}"
                 fi
                 # The trailing `&& … || …` puts the pipeline in an AND-OR list,
                 # which is exempt from `set -e`, so we always reach the PIPESTATUS

@@ -4479,6 +4479,11 @@ step_disk_monitor() {
       cat <<'DISKEOF'
 THRESHOLD=85
 LOG="/var/log/disk-check.log"
+# One-line state file, overwritten every run (never grows): "<date> ok" or
+# "<date> ALERT <msg>". The menu's "Last run" reads this; the log is alerts only.
+STATE="/var/log/disk-check.last"
+umask 022   # keep the state file world-readable so the menu can read it without sudo
+NOW=$(date '+%Y-%m-%d %H:%M')
 
 envget() {
     local line v
@@ -4521,8 +4526,10 @@ done
 if [ ${#PROBLEMS[@]} -gt 0 ]; then
     MSG=$(IFS=,; echo "${PROBLEMS[*]}")
     echo "$(date): WARNING - $MSG" >> "$LOG"
+    echo "$NOW ALERT $MSG" > "$STATE"
     curl -s -m 15 -G --data-urlencode "status=down" --data-urlencode "msg=$MSG" "$PUSH_URL" > /dev/null 2>&1
 else
+    echo "$NOW ok" > "$STATE"
     curl -s -m 15 -G --data-urlencode "status=up" --data-urlencode "msg=OK" "$PUSH_URL" > /dev/null 2>&1
 fi
 DISKEOF
@@ -4535,7 +4542,7 @@ DISKEOF
     sudo /usr/local/bin/disk-check.sh && ok "Heartbeat sent — Kuma monitor should turn green within ~6 min."
     echo ""
     ok "Disk space check runs every 5 minutes (alerts above 85%)."
-    info "Check log: cat /var/log/disk-check.log"
+    info "Last run: cat /var/log/disk-check.last   Alert history: cat /var/log/disk-check.log"
 }
 
 step_logrotation() {
@@ -5163,16 +5170,20 @@ _sync_show_status() {
         # has no tty, so sudo would silently fail and every row would render
         # as "never" (false negative, masks real failures).
         server_runs=$(ssh "$SERVER_USER@$SERVER_IP" '
-            for f in /var/log/immich-backup.log /var/log/disk-check.log; do
-                name=$(basename "$f" .log)
-                if [[ -r "$f" && -s "$f" ]]; then
-                    mtime=$(stat -c "%y" "$f" | cut -c1-16)
-                    last=$(tail -n 1 "$f")
-                    printf "%s|%s|%s\n" "$name" "$mtime" "$last"
-                else
-                    printf "%s|never|\n" "$name"
-                fi
-            done
+            f=/var/log/immich-backup.log
+            if [[ -r "$f" && -s "$f" ]]; then
+                printf "immich-backup|%s|%s\n" "$(stat -c "%y" "$f" | cut -c1-16)" "$(tail -n 1 "$f")"
+            else
+                printf "immich-backup|never|\n"
+            fi
+            # disk-check: state file "<YYYY-MM-DD HH:MM> ok|ALERT <msg>" (rewritten each run).
+            f=/var/log/disk-check.last
+            if [[ -r "$f" && -s "$f" ]]; then
+                l=$(head -n 1 "$f")
+                printf "disk-check|%s|%s\n" "${l:0:16}" "${l:17}"
+            else
+                printf "disk-check|never|\n"
+            fi
         ' 2>/dev/null) || server_runs=""
     fi
 
@@ -5187,13 +5198,17 @@ _sync_show_status() {
             [[ -z "$name" ]] && continue
             local status
             if [[ "$name" == "disk-check" ]]; then
-                # disk-check log only grows on threshold breaches; absence of
-                # entries means healthy. Don't claim it as "last run time".
+                # Read from the per-run state file (disk-check.last), not the
+                # alert-only log. Missing = old script not yet reinstalled.
                 if [[ "$when" == "never" ]]; then
                     when="—"
-                    status="${GREEN}✓ no alerts${NC}"
+                    status="${DIM}no run recorded (reinstall via 14 → 7)${NC}"
+                elif [[ "$last" == ok ]]; then
+                    status="${GREEN}✓ ok${NC}"
+                elif [[ "$last" == ALERT\ * ]]; then
+                    status="${YELLOW}⚠ ${last#ALERT }${NC}"
                 else
-                    status="${YELLOW}⚠ last alert above${NC}"
+                    status="${YELLOW}? check /var/log/disk-check.last${NC}"
                 fi
             elif [[ "$when" == "never" ]]; then
                 status="${DIM}—${NC}"

@@ -4664,40 +4664,103 @@ _disk_check_existing_note() {
     fi
 }
 
+# Print the Push URL baked into the installed script (empty = not found). The
+# script is root:root 0700, so read it with sudo; the generator wrote the line
+# with printf %q, which leaves a plain http URL untouched - anything else (an
+# escaped character, another scheme) is not trusted and counts as not found.
+_disk_check_url_from_script() {
+    local line u
+    [[ -e /usr/local/bin/disk-check.sh ]] || return 0    # nothing installed: no sudo prompt
+    line=$(sudo grep -m1 '^PUSH_URL=' /usr/local/bin/disk-check.sh 2>/dev/null) || return 0
+    u="${line#PUSH_URL=}"
+    [[ "$u" =~ ^https?://[A-Za-z0-9._:/-]+/api/push/[A-Za-z0-9]+$ ]] && printf '%s' "$u"
+    return 0
+}
+
+# Print the Push URL of Kuma's one active push monitor named "disk-space" (case
+# and spaces ignored, so "Disk Space" matches), read-only from its DB. $1 = host IP.
+# Zero or several matches, or any docker/sqlite failure = empty (ambiguous or unknown).
+_disk_check_url_from_kuma() {
+    local rows
+    rows=$(timeout 15 docker exec uptime_kuma sqlite3 -readonly /app/data/kuma.db \
+        "select push_token from monitor where type='push' and active=1 and lower(replace(name,' ','-'))='disk-space'" 2>/dev/null) || return 0
+    [[ "$rows" =~ ^[A-Za-z0-9]+$ ]] && printf 'http://%s:3001/api/push/%s' "$1" "$rows"
+    return 0
+}
+
+# Remove the installed disk-check (cron line + script) after a typed confirm,
+# then verify the end state. Blank or wrong confirm changes nothing.
+_disk_check_remove() {
+    local cur new reply rc=0
+    cur=$(_cron_get root) || { fail "Could not read root's crontab - nothing removed."; return 1; }
+    if ! grep -q disk-check <<<"$cur" && [[ ! -e /usr/local/bin/disk-check.sh ]]; then
+        info "No disk-check is installed - nothing to remove."
+        return 0
+    fi
+    printf "  Type \"${BOLD}${RED}disk-check${NC}\" to confirm removal (blank = cancel): "
+    read -r reply
+    if [[ -z "$reply" ]]; then info "Cancelled. Nothing removed."; return 0; fi
+    if [[ "$reply" != "disk-check" ]]; then fail "Input '${reply}' did not match 'disk-check'. Cancelled. Nothing removed."; return 0; fi
+    new=$(_cron_drop "$cur" "" disk-check)
+    _cron_set root "$new" || { fail "Could not update root's crontab - disk-check cron NOT removed."; return 1; }
+    sudo rm -f /usr/local/bin/disk-check.sh || rc=$?
+    cur=$(_cron_get root) || { fail "Removed, but could not re-read root's crontab to confirm."; return 1; }
+    if grep -q disk-check <<<"$cur" || [[ -e /usr/local/bin/disk-check.sh ]]; then
+        fail "disk-check is NOT fully removed (rm exit $rc) - check: sudo crontab -l; ls -l /usr/local/bin/disk-check.sh"
+        return 1
+    fi
+    ok "disk-check removed: cron line and script are gone."
+    return 0
+}
+
 step_disk_monitor() {
     info "Configures a 5-minute heartbeat to your Uptime Kuma 'Disk Space' monitor."
-    info "Without a Push URL the monitor stays dead — skip cleanly if Kuma isn't set up yet."
+    info "An existing Push URL is found and reused; nothing is removed unless you choose r."
     echo ""
 
-    local IP cur kept new
+    local IP cur kept new push_url found src choice
     IP=$(hostname -I | awk '{print $1}')
 
-    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${YELLOW}Set up the Kuma monitor first${NC}"
-    echo ""
-    echo -e "  1. Open ${BLUE}http://$IP:3001${NC}"
-    echo -e "  2. Add New Monitor → Monitor Type: ${BOLD}Push${NC}"
-    echo -e "  3. Friendly Name: ${BOLD}Disk Space${NC}"
-    echo -e "  4. Heartbeat Interval: ${BOLD}360${NC}  ${DIM}(seconds — matches the 5-min cron)${NC}"
-    echo -e "  5. Heartbeat Retry Interval: ${BOLD}60${NC}"
-    echo -e "  6. Max Retries: ${BOLD}2${NC}"
-    echo -e "  7. Click ${BOLD}Save${NC}, then copy the ${BOLD}Push URL${NC} from the monitor page"
-    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
-    read -p "  Paste the Push URL (q=back, Enter=skip): " push_url
-    [[ "$push_url" == "q" ]] && return 2
+    # Reuse a known URL before asking for one (the script first, then Kuma's DB).
+    found=$(_disk_check_url_from_script); src="the installed script"
+    if [[ -z "$found" ]]; then found=$(_disk_check_url_from_kuma "$IP"); src="Uptime Kuma"; fi
+
+    local show_box=1
+    if [[ -n "$found" ]]; then
+        show_box=0
+        info "Found the Push URL in $src (token …${found: -4})."
+        while true; do
+            read -p "  Enter = use it, p = paste a different URL, r = remove the monitor, q = back: " choice
+            case "$choice" in
+                "") push_url="$found"; break ;;
+                p|P) show_box=1; break ;;
+                r|R) _disk_check_remove; return $? ;;
+                q|Q) return 2 ;;
+                *) warn "Enter, p, r or q." ;;
+            esac
+        done
+    fi
 
     if [[ -z "$push_url" ]]; then
-        # Don't install a half-broken state. If a stale install exists, remove it.
-        cur=$(_cron_get root) || { fail "Could not read root's crontab - existing disk-check cron left as is."; return 1; }
-        if grep -q disk-check <<<"$cur"; then
-            warn "Removing existing disk-check cron — no Kuma URL provided."
-            new=$(_cron_drop "$cur" "" disk-check)
-            _cron_set root "$new" || { fail "Could not update root's crontab - disk-check cron NOT removed."; return 1; }
-            sudo rm -f /usr/local/bin/disk-check.sh
+        if (( show_box )); then
+            echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "  ${YELLOW}Set up the Kuma monitor first${NC}"
+            echo ""
+            echo -e "  1. Open ${BLUE}http://$IP:3001${NC}"
+            echo -e "  2. Add New Monitor → Monitor Type: ${BOLD}Push${NC}"
+            echo -e "  3. Friendly Name: ${BOLD}Disk Space${NC}"
+            echo -e "  4. Heartbeat Interval: ${BOLD}360${NC}  ${DIM}(seconds — matches the 5-min cron)${NC}"
+            echo -e "  5. Heartbeat Retry Interval: ${BOLD}60${NC}"
+            echo -e "  6. Max Retries: ${BOLD}2${NC}"
+            echo -e "  7. Click ${BOLD}Save${NC}, then copy the ${BOLD}Push URL${NC} from the monitor page"
+            echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
         fi
-        info "Skipped. Re-run when you have a Kuma Push URL."
-        return 0
+        read -p "  Paste the Push URL (q/Enter = back): " push_url
+        if [[ -z "$push_url" || "$push_url" == "q" ]]; then
+            info "No changes."
+            return 2
+        fi
     fi
 
     # Kuma's copied Push URL already carries "?status=up&msg=OK&ping=". Keep only

@@ -66,6 +66,73 @@ fail() { echo -e "  ${RED}✗${NC} $1"; }
 info() { echo -e "  ${DIM}$1${NC}"; }
 warn() { echo -e "  ${YELLOW}!!${NC} $1"; }
 
+# ── Safe crontab editing ─────────────────────────────
+# Never rewrite a crontab with `(crontab -l | grep -v x; echo y) | crontab -`:
+# the reader and the writer run concurrently, and `crontab -` can truncate the
+# file before `crontab -l` has read it (root's crontab ended up empty). Always:
+# read into a variable (_cron_get), build the new text, write it with ONE
+# command (_cron_set), which re-reads and verifies. $1 is "root" (sudo crontab)
+# or "user" (the laptop user's crontab).
+_cron_cmd() { if [[ "$1" == root ]]; then sudo crontab "${@:2}"; else crontab "${@:2}"; fi; }
+
+# Print the current crontab. "No crontab yet" is an empty crontab (exit 0);
+# any other failure (sudo denied, crontab missing) returns 1.
+_cron_get() {
+    local out err rc=0 ef
+    ef=$(mktemp) || return 1
+    out=$(_cron_cmd "$1" -l 2>"$ef") || rc=$?   # stdout = the crontab; stderr kept apart
+    err=$(<"$ef"); rm -f "$ef"
+    if (( rc != 0 )); then
+        [[ "$err" == *"no crontab for"* ]] && return 0
+        return 1
+    fi
+    printf '%s' "$out"
+}
+
+# Print $1 (a crontab) without the lines matching grep flags $2 / pattern $3.
+_cron_drop() {
+    [[ -n "$1" ]] || return 0
+    printf '%s\n' "$1" | grep -v"$2" -- "$3" || true
+}
+
+# Write $2 as the whole crontab for $1, then re-read and require an exact match.
+_cron_set() {
+    local who="$1" new="$2" back
+    if [[ -z "$new" ]]; then
+        # Empty = remove the crontab (`crontab -r`, documented); never pipe an
+        # empty file into `crontab -`. -r errors when none exists - already empty.
+        local rerr
+        rerr=$(_cron_cmd "$who" -r 2>&1) || [[ "$rerr" == *"no crontab for"* ]] || return 1
+    else
+        printf '%s\n' "$new" | _cron_cmd "$who" - || return 1
+    fi
+    back=$(_cron_get "$who") || return 1
+    [[ "$back" == "$new" ]]
+}
+
+# Laptop sync-job crontab edits (user crontab), each verified.
+_cron_add_sync() {  # job_name sched_spec script_path
+    local cur kept
+    cur=$(_cron_get user) || { fail "Could not read your crontab - '$1' NOT scheduled."; return 1; }
+    kept=$(_cron_drop "$cur" "" "sync-$1.sh")
+    _cron_set user "${kept:+$kept$'\n'}$2 $3" || { fail "Could not write your crontab - '$1' NOT scheduled."; return 1; }
+}
+_cron_remove_line() {  # line (fixed-string substring match, like grep -vF)
+    local cur
+    cur=$(_cron_get user) || { fail "Could not read your crontab - cron line not removed."; return 1; }
+    _cron_set user "$(_cron_drop "$cur" F "$1")" || { fail "Could not write your crontab - cron line may still be present."; return 1; }
+}
+_cron_replace_line() {  # old_line new_line (exact whole-line match)
+    local cur l new="" first=1 hit=0
+    cur=$(_cron_get user) || { fail "Could not read your crontab - nothing changed."; return 1; }
+    while IFS= read -r l; do
+        if [[ "$l" == "$1" ]]; then l="$2"; hit=1; fi
+        if (( first )); then new="$l"; first=0; else new+=$'\n'"$l"; fi
+    done <<<"$cur"
+    (( hit )) || { fail "Job line not found in crontab - nothing changed."; return 1; }
+    _cron_set user "$new" || { fail "Could not write your crontab - change not applied."; return 1; }
+}
+
 # ── Dry-run mode ─────────────────────────────────────
 # Invoked as `./setup.sh --dry-run`. Shims the main state-changing entry
 # points (sudo, sg, curl, ssh, tailscale up/down) with echo-only stubs, so
@@ -113,6 +180,105 @@ _tcp_open() { timeout 2 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; }
 # ssh "..." string that is executed directly (one parse). Not sufficient for
 # strings later re-parsed by `bash -c` or written to scheduled scripts.
 _shq() { printf '%q' "$1"; }
+
+# Run a read-only shell snippet on the server (non-TTY, no sudo) and print its
+# stdout. Prints "unreachable" if the ssh itself fails, so callers can tell
+# "not installed" (empty output) from "couldn't ask".
+_server_probe() {
+    local out
+    out=$(ssh "$SERVER_USER@$SERVER_IP" "$1" 2>/dev/null) || { echo "unreachable"; return; }
+    echo "$out"
+}
+
+# Prompt once for the server's sudo password and check it. sudo's cached
+# credential does not cross ssh sessions, so root reads from a non-TTY session
+# need the password supplied each time over ssh's encrypted stdin (the same
+# `sudo -S -p ''` pattern the privileged Download uses). On success the
+# password is left in _SRV_PW for the caller's printf-builtin pipe (never argv,
+# never echoed) and the caller MUST `unset _SRV_PW`. Returns 0 ok; 1 wrong
+# password; 2 server unreachable. Caller reports - nothing is read on failure.
+_server_sudo_pw_prompt() {
+    local rc
+    _SRV_PW=""
+    read -rsp "  federver sudo password: " _SRV_PW; echo
+    printf '%s\n' "$_SRV_PW" | ssh "$SERVER_USER@$SERVER_IP" "sudo -S -p '' true" > /dev/null 2>&1 && return 0
+    rc=$?
+    unset _SRV_PW
+    (( rc == 255 )) && return 2
+    return 1
+}
+
+# Run a script as root on the server in ONE non-TTY ssh session, using the
+# password _SRV_PW (from _server_sudo_pw_prompt) and never trusting sudo to
+# consume it. Stdin carries the password line then the script text. The
+# remote shell reads the password into a variable (never argv, never echoed)
+# and the script into another, then pipes ONLY the password to `sudo -S`: a
+# NOPASSWD rule or cached ticket (sudo never reads) just leaves the password unused. The script runs
+# via `bash -c` (HOME kept as the login user's). Caveat: when sudo does not
+# read, bash -c inherits the pipe still holding the password line, so the
+# script must NEVER read stdin (no cat, read, docker exec -i, ...). $1 = script text.
+_server_sudo_run() {
+    printf '%s\n%s\n' "$_SRV_PW" "$1" | ssh "$SERVER_USER@$SERVER_IP" \
+        'IFS= read -r pw; s=$(cat); printf "%s\n" "$pw" | sudo -S -p "" env HOME="$HOME" bash -c "$s"' 2>/dev/null
+}
+
+# Gate for a two-sided service's laptop menu (Syncthing, Tailscale).
+#   $1 label   $2 laptop state ("" = not installed)   $3 server state ("" = not installed)
+#   $4 fn that installs the laptop side   $5 fn that installs the server side
+#   $6 fn "<side>" that uninstalls one side ("laptop" | "server"), typed confirm + verify
+# Returns 10 when both sides are installed (caller continues to its full menu).
+# Anything else is the final result for the caller to return: 2 = user backed
+# out / nothing changed (run_step skips the DONE banner), 1 = failure.
+# Opening the menu never installs anything by itself.
+_two_sided_gate() {
+    local label="$1" lap="$2" srv="$3" inst_lap="$4" inst_srv="$5" uninst="$6" reply
+    if [[ "$srv" == "unreachable" ]]; then
+        fail "Cannot reach the server at $SERVER_IP - changing nothing."
+        return 1
+    fi
+    [[ -n "$lap" && -n "$srv" ]] && return 10
+
+    if [[ -z "$lap" && -z "$srv" ]]; then
+        warn "$label isn't installed."
+        read -rp "  Install it now? [y/N] " reply || reply=""
+        if [[ ! "$reply" =~ ^[Yy]$ ]]; then
+            info "Not installing."
+            return 2
+        fi
+        "$inst_lap" || return 1
+        echo -e "  ${BOLD}── Server side ──${NC}"
+        _on_server "$inst_srv" || return $?
+        return 0
+    fi
+
+    # Partial: exactly one side present.
+    echo -e "  Laptop: ${lap:-${YELLOW}not installed${NC}}"
+    echo -e "  Server: ${srv:-${YELLOW}not installed${NC}}"
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Install the missing side"
+    echo -e "  ${BOLD}2)${NC} ${RED}Uninstall the remaining side${NC}"
+    echo -e "  ${BOLD}0)${NC} Back"
+    echo ""
+    read -rp "  Choose: " reply || reply=0
+    case "$reply" in
+        1)
+            # `|| return $?`: under set -e a bare failing call would abort the script.
+            if [[ -z "$lap" ]]; then
+                "$inst_lap" || return $?
+                return 0
+            fi
+            echo -e "  ${BOLD}── Server side ──${NC}"
+            _on_server "$inst_srv" || return $?
+            return 0
+            ;;
+        2)
+            if [[ -n "$lap" ]]; then "$uninst" laptop || return $?
+            else "$uninst" server || return $?; fi
+            return 0
+            ;;
+        *) return 2 ;;
+    esac
+}
 
 # Run a step with clear screen and success/fail banner.
 # Convention: a step that returns 2 means "user picked Back before doing
@@ -623,7 +789,7 @@ _ts_key() {
 _ts_expiry_hint() {
     local state exp rest
     read -r state exp rest <<<"$1"
-    [[ -n "$state" && "$state" != NotInstalled && "$exp" != disabled ]] || return 0
+    [[ -n "$state" && "$state" != NotInstalled && "$state" != Unreachable && "$exp" != disabled ]] || return 0
     echo -e "    ${DIM}Turn off expiry: login.tailscale.com/admin/machines -> this machine -> ... -> Disable key expiry${NC}"
 }
 
@@ -632,6 +798,10 @@ _ts_expiry_hint() {
 _ts_print_state() {
     local state exp days ip
     read -r state exp days ip <<<"$1"
+    if [[ "$state" == Unreachable ]]; then
+        echo -e "    State:  ${RED}unreachable${NC}"
+        return 0
+    fi
     echo -e "    State:  $(_ts_word "$1")"
     _ts_running "$1" || ip=-    # never show a stale IP for a node that isn't Running
     echo -e "    IP:     ${BOLD}$ip${NC}"
@@ -679,8 +849,17 @@ _ts_uninstall() {
     echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+    (( via_ts )) && warn "You're connected to the server over Tailscale - removing it here will drop that connection."
     _confirm_delete tailscale || return 0
 
+    _ts_remove_local || return 1
+    ok "Tailscale removed."
+}
+
+# Remove Tailscale from the machine this runs on, then verify the binary is
+# really gone. logout/down can legitimately fail on an already-logged-out
+# node, so only the end state counts. Returns 0 only if verified.
+_ts_remove_local() {
     info "Bringing tailnet connection down..."
     sudo tailscale logout > /dev/null 2>&1 || true
     sudo tailscale down > /dev/null 2>&1 || true
@@ -688,7 +867,11 @@ _ts_uninstall() {
     sudo systemctl disable --now tailscaled > /dev/null 2>&1 || true
     info "Removing package..."
     sudo dnf remove -y tailscale > /dev/null 2>&1 || true
-    ok "Tailscale removed."
+    hash -r
+    if type -P tailscale > /dev/null; then
+        fail "Tailscale is still installed - dnf remove failed. Try: sudo dnf remove tailscale"
+        return 1
+    fi
 }
 
 _ts_install() {
@@ -799,13 +982,36 @@ _ts_restart_both() {
         && ok "Server: restarted." || warn "Server: failed."
 }
 
+# True when this laptop reaches the server over Tailscale: the resolver swapped
+# SERVER_IP for SERVER_HOST_TS (roaming), or SERVER_IP is itself a tailnet
+# address (100.64.0.0/10, CGNAT range Tailscale uses). Never true on the server.
+_ts_connected_via_ts() {
+    _is_server && return 1
+    [[ -n "$SERVER_HOST_TS" && "$SERVER_IP" == "$SERVER_HOST_TS" ]] && return 0
+    [[ "$SERVER_IP" =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9]+\.[0-9]+$ ]]
+}
+
 _ts_uninstall_both() {
+    # $1: "laptop" | "server" removes just that side (partial state); default both.
+    local side="${1:-both}" rc=0 srv srv_failed=0 via_ts=0
+    _ts_connected_via_ts && via_ts=1
+    # Removing Tailscale on the server would cut the ssh session it runs over,
+    # and removing only the laptop half would leave a half-state: refuse both.
+    if (( via_ts )) && [[ "$side" != laptop ]]; then
+        fail "You're connected to the server over Tailscale - removing it there would cut this connection. Run this from home (LAN) or on the server itself."
+        [[ "$side" == both ]] && info "Nothing was changed (laptop side not removed either)."
+        return 1
+    fi
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${RED}DELETE Tailscale (both laptop and server)${NC}"
+    if [[ "$side" == both ]]; then
+        echo -e "  ${RED}DELETE Tailscale (both laptop and server)${NC}"
+    else
+        echo -e "  ${RED}DELETE Tailscale ($side only)${NC}"
+    fi
     echo ""
     echo -e "  ${BOLD}What will happen:${NC}"
-    echo -e "    ${RED}•${NC} Laptop: tailscale logout + disable tailscaled + dnf remove"
-    echo -e "    ${RED}•${NC} Server: tailscale logout + disable tailscaled + dnf remove"
+    [[ "$side" != server ]] && echo -e "    ${RED}•${NC} Laptop: tailscale logout + disable tailscaled + dnf remove"
+    [[ "$side" != laptop ]] && echo -e "    ${RED}•${NC} Server: tailscale logout + disable tailscaled + dnf remove"
     echo ""
     echo -e "  ${BOLD}Consequences:${NC}"
     echo -e "    ${YELLOW}•${NC} No remote access to the server from anywhere"
@@ -818,24 +1024,36 @@ _ts_uninstall_both() {
     echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
+    (( via_ts )) && warn "You're connected to the server over Tailscale - removing it here will drop that connection."
     _confirm_delete tailscale || return 0
 
-    info "Removing from laptop..."
-    sudo tailscale logout > /dev/null 2>&1 || true
-    sudo tailscale down > /dev/null 2>&1 || true
-    sudo systemctl disable --now tailscaled > /dev/null 2>&1 || true
-    sudo dnf remove -y tailscale > /dev/null 2>&1 || true
-    ok "Laptop: removed."
+    # Server first: a laptop that reaches the server over Tailscale would cut
+    # its own route by logging out before the server half ran.
+    if [[ "$side" != laptop ]]; then
+        info "Removing from server..."
+        # One TTY session so sudo's password prompt works and its cached
+        # credential covers every command (a separate non-TTY session gets no
+        # credential and every sudo silently fails).
+        ssh -t "$SERVER_USER@$SERVER_IP" 'sudo tailscale logout >/dev/null 2>&1; sudo tailscale down >/dev/null 2>&1; sudo systemctl disable --now tailscaled >/dev/null 2>&1; sudo dnf remove -y tailscale >/dev/null 2>&1' 2>/dev/null || true
+        # Verify the end state; don't trust that the commands ran. The snippet
+        # always exits 0 and names what it found, so only a real ssh failure
+        # reads as "unreachable".
+        srv=$(_server_probe 'if type -P tailscale >/dev/null; then echo installed; else echo absent; fi')
+        case "$srv" in
+            absent)      ok "Server: removed." ;;
+            installed)   fail "Server: Tailscale is still installed - sudo/dnf remove failed. Try on the server: sudo dnf remove tailscale"; rc=1 ;;
+            unreachable) fail "Server: could not confirm removal (server unreachable)."; rc=1 ;;
+            *)           fail "Server: could not confirm removal (unexpected probe result: $srv)."; rc=1 ;;
+        esac
+        (( rc == 0 )) || srv_failed=1
+    fi
 
-    info "Removing from server..."
-    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
-    ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_TS_UNINSTALL'
-        sudo tailscale logout > /dev/null 2>&1 || true
-        sudo tailscale down > /dev/null 2>&1 || true
-        sudo systemctl disable --now tailscaled > /dev/null 2>&1 || true
-        sudo dnf remove -y tailscale > /dev/null 2>&1 || true
-REMOTE_TS_UNINSTALL
-    ok "Server: removed."
+    if [[ "$side" != server ]]; then
+        info "Removing from laptop..."
+        if _ts_remove_local; then ok "Laptop: removed."; else fail "Laptop: NOT removed."; rc=1; fi
+        (( srv_failed )) && warn "Server half was NOT completed - remove it on the server directly (sudo dnf remove tailscale) once it is reachable."
+    fi
+    return $rc
 }
 
 step_tailscale() {
@@ -850,20 +1068,13 @@ step_tailscale() {
     info "without port forwarding. Like a private VPN."
     echo ""
 
-    # Check if both sides have Tailscale
-    local laptop_installed=false server_installed=false
-    command -v tailscale &>/dev/null && laptop_installed=true
-    ssh "$SERVER_USER@$SERVER_IP" "command -v tailscale" &>/dev/null && server_installed=true
-
-    # Fresh install: install both sides
-    if [[ "$laptop_installed" == false || "$server_installed" == false ]]; then
-        [[ "$laptop_installed" == false ]] && { _ts_install_laptop || return 1; }
-        if [[ "$server_installed" == false ]]; then
-            echo -e "  ${BOLD}── Server side ──${NC}"
-            _on_server _ts_server_step
-        fi
-        return
-    fi
+    # Which sides have Tailscale? Not both -> the gate handles it (offer to
+    # install, or manage the one side that exists); it never installs on its own.
+    local lap_state="" srv_state="" g=0
+    command -v tailscale &>/dev/null && lap_state="installed ($(_ts_state | cut -d' ' -f1))"
+    srv_state=$(_server_probe "$(declare -f _ts_state); if type -P tailscale >/dev/null; then echo \"installed (\$(_ts_state | cut -d' ' -f1))\"; fi")
+    _two_sided_gate "Tailscale" "$lap_state" "$srv_state" _ts_install_laptop "_ts_server_step" _ts_uninstall_both || g=$?
+    (( g == 10 )) || return $g
 
     # Both installed — show status + unified management submenu
     echo -e "  ${BOLD}── Laptop ──${NC}"
@@ -2312,6 +2523,24 @@ _syncthing_show_paths() {
     info "(Pairings and folder shares are kept — they live in /opt/syncthing.)"
 }
 
+# True only when the docker query SUCCEEDED and the named container is absent.
+# A failed query (permissions, daemon down) must not read as "removed".
+_container_gone() {
+    local names
+    names=$(sudo docker ps -a --format '{{.Names}}' 2>/dev/null) || return 1
+    ! grep -qx "$1" <<<"$names"
+}
+
+# Close Syncthing's firewall ports; non-zero if ANY firewall-cmd step failed.
+# Self-contained so it can be shipped to the server with `declare -f`.
+_syncthing_fw_close() {
+    sudo firewall-cmd --permanent --remove-port=8384/tcp  > /dev/null 2>&1 \
+        && sudo firewall-cmd --permanent --remove-port=22000/tcp > /dev/null 2>&1 \
+        && sudo firewall-cmd --permanent --remove-port=22000/udp > /dev/null 2>&1 \
+        && sudo firewall-cmd --permanent --remove-port=21027/udp > /dev/null 2>&1 \
+        && sudo firewall-cmd --reload > /dev/null 2>&1
+}
+
 _syncthing_uninstall() {
     echo ""
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -2336,13 +2565,16 @@ _syncthing_uninstall() {
 
     info "Removing syncthing container..."
     sudo docker rm -f syncthing > /dev/null 2>&1 || true
+    if ! _container_gone syncthing; then
+        fail "Container 'syncthing' is still present (or docker could not be queried) - not removed."
+        return 1
+    fi
 
     info "Closing firewall ports..."
-    sudo firewall-cmd --permanent --remove-port=8384/tcp  > /dev/null 2>&1 || true
-    sudo firewall-cmd --permanent --remove-port=22000/tcp > /dev/null 2>&1 || true
-    sudo firewall-cmd --permanent --remove-port=22000/udp > /dev/null 2>&1 || true
-    sudo firewall-cmd --permanent --remove-port=21027/udp > /dev/null 2>&1 || true
-    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+    if ! _syncthing_fw_close; then
+        fail "Container removed, but the firewall ports were NOT closed (8384/tcp, 22000/tcp+udp, 21027/udp)."
+        return 1
+    fi
 
     ok "Syncthing removed."
     echo -e "  ${DIM}Config kept at /opt/syncthing. To wipe entirely:${NC} sudo rm -rf /opt/syncthing"
@@ -2593,44 +2825,91 @@ _syncthing_restart_both() {
         && ok "Server: restarted." || warn "Server: failed."
 }
 
+# Laptop half of the Syncthing uninstall. Returns 0 only if verified gone.
+_syncthing_uninstall_laptop() {
+    info "Removing from laptop..."
+    systemctl --user disable --now syncthing 2>/dev/null || true
+    sudo dnf remove -y syncthing > /dev/null 2>&1 || true
+    hash -r
+    if type -P syncthing > /dev/null; then
+        fail "Laptop: syncthing is still installed - dnf remove failed. Try: sudo dnf remove syncthing"
+        return 1
+    fi
+    ok "Laptop: removed."
+}
+
+# Server half, driven from the laptop. docker needs no sudo (the server user
+# is in the docker group), so it runs in a plain ssh and is then verified.
+# firewall-cmd does need root, and sudo's credential doesn't cross ssh
+# sessions, so it gets its own TTY session (one prompt covers every command).
+# Returns 0 only if the container is gone AND the ports are closed.
+_syncthing_uninstall_server_remote() {
+    local err state
+    info "Removing from server..."
+    err=$(ssh "$SERVER_USER@$SERVER_IP" 'docker rm -f syncthing' 2>&1 >/dev/null) || true
+    state=$(_syncthing_server_probe verify)
+    case "$state" in
+        "") ;;
+        unreachable)  fail "Server: could not confirm removal (server unreachable)."; return 1 ;;
+        docker-error) fail "Server: could not query docker to confirm removal. ${err}"; return 1 ;;
+        *)            fail "Server: container still present (${state}). ${err}"; return 1 ;;
+    esac
+    info "Closing firewall ports (sudo password may be asked)..."
+    if ! ssh -t "$SERVER_USER@$SERVER_IP" "$(declare -f _syncthing_fw_close); _syncthing_fw_close"; then
+        fail "Server: container removed, but the firewall ports were NOT closed (8384/tcp, 22000/tcp+udp, 21027/udp)."
+        return 1
+    fi
+    ok "Server: removed."
+}
+
 _syncthing_uninstall_both() {
+    # $1: "laptop" | "server" removes just that side (partial state); default both.
+    local side="${1:-both}" rc=0
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "  ${RED}DELETE Syncthing (both laptop and server)${NC}"
+    if [[ "$side" == both ]]; then
+        echo -e "  ${RED}DELETE Syncthing (both laptop and server)${NC}"
+    else
+        echo -e "  ${RED}DELETE Syncthing ($side only)${NC}"
+    fi
     echo ""
     echo -e "  ${BOLD}What will happen:${NC}"
-    echo -e "    ${RED}•${NC} Laptop: systemctl --user disable --now syncthing + dnf remove"
-    echo -e "    ${RED}•${NC} Server: stop + remove Docker container, close firewall ports"
+    [[ "$side" != server ]] && echo -e "    ${RED}•${NC} Laptop: systemctl --user disable --now syncthing + dnf remove"
+    [[ "$side" != laptop ]] && echo -e "    ${RED}•${NC} Server: stop + remove Docker container, close firewall ports"
     echo ""
     echo -e "  ${BOLD}Consequences:${NC}"
     echo -e "    ${YELLOW}•${NC} Real-time file sync between all devices stops"
     echo ""
     echo -e "  ${BOLD}Kept:${NC}"
-    echo -e "    ${GREEN}•${NC} Server: /opt/syncthing/ (identity, config, pairings)"
-    echo -e "    ${GREEN}•${NC} Laptop: ~/.local/state/syncthing/ (identity, config)"
+    [[ "$side" != laptop ]] && echo -e "    ${GREEN}•${NC} Server: /opt/syncthing/ (identity, config, pairings)"
+    [[ "$side" != server ]] && echo -e "    ${GREEN}•${NC} Laptop: ~/.local/state/syncthing/ (identity, config)"
     echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     _confirm_delete syncthing || return 0
 
-    info "Removing from laptop..."
-    systemctl --user disable --now syncthing 2>/dev/null || true
-    sudo dnf remove -y syncthing > /dev/null 2>&1 || true
-    ok "Laptop: removed."
+    [[ "$side" != server ]] && { _syncthing_uninstall_laptop || rc=1; }
+    [[ "$side" != laptop ]] && { _syncthing_uninstall_server_remote || rc=1; }
 
-    info "Removing from server..."
-    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
-    ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_UNINSTALL'
-        sudo docker rm -f syncthing > /dev/null 2>&1 || true
-        sudo firewall-cmd --permanent --remove-port=8384/tcp  > /dev/null 2>&1 || true
-        sudo firewall-cmd --permanent --remove-port=22000/tcp > /dev/null 2>&1 || true
-        sudo firewall-cmd --permanent --remove-port=22000/udp > /dev/null 2>&1 || true
-        sudo firewall-cmd --permanent --remove-port=21027/udp > /dev/null 2>&1 || true
-        sudo firewall-cmd --reload > /dev/null 2>&1 || true
-REMOTE_UNINSTALL
-    ok "Server: removed."
-    echo ""
-    echo -e "  ${DIM}Server config kept at /opt/syncthing${NC}"
-    echo -e "  ${DIM}Laptop config kept at ~/.local/state/syncthing${NC}"
+    if (( rc == 0 )); then
+        echo ""
+        [[ "$side" != laptop ]] && echo -e "  ${DIM}Server config kept at /opt/syncthing${NC}"
+        [[ "$side" != server ]] && echo -e "  ${DIM}Laptop config kept at ~/.local/state/syncthing${NC}"
+    fi
+    return $rc
+}
+
+# Server-side Syncthing state for the laptop menu (read-only, non-TTY, no sudo:
+# the server user is in the docker group). Prints: running | stopped | "" (not
+# installed) | unreachable. "verify" mode also prints docker-error when docker
+# can't be queried, so a failed query never reads as "removed"; plain mode
+# treats it as not installed (unchanged detection behaviour).
+_syncthing_server_probe() {
+    local on_err=""
+    [[ "$1" == verify ]] && on_err='echo docker-error; exit 0'
+    _server_probe "n=\$(docker ps -a --format '{{.Names}}' 2>/dev/null) || { ${on_err:-exit 0}; }
+if grep -qx syncthing <<<\"\$n\"; then
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx syncthing; then echo running; else echo stopped; fi
+fi"
 }
 
 step_syncthing() {
@@ -2645,20 +2924,18 @@ step_syncthing() {
         return
     fi
 
-    # ── Laptop-side: check if both sides are installed ──
-    local laptop_installed=false server_installed=false
-    command -v syncthing &>/dev/null && laptop_installed=true
-    ssh "$SERVER_USER@$SERVER_IP" "docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'" 2>/dev/null && server_installed=true
-
-    # Fresh install: install both sides
-    if [[ "$laptop_installed" == false || "$server_installed" == false ]]; then
-        [[ "$laptop_installed" == false ]] && { _syncthing_install_laptop || return 1; }
-        if [[ "$server_installed" == false ]]; then
-            echo -e "  ${BOLD}── Server side ──${NC}"
-            _on_server _syncthing_server_step
-        fi
-        return
+    # ── Laptop-side: which sides are installed? ──
+    # Not both -> the gate handles it (offer to install, or manage the one side
+    # that exists); opening this menu never installs anything by itself.
+    local lap_state="" srv_state="" g=0
+    if command -v syncthing &>/dev/null; then
+        lap_state="installed (stopped)"
+        systemctl --user is-active syncthing &>/dev/null && lap_state="installed (running)"
     fi
+    srv_state=$(_syncthing_server_probe detect)
+    [[ -n "$srv_state" && "$srv_state" != unreachable ]] && srv_state="installed ($srv_state)"
+    _two_sided_gate "Syncthing" "$lap_state" "$srv_state" _syncthing_install_laptop "_syncthing_server_step" _syncthing_uninstall_both || g=$?
+    (( g == 10 )) || return $g
 
     # Both installed — show unified status + management submenu
     echo -e "  ${BOLD}── Laptop ──${NC}"
@@ -2674,8 +2951,8 @@ step_syncthing() {
     echo -e "  ${BOLD}── Server ──${NC}"
     ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_STATUS'
         state="stopped"
-        if sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'; then
-            uptime=$(sudo docker ps --filter name=syncthing --format '{{.Status}}' 2>/dev/null)
+        if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'; then
+            uptime=$(docker ps --filter name=syncthing --format '{{.Status}}' 2>/dev/null)
             state="running  ($uptime)"
         fi
         ip=$(hostname -I | awk '{print $1}')
@@ -2684,7 +2961,7 @@ step_syncthing() {
         # Try several CLI shapes for Device ID (Syncthing 1.x vs 2.x)
         id=""
         for cmd in 'syncthing --device-id' 'syncthing show device-id' 'syncthing cli show system' 'cat /var/syncthing/config/config.xml'; do
-            id=$(sudo docker exec syncthing sh -c "$cmd" 2>/dev/null | grep -oE '[A-Z0-9]{7}(-[A-Z0-9]{7}){7}' | head -1 || echo "")
+            id=$(docker exec syncthing sh -c "$cmd" 2>/dev/null | grep -oE '[A-Z0-9]{7}(-[A-Z0-9]{7}){7}' | head -1 || echo "")
             [[ -n "$id" ]] && break
         done
         [[ -n "$id" ]] && echo "    Device ID: $id"
@@ -2709,7 +2986,7 @@ REMOTE_STATUS
             echo ""
             [[ -n "$laptop_id" ]] && echo -e "  ${BOLD}Laptop:${NC} $laptop_id"
             local server_id
-            server_id=$(ssh "$SERVER_USER@$SERVER_IP" 'for cmd in "syncthing --device-id" "syncthing show device-id" "syncthing cli show system" "cat /var/syncthing/config/config.xml"; do id=$(sudo docker exec syncthing sh -c "$cmd" 2>/dev/null | grep -oE "[A-Z0-9]{7}(-[A-Z0-9]{7}){7}" | head -1); [[ -n "$id" ]] && echo "$id" && break; done' 2>/dev/null)
+            server_id=$(ssh "$SERVER_USER@$SERVER_IP" 'for cmd in "syncthing --device-id" "syncthing show device-id" "syncthing cli show system" "cat /var/syncthing/config/config.xml"; do id=$(docker exec syncthing sh -c "$cmd" 2>/dev/null | grep -oE "[A-Z0-9]{7}(-[A-Z0-9]{7}){7}" | head -1); [[ -n "$id" ]] && echo "$id" && break; done' 2>/dev/null)
             [[ -n "$server_id" ]] && echo -e "  ${BOLD}Server:${NC} $server_id"
             ;;
         3) _syncthing_start_both ;;
@@ -2793,15 +3070,35 @@ _rdp_uninstall() {
     echo ""
     _confirm_delete xrdp || return 0
 
+    local bad=0
     info "Stopping xrdp..."
     sudo systemctl disable --now xrdp > /dev/null 2>&1 || true
     info "Re-enabling lightdm..."
-    sudo systemctl enable --now lightdm > /dev/null 2>&1 || true
+    if ! sudo systemctl enable --now lightdm > /dev/null 2>&1; then
+        fail "Could not enable/start lightdm."
+        bad=1
+    fi
     info "Closing firewall port 3389/tcp..."
-    sudo firewall-cmd --permanent --remove-port=3389/tcp > /dev/null 2>&1 || true
-    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+    if ! { sudo firewall-cmd --permanent --remove-port=3389/tcp > /dev/null 2>&1 \
+        && sudo firewall-cmd --reload > /dev/null 2>&1; }; then
+        fail "Firewall port 3389/tcp was NOT closed."
+        bad=1
+    fi
     info "Removing xrdp package..."
     sudo dnf remove -y xrdp > /dev/null 2>&1 || true
+    # Verify the end state, not that the commands ran.
+    if rpm -q xrdp > /dev/null 2>&1; then
+        fail "xrdp package is still installed - dnf remove failed. Try: sudo dnf remove xrdp"
+        bad=1
+    fi
+    if systemctl is-active --quiet xrdp 2>/dev/null || systemctl is-enabled --quiet xrdp 2>/dev/null; then
+        fail "xrdp service is still active or enabled."
+        bad=1
+    fi
+    if (( bad )); then
+        fail "Remote desktop removal did not finish - see above."
+        return 1
+    fi
     ok "Remote desktop removed."
 }
 
@@ -3044,13 +3341,30 @@ _wg_uninstall() {
     echo ""
     _confirm_delete wireguard || return 0
 
+    local bad=0
     info "Stopping wg0..."
     sudo systemctl disable --now wg-quick@wg0 > /dev/null 2>&1 || true
     info "Closing firewall port 51820/udp..."
-    sudo firewall-cmd --permanent --remove-port=51820/udp > /dev/null 2>&1 || true
-    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+    if ! { sudo firewall-cmd --permanent --remove-port=51820/udp > /dev/null 2>&1 \
+        && sudo firewall-cmd --reload > /dev/null 2>&1; }; then
+        fail "Firewall port 51820/udp was NOT closed."
+        bad=1
+    fi
     info "Removing packages..."
     sudo dnf remove -y wireguard-tools qrencode > /dev/null 2>&1 || true
+    # Verify the end state, not that the commands ran.
+    if rpm -q wireguard-tools > /dev/null 2>&1 || rpm -q qrencode > /dev/null 2>&1; then
+        fail "wireguard-tools/qrencode still installed - dnf remove failed. Try: sudo dnf remove wireguard-tools qrencode"
+        bad=1
+    fi
+    if systemctl is-active --quiet wg-quick@wg0 2>/dev/null || systemctl is-enabled --quiet wg-quick@wg0 2>/dev/null; then
+        fail "wg-quick@wg0 is still active or enabled."
+        bad=1
+    fi
+    if (( bad )); then
+        fail "WireGuard removal did not finish - see above."
+        return 1
+    fi
     ok "WireGuard removed."
     echo -e "  ${DIM}Configs kept at /etc/wireguard. To wipe entirely:${NC} sudo rm -rf /etc/wireguard"
 }
@@ -3596,7 +3910,7 @@ ADGUARDEOF
 _confirm_delete() {
     local name="$1"
     local reply
-    printf "  Type ${BOLD}${RED}${name}${NC} to DELETE (blank = cancel): "
+    printf "  Type \"${BOLD}${RED}${name}${NC}\" to confirm deletion (blank = cancel): "
     read -r reply
     if [[ -z "$reply" ]]; then
         info "Cancelled. Nothing deleted."
@@ -3632,19 +3946,34 @@ _adguard_uninstall() {
     echo ""
     _confirm_delete adguard || return 0
 
+    local bad=0
     info "Removing adguard container..."
     sudo docker rm -f adguard > /dev/null 2>&1 || true
+    if ! _container_gone adguard; then
+        fail "Container 'adguard' is still present (or docker could not be queried) - not removed."
+        return 1
+    fi
 
     info "Closing firewall ports 53/udp, 53/tcp, 80/tcp..."
-    sudo firewall-cmd --permanent --remove-port=53/udp > /dev/null 2>&1 || true
-    sudo firewall-cmd --permanent --remove-port=53/tcp > /dev/null 2>&1 || true
-    sudo firewall-cmd --permanent --remove-port=80/tcp > /dev/null 2>&1 || true
-    sudo firewall-cmd --reload > /dev/null 2>&1 || true
+    if ! { sudo firewall-cmd --permanent --remove-port=53/udp > /dev/null 2>&1 \
+        && sudo firewall-cmd --permanent --remove-port=53/tcp > /dev/null 2>&1 \
+        && sudo firewall-cmd --permanent --remove-port=80/tcp > /dev/null 2>&1 \
+        && sudo firewall-cmd --reload > /dev/null 2>&1; }; then
+        fail "Firewall ports 53/udp, 53/tcp, 80/tcp were NOT closed."
+        bad=1
+    fi
 
     info "Re-enabling systemd-resolved stub listener..."
-    sudo rm -f /etc/systemd/resolved.conf.d/disable-stub.conf
-    sudo systemctl restart systemd-resolved > /dev/null 2>&1 || true
+    if ! { sudo rm -f /etc/systemd/resolved.conf.d/disable-stub.conf \
+        && sudo systemctl restart systemd-resolved > /dev/null 2>&1; }; then
+        fail "Could not restore systemd-resolved's stub listener."
+        bad=1
+    fi
 
+    if (( bad )); then
+        fail "AdGuard container removed, but cleanup above did not finish."
+        return 1
+    fi
     ok "AdGuard removed."
     echo -e "  ${DIM}Config kept at /opt/adguard. To wipe entirely:${NC} sudo rm -rf /opt/adguard"
 }
@@ -3716,6 +4045,11 @@ _pick_backup_default() {
     return 0
 }
 
+# Echo BACKUP_DIR from the installed backup script, or nothing if not set up.
+_configured_backup_dir() {
+    sed -n 's/^BACKUP_DIR="\(.*\)"$/\1/p' /usr/local/bin/immich-backup.sh 2>/dev/null | head -1 | grep -v '^__BACKUP_DIR__$' || true
+}
+
 step_immich_backup() {
     info "Schedules an automatic Immich backup (systemd timer, no downtime)."
     info "Each run: a Postgres dump (albums, faces, metadata — hard to recreate)"
@@ -3732,7 +4066,10 @@ step_immich_backup() {
     # Prefer an external/removable drive so the backup survives the source disk
     # dying. Pick the mounted media drive with the most free space; fall back to
     # the legacy in-tree backups dir (same drive — warned about below).
-    default_dir=$(_pick_backup_default "$src_dir")
+    # An existing schedule's destination always wins: Enter must keep it, never
+    # repoint the job at a fresh (empty) folder.
+    default_dir=$(_configured_backup_dir)
+    [ -n "$default_dir" ] || default_dir=$(_pick_backup_default "$src_dir")
     default_dir=${default_dir:-$(realpath -m "${DB_DATA_LOCATION:-/home/$USER/data/immich/postgres}/../backups")}
 
     read -p "  Backup destination [${default_dir}, q=back]: " BACKUP_DIR
@@ -3786,9 +4123,12 @@ step_immich_backup() {
     esac
 
     # Tear down the legacy step-8 cron line if it exists, so we don't double-run.
-    if sudo crontab -l 2>/dev/null | grep -q immich-backup; then
+    local cur new
+    cur=$(_cron_get root) || { fail "Could not read root's crontab - legacy cron entry not touched."; return 1; }
+    if grep -q immich-backup <<<"$cur"; then
         info "Removing legacy cron entry (replaced by systemd timer)..."
-        (sudo crontab -l 2>/dev/null | grep -v immich-backup) | sudo crontab -
+        new=$(_cron_drop "$cur" "" immich-backup)
+        _cron_set root "$new" || { fail "Could not update root's crontab - legacy cron entry may still be active."; return 1; }
     fi
 
     # Install/refresh the script. Logs go to /var/log/immich-backup.log so the
@@ -4123,8 +4463,11 @@ _immich_backup_remove() {
     # the line RUNS), not just the literal "immich-backup", so a line that runs an
     # immich-db dump is actually removed instead of detected-but-left-behind.
     local cron_pat='immich-backup\.sh|immich-db|immich-backup\.log'
-    if sudo crontab -l 2>/dev/null | grep -qE "$cron_pat"; then
-        (sudo crontab -l 2>/dev/null | grep -vE "$cron_pat") | sudo crontab -
+    local cur new
+    cur=$(_cron_get root) || { fail "Could not read root's crontab - cron line not removed."; return 1; }
+    if grep -qE "$cron_pat" <<<"$cur"; then
+        new=$(_cron_drop "$cur" E "$cron_pat")
+        _cron_set root "$new" || { fail "Could not update root's crontab - the cron line may still be active."; return 1; }
     fi
 
     # Verify it's actually gone before claiming success — timer, script, AND any
@@ -4169,12 +4512,164 @@ step_immich_backup_menu() {
     return 0
 }
 
+# Print the disk-check script (stdout). $1 = Kuma push base URL, $2 = .env path.
+# Split from step_disk_monitor so the exact script that gets installed can be
+# dry-run (DISKCHECK_DRYRUN=1) before it is ever scheduled.
+_disk_check_script() {
+    printf '#!/bin/bash\nPUSH_URL=%q\nENV_FILE=%q\n' "$1" "$2"
+    cat <<'DISKEOF'
+# Exit codes: 0 healthy | 1 alert (Kuma down) | 3 healthy but the Kuma push
+# failed | 4 blind config (dry-run only: nothing checkable). Not 2: bash itself
+# exits 2 on a syntax/usage error, which must not read as a config problem.
+# DISKCHECK_DRYRUN=1: print what would be watched; no curl, no log/state write.
+THRESHOLD=85
+LOG="/var/log/disk-check.log"
+# One-line state file, overwritten every run (never grows): "<date> ok" or
+# "<date> ALERT <msg>". The menu's "Last run" reads this; the log is alerts only.
+STATE="/var/log/disk-check.last"
+FSTAB="/etc/fstab"
+umask 022   # keep the state file world-readable so the menu can read it without sudo
+NOW=$(date '+%Y-%m-%d %H:%M')
+
+envget() {
+    local line v
+    line=$(grep -E "^[[:space:]]*$1[[:space:]]*=" "$ENV_FILE" 2>/dev/null | head -1)
+    v="${line#*=}"
+    v="${v#"${v%%[![:space:]]*}"}"                       # trim leading space
+    case "$v" in
+        \"*) v="${v#\"}"; v="${v%%\"*}" ;;              # "quoted": up to closing quote
+        \'*) v="${v#\'}"; v="${v%%\'*}" ;;
+        *) v="${v%%[[:space:]]#*}"; v="${v%"${v##*[![:space:]]}"}" ;;  # drop ' # comment', trim
+    esac
+    printf '%s' "$v"
+}
+
+# Declared intent: the longest /etc/fstab mountpoint (field 2, non-comment
+# lines) that is a prefix of $1. Empty when fstab says nothing about the path.
+fstab_mount_for() {
+    local best="" mp
+    while read -r _ mp _; do
+        mp="${mp//\\040/ }"; mp="${mp%/}"
+        case "$mp" in /?*) ;; *) continue ;; esac        # skips "/", swap, none, blanks
+        case "$1" in "$mp"|"$mp"/*) (( ${#mp} > ${#best} )) && best="$mp" ;; esac
+    done < <(grep -v '^[[:space:]]*#' "$FSTAB" 2>/dev/null)
+    printf '%s' "$best"
+}
+
+MOUNTS=(/)
+WATCH=()
+PROBLEMS=()
+NLOC=0      # data locations configured in .env
+NRES=0      # ... that exist and were checked
+CONFIG_BAD=0
+
+if [ ! -f "$ENV_FILE" ]; then
+    PROBLEMS+=("config not found: $ENV_FILE"); CONFIG_BAD=1
+elif [ ! -r "$ENV_FILE" ]; then
+    PROBLEMS+=("config unreadable: $ENV_FILE"); CONFIG_BAD=1
+else
+    for key in FILES_LOCATION MUSIC_LOCATION UPLOAD_LOCATION DB_DATA_LOCATION; do
+        p=$(envget "$key")
+        [ -z "$p" ] && continue
+        NLOC=$((NLOC+1))
+        case "$p" in /*) ;; *) p="$(dirname "$ENV_FILE")/$p" ;; esac
+        pc=$(readlink -f -- "$p" 2>/dev/null) || pc=""
+        [ -n "$pc" ] && p="$pc"
+        want=$(fstab_mount_for "$p")
+        if [ ! -e "$p" ]; then
+            # An fstab-declared mount whose directory is gone = absent automount drive.
+            if [ -n "$want" ]; then PROBLEMS+=("$p not mounted"); else PROBLEMS+=("$p missing"); fi
+            continue
+        fi
+        NRES=$((NRES+1))
+        t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null | tail -n 1)
+        if [ -z "$t" ]; then
+            PROBLEMS+=("$p not mounted"); continue
+        fi
+        if [ "$t" = "/" ]; then
+            if [ -n "$want" ]; then
+                # fstab says a drive belongs here but the path resolves to /.
+                PROBLEMS+=("$p not mounted"); continue
+            fi
+            # No fstab line (udisks/automount): an EMPTY dir under a removable-drive
+            # prefix is the leftover stub of an absent drive.
+            case "$p" in /mnt/*|/media/*|/run/media/*)
+                if [ -z "$(ls -A "$p" 2>/dev/null)" ]; then
+                    PROBLEMS+=("$p not mounted"); continue
+                fi ;;
+            esac
+        fi
+        seen=false
+        for m in "${MOUNTS[@]}"; do [ "$m" = "$t" ] && seen=true; done
+        $seen || MOUNTS+=("$t")
+    done
+    if [ "$NLOC" -eq 0 ]; then
+        PROBLEMS+=("no data locations in $ENV_FILE"); CONFIG_BAD=1
+    fi
+fi
+
+for m in "${MOUNTS[@]}"; do
+    USAGE=$(df -P "$m" 2>/dev/null | awk 'NR==2 {gsub("%",""); print $5}')
+    case "$USAGE" in
+        ''|*[!0-9]*) PROBLEMS+=("$m usage unreadable"); WATCH+=("$m (?)") ;;
+        *) WATCH+=("$m (${USAGE}%)")
+           [ "$USAGE" -gt "$THRESHOLD" ] && PROBLEMS+=("$m ${USAGE}%") ;;
+    esac
+done
+
+if [ -n "$DISKCHECK_DRYRUN" ]; then
+    echo "Watching: $(IFS=,; echo "${WATCH[*]}" | sed 's/,/, /g')"
+    echo "Config: $ENV_FILE"
+    for pr in "${PROBLEMS[@]}"; do echo "Problem: $pr"; done
+    # Nothing configured is checkable = a blind monitor: refuse, never "ok".
+    [ "$CONFIG_BAD" -eq 0 ] && [ "$NRES" -eq 0 ] && { echo "Problem: no configured data location exists"; CONFIG_BAD=1; }
+    [ "$CONFIG_BAD" -eq 1 ] && exit 4
+    [ ${#PROBLEMS[@]} -gt 0 ] && exit 1
+    exit 0
+fi
+
+if [ ${#PROBLEMS[@]} -gt 0 ]; then
+    MSG=$(IFS=,; echo "${PROBLEMS[*]}")
+    STATUS=down
+    echo "$(date): WARNING - $MSG" >> "$LOG"
+    echo "$NOW ALERT $MSG" > "$STATE"
+else
+    MSG=OK
+    STATUS=up
+    echo "$NOW ok" > "$STATE"
+fi
+chmod 644 "$STATE" 2>/dev/null
+# -f: an HTTP error (bad token -> 404) fails too. stderr dropped so the token
+# URL can never reach a log or cron mail; only the exit code is kept.
+curl -sf -m 15 -G --data-urlencode "status=$STATUS" --data-urlencode "msg=$MSG" "$PUSH_URL" > /dev/null 2>&1
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "$(date): WARNING - Kuma push failed (curl exit $rc)" >> "$LOG"
+    EXTRA=""; [ "$STATUS" = down ] && EXTRA="; $MSG"
+    echo "$NOW ALERT Kuma push failed (curl exit $rc)$EXTRA" > "$STATE"
+    exit 3
+fi
+[ "$STATUS" = up ]
+DISKEOF
+}
+
+# After a refused install: say what is (not) running. -e, not -x: the script is
+# root-only 0700, so -x is false for the non-root user running this step.
+_disk_check_existing_note() {
+    if [ -e /usr/local/bin/disk-check.sh ]; then
+        warn "A previously installed disk-check is still active and unchanged - it may be outdated."
+        info "Re-run federver -> 14 -> 7 from the privcloud folder to replace it."
+    else
+        info "No disk-check is installed - nothing installed."
+    fi
+}
+
 step_disk_monitor() {
     info "Configures a 5-minute heartbeat to your Uptime Kuma 'Disk Space' monitor."
     info "Without a Push URL the monitor stays dead — skip cleanly if Kuma isn't set up yet."
     echo ""
 
-    local IP
+    local IP cur kept new
     IP=$(hostname -I | awk '{print $1}')
 
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -4194,47 +4689,83 @@ step_disk_monitor() {
 
     if [[ -z "$push_url" ]]; then
         # Don't install a half-broken state. If a stale install exists, remove it.
-        if sudo crontab -l 2>/dev/null | grep -q disk-check; then
+        cur=$(_cron_get root) || { fail "Could not read root's crontab - existing disk-check cron left as is."; return 1; }
+        if grep -q disk-check <<<"$cur"; then
             warn "Removing existing disk-check cron — no Kuma URL provided."
-            (sudo crontab -l 2>/dev/null | grep -v 'disk-check') | sudo crontab -
+            new=$(_cron_drop "$cur" "" disk-check)
+            _cron_set root "$new" || { fail "Could not update root's crontab - disk-check cron NOT removed."; return 1; }
             sudo rm -f /usr/local/bin/disk-check.sh
         fi
         info "Skipped. Re-run when you have a Kuma Push URL."
         return 0
     fi
 
-    sudo tee /usr/local/bin/disk-check.sh > /dev/null <<DISKEOF
-#!/bin/bash
-THRESHOLD=85
-LOG="/var/log/disk-check.log"
-PUSH_URL="$push_url"
-ALERT=false
+    # Kuma's copied Push URL already carries "?status=up&msg=OK&ping=". Keep only
+    # the base so the script appends exactly one query string (a second "?" made
+    # Kuma read the first status=up, so "down" never registered).
+    push_url="${push_url%%\?*}"
 
-for mount in / /home /mnt/data; do
-    if mountpoint -q "\$mount" 2>/dev/null || [ "\$mount" = "/" ]; then
-        USAGE=\$(df "\$mount" 2>/dev/null | awk 'NR==2 {gsub("%",""); print \$5}')
-        if [ -n "\$USAGE" ] && [ "\$USAGE" -gt "\$THRESHOLD" ]; then
-            echo "\$(date): WARNING — \$mount is \${USAGE}% full" >> "\$LOG"
-            ALERT=true
-        fi
+    # The .env the monitor reads is the one every other menu step uses:
+    # $SCRIPT_DIR/.env, i.e. the repo checkout (~/privcloud on the server). A copy
+    # of setup.sh run from elsewhere has no .env beside it, and the dry-run below
+    # refuses to install rather than bake a path that does not exist.
+    local SCRIPT_DIR env_file tmp dry_out dry_rc=0
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    env_file="$SCRIPT_DIR/.env"
+
+    # Generate, then dry-run the exact script (as this user, no curl, no writes)
+    # and show what it resolved. Nothing is installed or scheduled until it passes.
+    tmp=$(mktemp) || { fail "Could not create a temp file - disk-check NOT installed."; return 1; }
+    # The temp file holds the Kuma push URL: remove it on every way out of this
+    # function (return or Ctrl-C/TERM). Traps are shell-global, so the handler
+    # clears itself; INT/TERM then re-raise so the default behaviour is unchanged.
+    trap "rm -f '$tmp'; trap - RETURN INT TERM" RETURN
+    trap "rm -f '$tmp'; trap - RETURN INT TERM; kill -INT \$BASHPID" INT
+    trap "rm -f '$tmp'; trap - RETURN INT TERM; kill -TERM \$BASHPID" TERM
+    _disk_check_script "$push_url" "$env_file" > "$tmp"
+    info "Checking what the monitor will watch..."
+    dry_out=$(DISKCHECK_DRYRUN=1 bash "$tmp" 2>&1) || dry_rc=$?
+    echo "$dry_out" | sed 's/^/    /'
+    if (( dry_rc == 4 )); then
+        fail "The monitor would be blind (see above) - disk-check NOT installed."
+        info "Run this from the repo checkout that holds your .env (federver -> 14 -> 7, or ~/privcloud/setup.sh on the server)."
+        _disk_check_existing_note
+        return 1
+    elif (( dry_rc != 0 && dry_rc != 1 )); then
+        fail "Monitor script error (dry-run exit $dry_rc) - disk-check NOT installed."
+        _disk_check_existing_note
+        return 1
+    elif (( dry_rc == 1 )); then
+        warn "Problems above are real: they will show in Kuma as down. Installing anyway - that is the monitor's job."
     fi
-done
 
-if \$ALERT; then
-    curl -s "\$PUSH_URL?status=down&msg=Disk+above+85%25" > /dev/null 2>&1
-else
-    curl -s "\$PUSH_URL?status=up&msg=OK" > /dev/null 2>&1
-fi
-DISKEOF
-    sudo chmod +x /usr/local/bin/disk-check.sh
+    # root:root 0700 in one step: the script holds the Kuma push token.
+    local inst_rc=0
+    sudo install -o root -g root -m 700 "$tmp" /usr/local/bin/disk-check.sh || inst_rc=$?
+    rm -f "$tmp"
+    (( inst_rc == 0 )) || { fail "Could not install /usr/local/bin/disk-check.sh - NOT scheduled."; return 1; }
 
-    (sudo crontab -l 2>/dev/null | grep -v 'disk-check'; echo "*/5 * * * * /usr/local/bin/disk-check.sh") | sudo crontab -
+    cur=$(_cron_get root) || { fail "Could not read root's crontab - disk-check NOT scheduled."; return 1; }
+    kept=$(_cron_drop "$cur" "" disk-check)
+    new="${kept:+$kept$'\n'}*/5 * * * * /usr/local/bin/disk-check.sh"
+    if ! _cron_set root "$new"; then
+        fail "Could not write root's crontab (or it did not read back as expected) - disk-check NOT scheduled."
+        info "Check it: sudo crontab -l"
+        return 1
+    fi
 
     info "Sending first heartbeat to Kuma..."
-    sudo /usr/local/bin/disk-check.sh && ok "Heartbeat sent — Kuma monitor should turn green within ~6 min."
+    local hb_rc=0
+    sudo /usr/local/bin/disk-check.sh || hb_rc=$?
+    case "$hb_rc" in
+        0) ok "Heartbeat sent — Kuma monitor should turn green within ~6 min." ;;
+        1) warn "Heartbeat sent as DOWN (see the problems above)." ;;
+        *) fail "The first heartbeat did not reach Kuma: $(cat /var/log/disk-check.last 2>/dev/null)"
+           info "Check the Push URL and that Kuma is reachable from this server. It stays scheduled and retries every 5 minutes." ;;
+    esac
     echo ""
     ok "Disk space check runs every 5 minutes (alerts above 85%)."
-    info "Check log: cat /var/log/disk-check.log"
+    info "Last run: cat /var/log/disk-check.last   Alert history: cat /var/log/disk-check.log"
 }
 
 step_logrotation() {
@@ -4327,7 +4858,7 @@ SYNCSCRIPT
                 info "Log:    $log_path"
                 info "Schedule: weekly (${sched_spec}), catches missed runs"
             else
-                (crontab -l 2>/dev/null | grep -v "sync-${job_name}.sh"; echo "$sched_spec $script_path") | crontab -
+                _cron_add_sync "$job_name" "$sched_spec" "$script_path" || return 1
                 ok "Scheduled sync job '${job_name}' (cron)"
                 info "Script: $script_path"
                 info "Log:    $log_path"
@@ -4604,11 +5135,11 @@ _sync_edit_job() {
                 local new_line
                 if $is_paused; then
                     new_line=$(echo "$old_line" | sed 's/^#PAUSED#//')
-                    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
+                    _cron_replace_line "$old_line" "$new_line" || return 1
                     ok "Resumed '${job_name}'"
                 else
                     new_line="#PAUSED#${old_line}"
-                    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
+                    _cron_replace_line "$old_line" "$new_line" || return 1
                     ok "Paused '${job_name}'"
                 fi
             else
@@ -4658,7 +5189,7 @@ _sync_edit_job() {
             echo ""
             _confirm_delete "sync-${job_name}" || return 0
             if [[ "$job_type" == "cron" ]]; then
-                (crontab -l 2>/dev/null | grep -vF "$old_line") | crontab -
+                _cron_remove_line "$old_line" || return 1
             else
                 _sync_remove_timer "$job_name"
             fi
@@ -4686,14 +5217,14 @@ _sync_change_schedule() {
     # If the job type is changing (cron ↔ timer), tear down the old side
     # before installing the new one.
     if [[ "$old_type" == "cron" && "$sched_kind" == "timer" ]]; then
-        (crontab -l 2>/dev/null | grep -vF "$old_line") | crontab -
+        _cron_remove_line "$old_line" || return 1
         _sync_install_timer "$job_name" "$script_path" "$sched_spec"
         ok "Schedule updated for '${job_name}' → timer (${sched_spec})"
         return
     fi
     if [[ "$old_type" == "timer" && "$sched_kind" == "cron" ]]; then
         _sync_remove_timer "$job_name"
-        (crontab -l 2>/dev/null | grep -v "sync-${job_name}.sh"; echo "$sched_spec $script_path") | crontab -
+        _cron_add_sync "$job_name" "$sched_spec" "$script_path" || return 1
         local human; human=$(_cron_to_english "$sched_spec")
         ok "Schedule updated for '${job_name}' → ${human}"
         return
@@ -4716,7 +5247,7 @@ _sync_change_schedule() {
     fi
 
     local new_line="${prefix}${sched_spec} ${rest}"
-    (crontab -l 2>/dev/null | sed "s|^$(printf '%s' "$old_line" | sed 's/[.[\*^$()+?{|]/\\&/g')\$|${new_line}|") | crontab -
+    _cron_replace_line "$old_line" "$new_line" || return 1
 
     local human
     human=$(_cron_to_english "$sched_spec")
@@ -4727,15 +5258,37 @@ _sync_show_status() {
     # Fetch server-side crons FIRST (may prompt for sudo password) so the
     # password prompt appears before any table rendering.
     local server_crons="" server_timer_oncal=""
+    # cron_known: did we really read root's crontab? (An empty crontab is a valid
+    # read; a failed read is "unknown", never "not scheduled".)
+    local cron_known=false server_scripts=""
     info "Fetching server scheduled tasks..."
-    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
-    server_crons=$(ssh "$SERVER_USER@$SERVER_IP" 'sudo crontab -l 2>/dev/null' 2>/dev/null) || true
-    if [[ -z "$server_crons" ]] || ! echo "$server_crons" | grep -qE "immich-backup|disk-check"; then
-        server_crons=$(ssh "$SERVER_USER@$SERVER_IP" '
-            [[ -x /usr/local/bin/immich-backup.sh ]] && echo "0 3 * * * /usr/local/bin/immich-backup.sh"
-            [[ -x /usr/local/bin/disk-check.sh ]]    && echo "*/5 * * * * /usr/local/bin/disk-check.sh"
-        ' 2>/dev/null) || server_crons=""
+    local pw_rc=0
+    _server_sudo_pw_prompt || pw_rc=$?
+    if (( pw_rc == 0 )); then
+        # crontab -l exits 1 when root simply has no crontab, so success is
+        # signalled by the trailing marker (the script ran to the end), not the
+        # exit code. No marker = the read failed.
+        server_crons=$(_server_sudo_run 'crontab -l 2>/dev/null; echo __CRON_READ_OK__') || true
+        unset _SRV_PW
+        if [[ "$server_crons" == *__CRON_READ_OK__ ]]; then
+            cron_known=true
+            server_crons="${server_crons%__CRON_READ_OK__}"
+        else
+            server_crons=""
+            warn "Could not read root's crontab - schedules below are shown as unknown."
+        fi
+    elif (( pw_rc == 2 )); then
+        warn "Server unreachable - root crontab not read; the schedule list below is incomplete."
+    else
+        warn "Wrong sudo password - root crontab not read; the schedule list below may be incomplete (not 'no cron')."
     fi
+    # Which scripts exist (never used to invent a schedule - only to show a row
+    # for them when the crontab could not be read or has no line for them).
+    server_scripts=$(ssh "$SERVER_USER@$SERVER_IP" '
+        [[ -x /usr/local/bin/immich-backup.sh ]] && echo immich-backup
+        [[ -e /usr/local/bin/disk-check.sh ]]    && echo disk-check  # root 0700: -e, not -x
+        true
+    ' 2>/dev/null) || server_scripts=""
     # immich-backup migrated from cron to systemd timer (federver → 14 → 6).
     # If the timer is present, prefer its OnCalendar over any legacy cron line.
     # Read OnCalendar via `systemctl cat` — `systemctl show -p OnCalendar` is
@@ -4769,6 +5322,23 @@ _sync_show_status() {
             fi
         done
     fi
+    # Scripts installed but with no real cron line: say so, don't invent one.
+    local _n
+    for _n in immich-backup disk-check; do
+        grep -qx "$_n" <<<"$server_scripts" || continue
+        if [[ "$_n" == immich-backup ]]; then
+            [[ -n "$server_timer_oncal" ]] && continue
+            grep -q "immich-backup" <<<"$server_crons" && continue
+        else
+            grep -q "disk-check" <<<"$server_crons" && continue
+        fi
+        local _hint="14 → 7"; [[ "$_n" == immich-backup ]] && _hint="14 → 6"
+        if $cron_known; then
+            echo -e "  ${YELLOW}$(printf '%-20s %-18s' "$_n" "not scheduled")${NC} reinstall via $_hint"
+        else
+            echo -e "  ${YELLOW}$(printf '%-20s %-18s' "$_n" "schedule unknown")${NC} root crontab not read"
+        fi
+    done
 
     # Laptop-side sync crons
     local laptop_crons
@@ -4833,6 +5403,7 @@ _sync_show_status() {
     local has_server=false has_laptop=false
     [[ -n "$server_timer_oncal" ]] && has_server=true
     [[ -n "$server_crons" ]] && echo "$server_crons" | grep -qE "immich-backup|disk-check" && has_server=true
+    [[ -n "$server_scripts" ]] && has_server=true
     [[ -n "$laptop_crons" ]] && echo "$laptop_crons" | grep -q "sync-.*\.sh" && has_laptop=true
     $has_timer && has_laptop=true
     if [[ "$has_server" == "false" && "$has_laptop" == "false" ]]; then
@@ -4853,16 +5424,23 @@ _sync_show_status() {
         # has no tty, so sudo would silently fail and every row would render
         # as "never" (false negative, masks real failures).
         server_runs=$(ssh "$SERVER_USER@$SERVER_IP" '
-            for f in /var/log/immich-backup.log /var/log/disk-check.log; do
-                name=$(basename "$f" .log)
-                if [[ -r "$f" && -s "$f" ]]; then
-                    mtime=$(stat -c "%y" "$f" | cut -c1-16)
-                    last=$(tail -n 1 "$f")
-                    printf "%s|%s|%s\n" "$name" "$mtime" "$last"
-                else
-                    printf "%s|never|\n" "$name"
-                fi
-            done
+            f=/var/log/immich-backup.log
+            if [[ -r "$f" && -s "$f" ]]; then
+                printf "immich-backup|%s||%s\n" "$(stat -c "%y" "$f" | cut -c1-16)" "$(tail -n 1 "$f")"
+            else
+                printf "immich-backup|never||\n"
+            fi
+            # disk-check: state file "<YYYY-MM-DD HH:MM> ok|ALERT <msg>" (rewritten each run).
+            f=/var/log/disk-check.last
+            if [[ -r "$f" && -s "$f" ]]; then
+                l=$(head -n 1 "$f")
+                # Age in seconds, computed with the server clock for both ends.
+                age=""
+                if t=$(date -d "${l:0:16}" +%s 2>/dev/null); then age=$(( $(date +%s) - t )); fi
+                printf "disk-check|%s|%s|%s\n" "${l:0:16}" "$age" "${l:17}"
+            else
+                printf "disk-check|never||\n"
+            fi
         ' 2>/dev/null) || server_runs=""
     fi
 
@@ -4873,17 +5451,24 @@ _sync_show_status() {
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     if [[ -n "$server_runs" ]]; then
-        while IFS='|' read -r name when last; do
+        while IFS='|' read -r name when age last; do
             [[ -z "$name" ]] && continue
             local status
             if [[ "$name" == "disk-check" ]]; then
-                # disk-check log only grows on threshold breaches; absence of
-                # entries means healthy. Don't claim it as "last run time".
+                # Read from the per-run state file (disk-check.last), not the
+                # alert-only log. Missing = old script not yet reinstalled.
                 if [[ "$when" == "never" ]]; then
                     when="—"
-                    status="${GREEN}✓ no alerts${NC}"
+                    status="${DIM}no run recorded (reinstall via 14 → 7)${NC}"
+                elif [[ "$age" =~ ^-?[0-9]+$ ]] && (( age > 720 )); then
+                    # Cron runs every 5 min; >12 min old means it stopped running.
+                    status="${YELLOW}⚠ stale (last ${when})${NC}"
+                elif [[ "$last" == ok ]]; then
+                    status="${GREEN}✓ ok${NC}"
+                elif [[ "$last" == ALERT\ * ]]; then
+                    status="${YELLOW}⚠ ${last#ALERT }${NC}"
                 else
-                    status="${YELLOW}⚠ last alert above${NC}"
+                    status="${YELLOW}? check /var/log/disk-check.last${NC}"
                 fi
             elif [[ "$when" == "never" ]]; then
                 status="${DIM}—${NC}"
@@ -5031,7 +5616,7 @@ _sync_delete_job() {
     _confirm_delete "sync-${job_name}" || return 0
 
     if [[ "$job_type" == "cron" ]]; then
-        (crontab -l 2>/dev/null | grep -vF "$old_line") | crontab -
+        _cron_remove_line "$old_line" || return 1
     else
         _sync_remove_timer "$job_name"
     fi
@@ -5410,13 +5995,42 @@ _sync_one_time_backup() {
                 # -p '' silences sudo's own prompt; remote stderr is dropped so it
                 # can't corrupt the tar stream.
                 local remote_cmd="tar -C $(_shq "$tar_cd") -cf - $(_shq "$tar_arg") 2>/dev/null"
+
+                # No pv on the laptop → offer it now, before the server password
+                # prompt and the copy output (the dnf sudo prompt is the laptop's).
+                # Enter = yes. A failed install never aborts the copy.
+                if ! command -v pv >/dev/null 2>&1; then
+                    read -p "  Install pv for a progress bar? [Y/n] " -n 1 -r
+                    echo ""
+                    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                        sudo dnf install -y pv > /dev/null 2>&1 || true
+                        command -v pv >/dev/null 2>&1 || warn "pv not installed - copying without a progress bar."
+                    fi
+                fi
+
                 local server_pw=""
                 if $needs_priv; then
                     read -rsp "  federver sudo password: " server_pw; echo
                     remote_cmd="sudo -S -p '' $remote_cmd"
                 fi
 
-                info "Copying (no per-file progress for privileged copies)…"
+                # Optional progress bar: if `pv` is installed on the laptop, get the
+                # source's total bytes (same privilege as the read, password over
+                # stdin via the printf builtin — never on argv) and put `pv -s <bytes>`
+                # between ssh and the local tar. tar adds header/padding overhead, so
+                # the % can slightly overshoot or finish early — it's approximate. If
+                # the size lookup fails, pv still runs without -s (bytes + rate only).
+                local pv_stage=() size_cmd size_bytes=""
+                if command -v pv >/dev/null 2>&1; then
+                    size_cmd="du -sb $(_shq "$src_path") 2>/dev/null | cut -f1"
+                    $needs_priv && size_cmd="sudo -S -p '' du -sb $(_shq "$src_path") 2>/dev/null | cut -f1"
+                    size_bytes=$(printf '%s\n' "$server_pw" | ssh "$SERVER_USER@$SERVER_IP" "$size_cmd" 2>/dev/null | head -n1)
+                    pv_stage=(pv)
+                    [[ "$size_bytes" =~ ^[0-9]+$ ]] && pv_stage=(pv -s "$size_bytes")
+                    info "Copying… (progress below; % is approximate)"
+                else
+                    info "Copying (no per-file progress for privileged copies)…"
+                fi
                 # The trailing `&& … || …` puts the pipeline in an AND-OR list,
                 # which is exempt from `set -e`, so we always reach the PIPESTATUS
                 # check (and the error message) even if a caller didn't neutralize
@@ -5425,15 +6039,24 @@ _sync_one_time_backup() {
                 # (dest under sudo) don't let a server-supplied archive restore
                 # setuid/setgid bits or foreign ownership onto the laptop — otherwise
                 # a compromised server could land a setuid-root file here.
-                local st
-                printf '%s\n' "$server_pw" \
-                  | ssh "$SERVER_USER@$SERVER_IP" "$remote_cmd" \
-                  | $dst_sudo tar --no-same-owner --no-same-permissions -C "$dst_path" -xf - \
-                  && st=("${PIPESTATUS[@]}") || st=("${PIPESTATUS[@]}")   # 0=printf 1=ssh/read 2=write
+                local st rd_i=1 wr_i=2   # no pv: 0=printf 1=ssh/read 2=write
+                if [ "${#pv_stage[@]}" -gt 0 ]; then
+                    wr_i=3               # with pv: 0=printf 1=ssh/read 2=pv 3=write
+                    printf '%s\n' "$server_pw" \
+                      | ssh "$SERVER_USER@$SERVER_IP" "$remote_cmd" \
+                      | "${pv_stage[@]}" \
+                      | $dst_sudo tar --no-same-owner --no-same-permissions -C "$dst_path" -xf - \
+                      && st=("${PIPESTATUS[@]}") || st=("${PIPESTATUS[@]}")
+                else
+                    printf '%s\n' "$server_pw" \
+                      | ssh "$SERVER_USER@$SERVER_IP" "$remote_cmd" \
+                      | $dst_sudo tar --no-same-owner --no-same-permissions -C "$dst_path" -xf - \
+                      && st=("${PIPESTATUS[@]}") || st=("${PIPESTATUS[@]}")
+                fi
                 unset server_pw
                 $primed_sudo && sudo -k 2>/dev/null   # drop the one-time ticket we opened
-                if [ "${st[1]}" -ne 0 ] || [ "${st[2]}" -ne 0 ]; then
-                    fail "Download failed (read exit ${st[1]}, write exit ${st[2]}) — wrong password, unreachable server, or a write error. Nothing was changed on the server; re-run to overwrite any partial files on the laptop."
+                if [ "${st[rd_i]}" -ne 0 ] || [ "${st[wr_i]}" -ne 0 ]; then
+                    fail "Download failed (read exit ${st[rd_i]}, write exit ${st[wr_i]}) — wrong password, unreachable server, or a write error. Nothing was changed on the server; re-run to overwrite any partial files on the laptop."
                     return 1
                 fi
             else
@@ -5945,9 +6568,17 @@ step_save_to_pass() {
     echo ""
 
     # Fetch all data from server in one SSH call
-    local server_data
-    ssh -t "$SERVER_USER@$SERVER_IP" 'sudo -v' 2>/dev/null
-    server_data=$(ssh "$SERVER_USER@$SERVER_IP" bash -s < <(declare -f _ts_state _ts_running; cat <<'FETCH'
+    local server_data pw_rc=0
+    _server_sudo_pw_prompt || pw_rc=$?
+    if (( pw_rc == 2 )); then fail "Cannot reach server at $SERVER_IP - nothing saved."; return 1; fi
+    if (( pw_rc != 0 )); then fail "Wrong sudo password - nothing saved to pass."; return 1; fi
+    # The script runs as root (via _server_sudo_run, which keeps the password
+    # off the script's stdin) so the /etc and /opt reads work in this one
+    # non-TTY session; HOME is kept as the login user's so ~/privcloud/.env
+    # still resolves.
+    local fetch_script
+    fetch_script="$(declare -f _ts_state _ts_running)
+$(cat <<'FETCH'
 echo "HOSTNAME=$(hostname)"
 echo "LOCAL_IP=$(hostname -I | awk '{print $1}')"
 TS_STATE=$(_ts_state)
@@ -5958,26 +6589,28 @@ cat ~/privcloud/.env 2>/dev/null || cat ~/data/.env 2>/dev/null || true
 echo "---DOCKER_COMPOSE---"
 cat ~/privcloud/docker-compose.yml 2>/dev/null || true
 echo "---WG_SERVER---"
-sudo cat /etc/wireguard/wg0.conf 2>/dev/null || true
+cat /etc/wireguard/wg0.conf 2>/dev/null || true
 echo "---WG_PEERS---"
-for f in $(sudo find /etc/wireguard -name '*.conf' ! -name 'wg0.conf' 2>/dev/null); do
+for f in $(find /etc/wireguard -name '*.conf' ! -name 'wg0.conf' 2>/dev/null); do
     echo "PEER_FILE=$(basename "$f" .conf)"
-    sudo cat "$f"
+    cat "$f"
     echo "END_PEER_FILE"
 done
 echo "---ADGUARD---"
-sudo cat /opt/adguard/conf/AdGuardHome.yaml 2>/dev/null || true
+cat /opt/adguard/conf/AdGuardHome.yaml 2>/dev/null || true
 echo "---SYNCTHING_ID---"
-sudo docker exec syncthing syncthing --device-id 2>/dev/null || true
+docker exec syncthing syncthing --device-id 2>/dev/null || true
 echo "---SYNCTHING_CONFIG---"
-sudo cat /opt/syncthing/config/config.xml 2>/dev/null || true
+cat /opt/syncthing/config/config.xml 2>/dev/null || true
 echo "---SYNCTHING_CERT---"
-sudo cat /opt/syncthing/config/cert.pem 2>/dev/null || true
+cat /opt/syncthing/config/cert.pem 2>/dev/null || true
 echo "---SYNCTHING_KEY---"
-sudo cat /opt/syncthing/config/key.pem 2>/dev/null || true
+cat /opt/syncthing/config/key.pem 2>/dev/null || true
 echo "---END---"
 FETCH
-))
+)"
+    server_data=$(_server_sudo_run "$fetch_script")
+    unset _SRV_PW
 
     if [[ -z "$server_data" ]]; then
         fail "Could not connect to server."

@@ -78,10 +78,12 @@ _cron_cmd() { if [[ "$1" == root ]]; then sudo crontab "${@:2}"; else crontab "$
 # Print the current crontab. "No crontab yet" is an empty crontab (exit 0);
 # any other failure (sudo denied, crontab missing) returns 1.
 _cron_get() {
-    local out rc=0
-    out=$(_cron_cmd "$1" -l 2>&1) || rc=$?
+    local out err rc=0 ef
+    ef=$(mktemp) || return 1
+    out=$(_cron_cmd "$1" -l 2>"$ef") || rc=$?   # stdout = the crontab; stderr kept apart
+    err=$(<"$ef"); rm -f "$ef"
     if (( rc != 0 )); then
-        [[ "$out" == *"no crontab for"* ]] && return 0
+        [[ "$err" == *"no crontab for"* ]] && return 0
         return 1
     fi
     printf '%s' "$out"
@@ -97,7 +99,10 @@ _cron_drop() {
 _cron_set() {
     local who="$1" new="$2" back
     if [[ -z "$new" ]]; then
-        printf '' | _cron_cmd "$who" - || return 1
+        # Empty = remove the crontab (`crontab -r`, documented); never pipe an
+        # empty file into `crontab -`. -r errors when none exists - already empty.
+        local rerr
+        rerr=$(_cron_cmd "$who" -r 2>&1) || [[ "$rerr" == *"no crontab for"* ]] || return 1
     else
         printf '%s\n' "$new" | _cron_cmd "$who" - || return 1
     fi
@@ -112,18 +117,19 @@ _cron_add_sync() {  # job_name sched_spec script_path
     kept=$(_cron_drop "$cur" "" "sync-$1.sh")
     _cron_set user "${kept:+$kept$'\n'}$2 $3" || { fail "Could not write your crontab - '$1' NOT scheduled."; return 1; }
 }
-_cron_remove_line() {  # exact line
+_cron_remove_line() {  # line (fixed-string substring match, like grep -vF)
     local cur
     cur=$(_cron_get user) || { fail "Could not read your crontab - cron line not removed."; return 1; }
     _cron_set user "$(_cron_drop "$cur" F "$1")" || { fail "Could not write your crontab - cron line may still be present."; return 1; }
 }
 _cron_replace_line() {  # old_line new_line (exact whole-line match)
-    local cur l new="" first=1
+    local cur l new="" first=1 hit=0
     cur=$(_cron_get user) || { fail "Could not read your crontab - nothing changed."; return 1; }
     while IFS= read -r l; do
-        [[ "$l" == "$1" ]] && l="$2"
+        if [[ "$l" == "$1" ]]; then l="$2"; hit=1; fi
         if (( first )); then new="$l"; first=0; else new+=$'\n'"$l"; fi
     done <<<"$cur"
+    (( hit )) || { fail "Job line not found in crontab - nothing changed."; return 1; }
     _cron_set user "$new" || { fail "Could not write your crontab - change not applied."; return 1; }
 }
 
@@ -4039,6 +4045,11 @@ _pick_backup_default() {
     return 0
 }
 
+# Echo BACKUP_DIR from the installed backup script, or nothing if not set up.
+_configured_backup_dir() {
+    sed -n 's/^BACKUP_DIR="\(.*\)"$/\1/p' /usr/local/bin/immich-backup.sh 2>/dev/null | head -1 | grep -v '^__BACKUP_DIR__$' || true
+}
+
 step_immich_backup() {
     info "Schedules an automatic Immich backup (systemd timer, no downtime)."
     info "Each run: a Postgres dump (albums, faces, metadata — hard to recreate)"
@@ -4055,7 +4066,10 @@ step_immich_backup() {
     # Prefer an external/removable drive so the backup survives the source disk
     # dying. Pick the mounted media drive with the most free space; fall back to
     # the legacy in-tree backups dir (same drive — warned about below).
-    default_dir=$(_pick_backup_default "$src_dir")
+    # An existing schedule's destination always wins: Enter must keep it, never
+    # repoint the job at a fresh (empty) folder.
+    default_dir=$(_configured_backup_dir)
+    [ -n "$default_dir" ] || default_dir=$(_pick_backup_default "$src_dir")
     default_dir=${default_dir:-$(realpath -m "${DB_DATA_LOCATION:-/home/$USER/data/immich/postgres}/../backups")}
 
     read -p "  Backup destination [${default_dir}, q=back]: " BACKUP_DIR
@@ -4503,7 +4517,7 @@ step_disk_monitor() {
     info "Without a Push URL the monitor stays dead — skip cleanly if Kuma isn't set up yet."
     echo ""
 
-    local IP
+    local IP cur kept new
     IP=$(hostname -I | awk '{print $1}')
 
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -4523,7 +4537,6 @@ step_disk_monitor() {
 
     if [[ -z "$push_url" ]]; then
         # Don't install a half-broken state. If a stale install exists, remove it.
-        local cur new
         cur=$(_cron_get root) || { fail "Could not read root's crontab - existing disk-check cron left as is."; return 1; }
         if grep -q disk-check <<<"$cur"; then
             warn "Removing existing disk-check cron — no Kuma URL provided."
@@ -4557,9 +4570,14 @@ NOW=$(date '+%Y-%m-%d %H:%M')
 
 envget() {
     local line v
-    line=$(grep -E "^$1=" "$ENV_FILE" 2>/dev/null | head -1)
+    line=$(grep -E "^[[:space:]]*$1[[:space:]]*=" "$ENV_FILE" 2>/dev/null | head -1)
     v="${line#*=}"
-    v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+    v="${v#"${v%%[![:space:]]*}"}"                       # trim leading space
+    case "$v" in
+        \"*) v="${v#\"}"; v="${v%%\"*}" ;;              # "quoted": up to closing quote
+        \'*) v="${v#\'}"; v="${v%%\'*}" ;;
+        *) v="${v%%[[:space:]]#*}"; v="${v%"${v##*[![:space:]]}"}" ;;  # drop ' # comment', trim
+    esac
     printf '%s' "$v"
 }
 
@@ -4577,9 +4595,15 @@ for key in FILES_LOCATION MUSIC_LOCATION UPLOAD_LOCATION DB_DATA_LOCATION; do
         PROBLEMS+=("$p not mounted")
         continue
     fi
-    # Directory sitting on / under a removable-drive prefix = the drive is absent.
+    # Resolves to / but is an EMPTY dir under a removable-drive prefix = the
+    # leftover mountpoint stub of an absent drive. A non-empty plain dir is
+    # deliberate data on /, not an alert.
     if [ "$t" = "/" ]; then
-        case "$p" in /mnt/*|/media/*|/run/media/*) PROBLEMS+=("$p not mounted"); continue ;; esac
+        case "$p" in /mnt/*|/media/*|/run/media/*)
+            if [ ! -d "$p" ] || [ -z "$(ls -A "$p" 2>/dev/null)" ]; then
+                PROBLEMS+=("$p not mounted"); continue
+            fi ;;
+        esac
     fi
     seen=false
     for m in "${MOUNTS[@]}"; do [ "$m" = "$t" ] && seen=true; done
@@ -4606,7 +4630,6 @@ DISKEOF
     } | sudo tee /usr/local/bin/disk-check.sh > /dev/null
     sudo chmod +x /usr/local/bin/disk-check.sh
 
-    local cur kept new
     cur=$(_cron_get root) || { fail "Could not read root's crontab - disk-check NOT scheduled."; return 1; }
     kept=$(_cron_drop "$cur" "" disk-check)
     new="${kept:+$kept$'\n'}*/5 * * * * /usr/local/bin/disk-check.sh"

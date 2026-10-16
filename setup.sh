@@ -4518,8 +4518,9 @@ step_immich_backup_menu() {
 _disk_check_script() {
     printf '#!/bin/bash\nPUSH_URL=%q\nENV_FILE=%q\n' "$1" "$2"
     cat <<'DISKEOF'
-# Exit codes: 0 healthy | 1 alert (Kuma down) | 2 cannot monitor (config) |
-# 3 healthy but the Kuma push failed.
+# Exit codes: 0 healthy | 1 alert (Kuma down) | 3 healthy but the Kuma push
+# failed | 4 blind config (dry-run only: nothing checkable). Not 2: bash itself
+# exits 2 on a syntax/usage error, which must not read as a config problem.
 # DISKCHECK_DRYRUN=1: print what would be watched; no curl, no log/state write.
 THRESHOLD=85
 LOG="/var/log/disk-check.log"
@@ -4622,7 +4623,7 @@ if [ -n "$DISKCHECK_DRYRUN" ]; then
     for pr in "${PROBLEMS[@]}"; do echo "Problem: $pr"; done
     # Nothing configured is checkable = a blind monitor: refuse, never "ok".
     [ "$CONFIG_BAD" -eq 0 ] && [ "$NRES" -eq 0 ] && { echo "Problem: no configured data location exists"; CONFIG_BAD=1; }
-    [ "$CONFIG_BAD" -eq 1 ] && exit 2
+    [ "$CONFIG_BAD" -eq 1 ] && exit 4
     [ ${#PROBLEMS[@]} -gt 0 ] && exit 1
     exit 0
 fi
@@ -4650,6 +4651,17 @@ if [ "$rc" -ne 0 ]; then
 fi
 [ "$STATUS" = up ]
 DISKEOF
+}
+
+# After a refused install: say what is (not) running. -e, not -x: the script is
+# root-only 0700, so -x is false for the non-root user running this step.
+_disk_check_existing_note() {
+    if [ -e /usr/local/bin/disk-check.sh ]; then
+        warn "A previously installed disk-check is still active and unchanged - it may be outdated."
+        info "Re-run federver -> 14 -> 7 from the privcloud folder to replace it."
+    else
+        info "No disk-check is installed - nothing installed."
+    fi
 }
 
 step_disk_monitor() {
@@ -4704,26 +4716,32 @@ step_disk_monitor() {
     # Generate, then dry-run the exact script (as this user, no curl, no writes)
     # and show what it resolved. Nothing is installed or scheduled until it passes.
     tmp=$(mktemp) || { fail "Could not create a temp file - disk-check NOT installed."; return 1; }
+    # The temp file holds the Kuma push URL: remove it on every way out of this
+    # function (return or Ctrl-C/TERM). Traps are shell-global, so the handler
+    # clears itself; INT/TERM then re-raise so the default behaviour is unchanged.
+    trap "rm -f '$tmp'; trap - RETURN INT TERM" RETURN
+    trap "rm -f '$tmp'; trap - RETURN INT TERM; kill -INT \$BASHPID" INT
+    trap "rm -f '$tmp'; trap - RETURN INT TERM; kill -TERM \$BASHPID" TERM
     _disk_check_script "$push_url" "$env_file" > "$tmp"
     info "Checking what the monitor will watch..."
     dry_out=$(DISKCHECK_DRYRUN=1 bash "$tmp" 2>&1) || dry_rc=$?
     echo "$dry_out" | sed 's/^/    /'
-    if (( dry_rc == 2 )); then
-        rm -f "$tmp"
-        fail "The monitor would be blind (see above) - disk-check NOT installed, nothing changed."
+    if (( dry_rc == 4 )); then
+        fail "The monitor would be blind (see above) - disk-check NOT installed."
         info "Run this from the repo checkout that holds your .env (federver -> 14 -> 7, or ~/privcloud/setup.sh on the server)."
+        _disk_check_existing_note
         return 1
     elif (( dry_rc != 0 && dry_rc != 1 )); then
-        rm -f "$tmp"
-        fail "Dry-run failed unexpectedly (exit $dry_rc) - disk-check NOT installed, nothing changed."
+        fail "Monitor script error (dry-run exit $dry_rc) - disk-check NOT installed."
+        _disk_check_existing_note
         return 1
     elif (( dry_rc == 1 )); then
         warn "Problems above are real: they will show in Kuma as down. Installing anyway - that is the monitor's job."
     fi
 
     # root:root 0700 in one step: the script holds the Kuma push token.
-    sudo install -o root -g root -m 700 "$tmp" /usr/local/bin/disk-check.sh
-    local inst_rc=$?
+    local inst_rc=0
+    sudo install -o root -g root -m 700 "$tmp" /usr/local/bin/disk-check.sh || inst_rc=$?
     rm -f "$tmp"
     (( inst_rc == 0 )) || { fail "Could not install /usr/local/bin/disk-check.sh - NOT scheduled."; return 1; }
 

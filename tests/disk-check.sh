@@ -38,6 +38,12 @@ url="${@: -1}"
 if [[ "$url" == *BADTOKEN* ]]; then [ "$f" = 1 ] && exit 22; exit 0; fi
 exit "${CURL_RC:-0}"
 X
+cat > "$T/bin/docker" <<'X'
+#!/bin/bash
+# Stub for the Kuma DB query: DOCKER_RC (default 1 = docker down) and DOCKER_OUT (rows).
+[ "${DOCKER_RC:-1}" = 0 ] || exit "${DOCKER_RC:-1}"
+printf '%s' "$DOCKER_OUT"
+X
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH" CURL_LOG=$T/curl.log FM_MAP=$T/fm DF_MAP=$T/df.map
 PASS=0; FAILN=0
@@ -60,7 +66,7 @@ cat > "$T/step.sh" <<'X'
 info(){ echo "I:$*"; }; warn(){ echo "W:$*"; }; fail(){ echo "F:$*"; }; ok(){ echo "O:$*"; }
 YELLOW= NC= BLUE= BOLD= DIM=
 hostname(){ echo 1.2.3.4; }
-sudo(){ echo "SUDO $*" >> $T/sudo.log; case "$1" in install) eval "$INSTALL_HOOK"; cp "${@: -2:1}" "$T/installed.sh"; chmod "$7" "$T/installed.sh";; esac; return 0; }
+sudo(){ echo "SUDO $*" >> $T/sudo.log; case "$1" in grep) command grep "${@:2}"; return;; rm) command rm "${@:2}";; install) eval "$INSTALL_HOOK"; cp "${@: -2:1}" "$T/installed.sh"; chmod "$7" "$T/installed.sh";; esac; return 0; }
 _cron_get(){ echo ""; }; _cron_drop(){ :; }; _cron_set(){ echo "CRONSET $2" >> $T/sudo.log; return 0; }
 X
 # Run step_disk_monitor from the sandbox copy; $1 = sudo behaviour hook (optional
@@ -71,8 +77,9 @@ run_step() {
   ( export T; export INSTALL_HOOK="$1"; source "$T/step.sh"
     sed "s#/var/log/disk-check#$T/log/dc#g; s#/usr/local/bin/disk-check.sh#$T/bin-dc.sh#g; ${2:-}" "$T/copy/setup.sh" > "$T/copy/s2.sh"
     source "$T/copy/s2.sh"
+    eval "$STEP_PRE"
     [ "$3" = e ] && set -e
-    step_disk_monitor <<< "http://example.invalid/api/push/TOK?status=up&msg=OK&ping="
+    step_disk_monitor <<< "${STEP_IN-http://example.invalid/api/push/TOK?status=up&msg=OK&ping=}"
     echo "STEP_RC=$?"; echo "TRAPS=[$(trap -p | grep -E 'RETURN|INT|TERM')]" ) 2>&1
 }
 leaked() { ls "$T"/tmpd/tmp.* 2>/dev/null | wc -l; }
@@ -104,6 +111,45 @@ check 1f "SIGTERM during sudo install -> temp file removed" '[ "$(leaked)" = 0 ]
 # 1g failing sudo install under set -e (the --run path): temp file removed, step fails
 OUT=$(run_step 'return 1' '' e); RC=$?
 check 1g "sudo install fails under set -e (the --run path) -> reported, temp file removed" '[[ "$OUT" == *"Could not install"* && "$(leaked)" = 0 ]]'
+
+# 1h-1q existing Push URL is reused; removal only ever explicit (setup.sh:
+# _disk_check_url_from_script/_from_kuma/_remove). Good .env is still in place.
+STEP_PRE='_cron_get(){ cat "$T/cron"; }; _cron_drop(){ grep -v -- "$3" <<<"$1" || true; }; _cron_set(){ printf "%s" "$2" > "$T/cron"; }'
+newstep() { # stdin-lines script-url(optional) kuma-rows(optional, "" = docker down)
+  rm -f "$T/bin-dc.sh"; printf '0 1 * * * other\n*/5 * * * * /usr/local/bin/disk-check.sh\n' > "$T/cron"
+  [ -n "$2" ] && _disk_check_script "$2" /x > "$T/bin-dc.sh"
+  if [ -n "$3" ]; then export DOCKER_RC=0 DOCKER_OUT="$3"; else export DOCKER_RC=1 DOCKER_OUT=; fi
+  STEP_IN=$1; OUT=$(run_step); RC=$?; }
+SCRIPTURL=http://example.invalid/api/push/SCRIPTTOKEN9999
+KUMAURL=http://1.2.3.4:3001/api/push/KUMATOKEN12345678
+newstep "" "$SCRIPTURL"
+check 1h "URL in the installed script + Enter -> installs with it, no setup box, token masked" '[[ "$OUT" == *"installed script (token …9999)"* && "$OUT" != *"Set up the Kuma monitor first"* && "$OUT" != *SCRIPTTOKEN* ]] && grep -q "PUSH_URL=$SCRIPTURL$" $T/installed.sh'
+newstep "" "" KUMATOKEN12345678
+check 1i "URL only in Kuma + Enter -> installs with http://<ip>:3001/api/push/<token>" '[[ "$OUT" == *"Uptime Kuma (token …5678)"* && "$OUT" != *"Set up the Kuma monitor first"* ]] && grep -q "PUSH_URL=$KUMAURL$" $T/installed.sh'
+newstep $'p\nhttp://example.invalid/api/push/NEWTOK?status=up' "$SCRIPTURL"
+check 1j "found + p + new URL -> shows the setup box, installs the new URL" '[[ "$OUT" == *"Set up the Kuma monitor first"* ]] && grep -q "PUSH_URL=http://example.invalid/api/push/NEWTOK$" $T/installed.sh'
+newstep "" "" ""; cronb=$(cat $T/cron)
+check 1k "nothing found + blank -> back, no changes: no sudo call, cron untouched" '[[ "$OUT" == *"Set up the Kuma monitor first"* && "$OUT" == *"No changes."* && "$OUT" == *"STEP_RC=2"* ]] && [ ! -e $T/sudo.log -o "$(grep -vc "SUDO grep" $T/sudo.log 2>/dev/null)" = 0 ] && [ "$(cat $T/cron)" = "$cronb" ] && [ ! -e $T/installed.sh ]'
+newstep "q" "" ""
+check 1k2 "nothing found + q -> back, no changes" '[[ "$OUT" == *"STEP_RC=2"* && ! -e $T/installed.sh ]]'
+newstep $'r\n' "$SCRIPTURL"; cronb=$(cat $T/cron)
+check 1l "r + blank confirm -> nothing removed" '[[ "$OUT" == *"Cancelled. Nothing removed."* ]] && [ -e $T/bin-dc.sh ] && [ "$(cat $T/cron)" = "$cronb" ]'
+newstep $'r\nyes' "$SCRIPTURL"
+check 1m "r + wrong confirm -> nothing removed" '[[ "$OUT" == *"did not match"* ]] && [ -e $T/bin-dc.sh ] && [ "$(cat $T/cron)" = "$cronb" ]'
+newstep $'r\ndisk-check' "$SCRIPTURL"
+check 1n "r + disk-check -> cron line and script gone, other cron lines kept, verified" '[[ "$OUT" == *"disk-check removed"* ]] && [ ! -e $T/bin-dc.sh ] && ! grep -q bin-dc $T/cron && grep -q other $T/cron'
+newstep $'r\ndisk-check' "" KUMATOKEN12345678; rm -f "$T/bin-dc.sh"; printf '0 1 * * * other\n' > "$T/cron"
+OUT=$(STEP_IN=$'r' run_step)
+check 1n2 "r with nothing installed -> says so, no confirm asked" '[[ "$OUT" == *"nothing to remove"* && "$OUT" != *"to confirm"* ]]'
+newstep "" "" $'AAA111\nBBB222'
+check 1o "two Kuma matches -> treated as not found (setup box + paste prompt, blank = back)" '[[ "$OUT" == *"Set up the Kuma monitor first"* && "$OUT" == *"No changes."* && "$OUT" != *"Found the Push URL"* && ! -e $T/installed.sh ]]'
+newstep "" "" ""
+check 1p "docker failing -> not found, step does not abort and prints no error" '[[ "$OUT" == *"STEP_RC=2"* && "$OUT" != *F:* ]]'
+newstep "" "$SCRIPTURL" KUMATOKEN12345678
+check 1q "full token (script and Kuma) never appears in output" '[[ "$OUT" != *SCRIPTTOKEN* && "$OUT" != *KUMATOKEN12345678* ]]'
+newstep "" "" KUMATOKEN12345678
+check 1q2 "Kuma token not echoed either" '[[ "$OUT" != *KUMATOKEN12345678* ]]'
+unset STEP_IN STEP_PRE DOCKER_RC DOCKER_OUT; rm -f "$T/bin-dc.sh" "$T/installed.sh"
 
 reset; gen "$T/missing.env"; run
 check 2a "run time .env missing -> ALERT 'config not found', push down, never ok" '[ $RC = 1 ] && grep -q "ALERT config not found: $T/missing.env" $T/log/dc.last && grep -q "status=down" $CURL_LOG && ! grep -q " ok" $T/log/dc.last'

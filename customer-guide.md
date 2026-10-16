@@ -123,6 +123,8 @@ Run `privcloud` with no command for the interactive menu. Pick a number and it r
 
 **Wizard exits:** inside any option, press `0` in a numbered menu or type `q` at a text prompt to drop back to this main menu. No need for Ctrl+C.
 
+**Uninstalls are verified.** Every Uninstall (Syncthing, Tailscale, AdGuard, WireGuard, remote desktop) asks `Type "<name>" to confirm deletion` (blank cancels) and prints "removed" only after checking the end state: the container or package is really gone and the firewall ports are really closed. If anything is left it says so in red and the step shows FAILED instead of DONE.
+
 ### From Immich (the photo server)
 
 - **Face recognition** — automatically detects and groups faces across your entire library
@@ -479,7 +481,7 @@ One flat menu — no drill-down — with the one-time backup and the four schedu
 
 **One-time** then asks *what* to back up — **Both** (default), **Photos only**, or **Database only** — and, for photos, **Append** (keep everything on the backup) vs **Mirror** (exact copy, removes files deleted from source). It previews the destination as a tree before copying. Incremental after the first run. (This is the *Immich* one-time backup — distinct from the generic rsync at `federver` → 14 → 5.)
 
-**Scheduled - Set up** creates an automatic backup (daily at 3am, keep 7 days; or weekly, keep 3 weeks) that runs the *same* schedule as `federver` → 14 → 6 (one source of truth, no double-runs), backs up database + photos every run, catches up if the server was off, and retries on failure. It defaults the destination to an external/USB drive and warns if you point it at the same drive as your photos (a single disk failure would lose both). Right after setup it offers to **run the first backup now** so you can confirm it works instead of waiting for the next scheduled time. **Status** shows *your Immich backup* — schedule, next run, and a recent-runs history — in the **same table layout** as `federver` → 14 → 1 (and points you there for everything else scheduled on the server), whether the backup runs as a systemd timer or a root cron job. **Remove** first lists exactly what it will delete (the timer and its cadence, the service, the script, and any legacy cron line) — there's only one Immich backup schedule, so this is a confirmation, not a chooser — then deletes the schedule while keeping your backup files.
+**Scheduled - Set up** creates an automatic backup (daily at 3am, keep 7 days; or weekly, keep 3 weeks) that runs the *same* schedule as `federver` → 14 → 6 (one source of truth, no double-runs), backs up database + photos every run, catches up if the server was off, and retries on failure. It defaults the destination to the destination already configured in the installed schedule (so pressing Enter when re-running Set up keeps it and never repoints the job at a fresh, empty folder), and only on a first setup to an external/USB drive; it warns if you point it at the same drive as your photos (a single disk failure would lose both). Right after setup it offers to **run the first backup now** so you can confirm it works instead of waiting for the next scheduled time. **Status** shows *your Immich backup* — schedule, next run, and a recent-runs history — in the **same table layout** as `federver` → 14 → 1 (and points you there for everything else scheduled on the server), whether the backup runs as a systemd timer or a root cron job. **Remove** first lists exactly what it will delete (the timer and its cadence, the service, the script, and any legacy cron line) — there's only one Immich backup schedule, so this is a confirmation, not a chooser — then deletes the schedule while keeping your backup files.
 
 > **Tip:** an external/USB drive is the point — a backup on the same disk as your photos dies with that disk.
 
@@ -810,7 +812,11 @@ Re-running option 8 from the laptop once both sides are installed shows a unifie
 3. **Disconnect both** — `tailscale down` on both (stays disconnected until you Connect again)
 4. **Restart both** — `systemctl restart tailscaled` on both
 5. **Re-authenticate server** — SSHes to server and runs `tailscale up` with a new login URL
-6. **Uninstall both** — removes Tailscale from laptop + server. Typed-name confirmation. Phones untouched.
+6. **Uninstall both** — removes Tailscale from the **server first, then the laptop** (so a laptop that reaches the server over Tailscale doesn't cut its own route). Typed-name confirmation; the result is verified per side ("Server: removed" only once the `tailscale` binary is really gone). If the server half fails, the laptop half still runs and the menu says the server half was not completed. Phones untouched.
+
+**Roaming guard.** When the laptop reaches the server over Tailscale (away from home, `SERVER_IP` swapped for `SERVER_HOST_TS`, or any `100.64.0.0/10` address), uninstalling both or the server side is **refused** before the confirm and nothing is changed (the laptop is not touched either), because removing Tailscale there would cut the very connection the command runs over. Run it from home (LAN) or on the server itself. Laptop-only removal still works but warns that the connection will drop.
+
+**Opening option 8 never installs by itself.** With neither side installed it says "Tailscale isn't installed." and asks `Install it now? [y/N]` (Enter = no). With exactly one side present it shows `Laptop:` / `Server:` and offers `1) Install the missing side`, `2) Uninstall the remaining side`, `0) Back`. If the server can't be reached it says so and changes nothing. Syncthing (option 12) behaves the same way.
 
 When run directly on the server, option 8 opens a server-only submenu instead.
 
@@ -1110,7 +1116,9 @@ Re-running option 12 from the laptop once both sides are installed opens a unifi
 6. **Show sync paths** — server-side container bind mounts vs `.env`
 7. **Reapply paths from .env** — recreates the server container with fresh mounts (pairings persist)
 8. **Logs (server)** — `docker logs -f syncthing` via SSH
-9. **Uninstall both** — removes from laptop (`dnf remove`) + server (container + firewall). Typed-name confirm. Config kept on both sides.
+9. **Uninstall both** — removes from laptop (`dnf remove`) + server (container + firewall). Typed-name confirm; each side is verified (container gone, firewall ports closed, package gone) before it says "removed". Config kept on both sides.
+
+The server's running state and Device ID are read with plain `docker` (the server user is in the `docker` group), so no sudo prompt is needed for them. In the single-side state (only laptop or only server installed) the menu offers install-missing / uninstall-remaining instead of the full list above.
 
 When run directly on the server, option 12 opens a server-only submenu instead.
 
@@ -1136,7 +1144,7 @@ Menu is organised by category — `Status` spans everything, then `Sync -` entri
 - **Delete files** (option 2 → 3) — remove files on the laptop or server side.
 - **Backup - One-time** (option 5) — ad-hoc rsync that runs once and leaves nothing behind: no cron entry, no timer, no saved script. Pick a direction:
   - **Upload** — laptop → server
-  - **Download** — server → laptop. Handles permission walls on **either end**, automatically: if the *source* is root-owned (most often an Immich backup, owned by root because the backup job runs as root) it's read on the server under `sudo` (one server-password prompt); if the *destination* isn't writable by you (e.g. a USB drive whose mount root is owned by root) it's written under **local** `sudo` (one laptop-password prompt). Either, both, or neither — whatever the copy actually needs. Ordinary copies (readable source, writable destination) download with no prompt, as before. Note: when sudo is involved the copy streams via `tar` rather than `rsync`, so there's no per-file progress and it isn't resumable — for a very large one-off, it's often nicer to make the destination yours once (`sudo chown "$USER:$USER" /path/to/drive`) and let the normal rsync path run.
+  - **Download** — server → laptop. Handles permission walls on **either end**, automatically: if the *source* is root-owned (most often an Immich backup, owned by root because the backup job runs as root) it's read on the server under `sudo` (one server-password prompt); if the *destination* isn't writable by you (e.g. a USB drive whose mount root is owned by root) it's written under **local** `sudo` (one laptop-password prompt). Either, both, or neither — whatever the copy actually needs. Ordinary copies (readable source, writable destination) download with no prompt, as before. Note: when sudo is involved the copy streams via `tar` rather than `rsync`, so there's no per-file progress and it isn't resumable. If `pv` is installed on the laptop you get a progress bar (%, rate, ETA; the % is approximate because tar adds overhead) — otherwise it asks `Install pv for a progress bar? [Y/n]` (Enter = yes) before the server password prompt, and a failed install just copies without the bar. For a very large one-off, it's often nicer to make the destination yours once (`sudo chown "$USER:$USER" /path/to/drive`) and let the normal rsync path run.
   - **Local** — laptop → laptop (e.g. to a USB drive plugged into the laptop)
   - **Server** — server → server (e.g. `/mnt/data` → a backup drive plugged into the server), copied with `sudo rsync` directly on the server without routing the bytes through the laptop
   Pick source + destination using the same pickers as Sync - New (USB drives are auto-listed with their size), see the same plain-words copy choice + tree preview of the result, confirm `y/N`. Built for "I want a backup right now, not on a schedule."
@@ -1145,7 +1153,7 @@ Menu is organised by category — `Status` spans everything, then `Sync -` entri
   - **Systemd timer** (once a week, any time — Sat / Sun / any day). Uses `Persistent=true` + 6h randomized delay so a missed run is caught on next boot. The right pick for weekly jobs on a laptop that might be off at a specific hour.
   Scripts saved to `~/.local/bin/sync-*.sh`, logs to `~/.local/share/sync-jobs/*.log`; timer units to `~/.config/systemd/user/sync-*.{service,timer}`. Linger is enabled automatically on first timer so jobs fire when you're not logged in.
 - **Sync - Edit job** (option 3) — pick an existing job and: change its schedule (switches freely between cron and timer), pause / resume (toggles based on current state), run now, view the last 30 lines of the log, or delete. Renames or script-path changes: delete and recreate.
-- **Status** (option 1) — unified table showing server cron jobs (immich-backup, disk-check) alongside your laptop sync jobs (both cron and timer), with schedule, English translation, type, and status. Spans all categories.
+- **Status** (option 1) — unified table showing server cron jobs (immich-backup, disk-check) alongside your laptop sync jobs (both cron and timer), with schedule, English translation, type, and status. Spans all categories. It first asks for the **server sudo password** (once, to read root's crontab; typed hidden, sent over SSH to `sudo -S`, never on a command line). The schedule shown is the real one: a script that exists with no cron line shows `not scheduled  reinstall via 14 → 7` (or `14 → 6`), and if the crontab could not be read (wrong password, unreachable) it shows `schedule unknown` rather than guessing. disk-check's Last run comes from `/var/log/disk-check.last` and reads `✓ ok`, `⚠ <alert message>`, or `⚠ stale (last <time>)` when the last run is more than 12 minutes old (the job runs every 5); an install from before this file existed shows `no run recorded (reinstall via 14 → 7)`.
 
 ### When to use it vs Syncthing
 
@@ -1190,7 +1198,7 @@ Install "RD Client" from App Store. Add PC with `federver` (via Tailscale).
 
 ## Save to pass
 
-Option **17** in `federver` backs up everything to the `pass` password manager. Run from your **laptop** (where pass is installed) — it SSHes into the server to fetch data.
+Option **17** in `federver` backs up everything to the `pass` password manager. Run from your **laptop** (where pass is installed) — it SSHes into the server to fetch data. The server-side reads need root (`/etc/wireguard`, AdGuard's config, Syncthing's cert and key), so it first asks for the **server sudo password** (hidden; checked up front and sent over SSH to `sudo -S`, never on a command line). A wrong password stops with "Wrong sudo password - nothing saved to pass" and writes nothing.
 
 ```bash
 federver    # pick 17
@@ -1235,7 +1243,7 @@ pass show privcloud/ssh/private_key        # SSH key
 
 ### Daily (automated)
 
-- **Every 5 min** — Disk space heartbeat to Uptime Kuma (alerts if any mount exceeds 85%)
+- **Every 5 min** — Disk space heartbeat to Uptime Kuma (alerts if `/` or a data drive exceeds 85%, or a configured data drive is not mounted)
 - **3:00am daily or weekly** — Immich backup (DB + photos, systemd timer, set up via `federver` → 14 → 6 or `privcloud` → 9 → 2)
 - **4:00am** — Watchtower checks for container updates
 
@@ -1245,7 +1253,7 @@ pass show privcloud/ssh/private_key        # SSH key
 |------|-----|-------|
 | Service health | Uptime Kuma monitors | `http://<server-ip>:3001` |
 | Server online | Ping monitor in Uptime Kuma | Type: Ping → server IP |
-| Disk space | Every-5-min cron + Kuma Push | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
+| Disk space | Every-5-min cron + Kuma Push | `cat /var/log/disk-check.last` (last run) / `disk-check.log` (alerts) or Uptime Kuma dashboard |
 | Backup status | Last runs table | `federver` → 14 → 1 (or `cat /var/log/immich-backup.log`) |
 | Container errors | `privcloud status` | Shows recent errors per container |
 
@@ -1260,9 +1268,9 @@ pass show privcloud/ssh/private_key        # SSH key
 
 Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 
-**Disk space alert:** `federver` → 14 → 7 sets this up. It walks you through creating a Push monitor in Uptime Kuma (Heartbeat Interval `360`, Retry Interval `60`, Max Retries `2`), you paste the URL back into the terminal, and it installs `/usr/local/bin/disk-check.sh` with a 5-minute cron. The script sends `status=up` when all mounts are under 85%, or `status=down` when any mount exceeds 85%. The first heartbeat is sent immediately at install time so the Kuma monitor goes green before you even leave the step. Uptime Kuma then alerts you via Telegram/email if configured. **If you skip the Kuma URL prompt the wizard installs nothing** — earlier versions installed the cron line anyway, leaving a silently-dead monitor.
+**Disk space alert:** `federver` → 14 → 7 sets this up. It walks you through creating a Push monitor in Uptime Kuma (Heartbeat Interval `360`, Retry Interval `60`, Max Retries `2`), you paste the URL back into the terminal, and it installs `/usr/local/bin/disk-check.sh` with a 5-minute cron. Paste the URL exactly as Kuma shows it; the query string Kuma appends (`?status=up&msg=OK&ping=`) is stripped and the script sends exactly one `status`/`msg`, so `down` really registers. At every run the script reads `FILES_LOCATION`, `MUSIC_LOCATION`, `UPLOAD_LOCATION` and `DB_DATA_LOCATION` from the server's `.env` (location baked in at install, file never sourced), maps each to its backing mount, and checks `/` plus those mounts, so moving a drive needs no reinstall. It sends `status=up` when all are under 85%, or `status=down` with the culprits in the message (e.g. `/mnt/federver 91%`) when any exceeds 85% or a configured path is missing or is an empty leftover mountpoint under `/mnt`, `/media` or `/run/media` (`<path> not mounted`). Limit: an absent drive whose mountpoint folder is non-empty is not noticed. Every run overwrites a one-line state file, `/var/log/disk-check.last` (`<date> ok` or `<date> ALERT <msg>`); alerts are also appended to `/var/log/disk-check.log`. The first heartbeat is sent immediately at install time so the Kuma monitor goes green before you even leave the step. Uptime Kuma then alerts you via Telegram/email if configured. **If you skip the Kuma URL prompt the wizard installs nothing** — earlier versions installed the cron line anyway, leaving a silently-dead monitor.
 
-**Immich backup (scheduled):** `federver` → 14 → 6 (a set up/change · status · run now · remove submenu) — or `privcloud` → 9, whose flat Backup menu exposes the same actions (`Scheduled - Set up` / `Status` / `Run now` / `Remove`) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention) **plus** a live `rsync` of your photos. Everything lands under `<dest>/immich/` — DB dumps in `<dest>/immich/db/`, photos in `<dest>/immich/photos/` (append-only — it never deletes from the backup). The photo copy backs up your **originals and metadata only**: it skips Immich's own DB-dump folder (`backups/`, already covered by the DB dump above) and the regenerable caches (`thumbs/`, `encoded-video/`) that Immich rebuilds after a restore — so the backup stays lean instead of mirroring tens of GB of throwaway data. `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to an external/USB drive and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c <dest>/immich/db/immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
+**Immich backup (scheduled):** `federver` → 14 → 6 (a set up/change · status · run now · remove submenu) — or `privcloud` → 9, whose flat Backup menu exposes the same actions (`Scheduled - Set up` / `Status` / `Run now` / `Remove`) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention) **plus** a live `rsync` of your photos. Everything lands under `<dest>/immich/` — DB dumps in `<dest>/immich/db/`, photos in `<dest>/immich/photos/` (append-only — it never deletes from the backup). The photo copy backs up your **originals and metadata only**: it skips Immich's own DB-dump folder (`backups/`, already covered by the DB dump above) and the regenerable caches (`thumbs/`, `encoded-video/`) that Immich rebuilds after a restore — so the backup stays lean instead of mirroring tens of GB of throwaway data. `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to the one already configured (re-running Set up and pressing Enter keeps it), else to an external/USB drive, and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c <dest>/immich/db/immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
 
 ### Periodic (manual)
 
@@ -1274,7 +1282,7 @@ Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 | Update Fedora userspace | `sudo dnf upgrade --exclude='kernel*'` | Monthly (or skip — security fixes auto-apply) |
 | Update kernel + reboot | see [Kernel updates](#kernel-updates) | Every 1–2 months, when you're home |
 | Check disk space | `df -h` | Monthly |
-| Check disk alerts | `cat /var/log/disk-check.log` | After alerts |
+| Check disk alerts | `cat /var/log/disk-check.last` (last run), `cat /var/log/disk-check.log` (alert history) | After alerts |
 | Check backup logs | `cat /var/log/immich-backup.log` | After issues |
 | Manage sync and backups | `federver` → **14** (from laptop) | As needed |
 
@@ -1520,7 +1528,7 @@ This updates `.env` and redeploys FileBrowser automatically.
 | Remote desktop | RDP client → server IP port 3389 |
 | Backup | `privcloud backup` or `sudo systemctl start immich-backup.service` |
 | Schedule backup | `federver` → **14** → **6** (Manage Immich backup) |
-| Disk alerts | `cat /var/log/disk-check.log` or Uptime Kuma dashboard |
+| Disk alerts | `cat /var/log/disk-check.last` / `disk-check.log` or Uptime Kuma dashboard |
 | Backup to pass | `federver` → **15** (from laptop) |
 | Reset password | `federver` → **r** (FileBrowser, Immich, Navidrome, Uptime Kuma) |
 | Shutdown | `federver` → **p** |

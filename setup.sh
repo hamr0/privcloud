@@ -4713,6 +4713,40 @@ _disk_check_remove() {
     return 0
 }
 
+# Age in seconds of a disk-check.last line ("<YYYY-MM-DD HH:MM> ok|ALERT ..."),
+# empty if unparsable. Mirrors the Status view's calculation (that one runs
+# remotely inside an ssh script, so it cannot call this helper).
+_disk_check_last_age() {
+    local t
+    t=$(date -d "${1:0:16}" +%s 2>/dev/null) || return 0
+    echo $(( $(date +%s) - t ))
+}
+
+# "Current" block shown when an existing monitor/URL was found: masked Push URL,
+# the real root cron line, and the last run (world-readable, no sudo).
+_disk_check_current() {
+    local url="$1" src="$2" cron cronline lastf=/var/log/disk-check.last last age
+    echo -e "  ${BOLD}Current${NC}"
+    echo -e "    Push URL:  ${url%%/api/push/*}/api/push/…${url: -4}   ${DIM}(from ${src})${NC}"
+    if cron=$(_cron_get root 2>/dev/null); then
+        cronline=$(grep disk-check <<<"$cron" | head -n 1)
+        if [[ -n "$cronline" ]]; then echo -e "    Cron:      $cronline"
+        else echo -e "    Cron:      ${RED}not scheduled${NC}"; fi
+    else
+        echo -e "    Cron:      ${YELLOW}unknown (could not read root's crontab)${NC}"
+    fi
+    if [[ -r "$lastf" && -s "$lastf" ]]; then
+        last=$(head -n 1 "$lastf"); age=$(_disk_check_last_age "$last")
+        if [[ "$last" == *" ok" ]]; then echo -ne "    Last run:  ${GREEN}${last}${NC}"
+        else echo -ne "    Last run:  ${RED}${last}${NC}"; fi
+        if [[ "$age" =~ ^-?[0-9]+$ ]] && (( age > 720 )); then echo -ne " ${RED}(stale)${NC}"; fi
+        echo ""
+    else
+        echo -e "    Last run:  never"
+    fi
+    echo ""
+}
+
 step_disk_monitor() {
     info "Configures a 5-minute heartbeat to your Uptime Kuma 'Disk Space' monitor."
     info "An existing Push URL is found and reused; nothing is removed unless you choose r."
@@ -4725,15 +4759,29 @@ step_disk_monitor() {
     found=$(_disk_check_url_from_script); src="the installed script"
     if [[ -z "$found" ]]; then found=$(_disk_check_url_from_kuma "$IP"); src="Uptime Kuma"; fi
 
-    local show_box=1
+    # The box is always shown (it is the reference for how the monitor is configured).
+    local title="Set up the Kuma monitor first"
+    [[ -n "$found" ]] && title="Kuma monitor settings"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}${title}${NC}"
+    echo ""
+    echo -e "  1. Open ${BLUE}http://$IP:3001${NC}"
+    echo -e "  2. Add New Monitor → Monitor Type: ${BOLD}Push${NC}"
+    echo -e "  3. Friendly Name: ${BOLD}Disk Space${NC}"
+    echo -e "  4. Heartbeat Interval: ${BOLD}360${NC}  ${DIM}(seconds — matches the 5-min cron)${NC}"
+    echo -e "  5. Heartbeat Retry Interval: ${BOLD}60${NC}"
+    echo -e "  6. Max Retries: ${BOLD}2${NC}"
+    echo -e "  7. Click ${BOLD}Save${NC}, then copy the ${BOLD}Push URL${NC} from the monitor page"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
     if [[ -n "$found" ]]; then
-        show_box=0
-        info "Found the Push URL in $src (token …${found: -4})."
+        _disk_check_current "$found" "$src"
         while true; do
             read -p "  Enter = use it, p = paste a different URL, r = remove the monitor, q = back: " choice
             case "$choice" in
                 "") push_url="$found"; break ;;
-                p|P) show_box=1; break ;;
+                p|P) break ;;
                 r|R) _disk_check_remove; return $? ;;
                 q|Q) return 2 ;;
                 *) warn "Enter, p, r or q." ;;
@@ -4742,20 +4790,6 @@ step_disk_monitor() {
     fi
 
     if [[ -z "$push_url" ]]; then
-        if (( show_box )); then
-            echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-            echo -e "  ${YELLOW}Set up the Kuma monitor first${NC}"
-            echo ""
-            echo -e "  1. Open ${BLUE}http://$IP:3001${NC}"
-            echo -e "  2. Add New Monitor → Monitor Type: ${BOLD}Push${NC}"
-            echo -e "  3. Friendly Name: ${BOLD}Disk Space${NC}"
-            echo -e "  4. Heartbeat Interval: ${BOLD}360${NC}  ${DIM}(seconds — matches the 5-min cron)${NC}"
-            echo -e "  5. Heartbeat Retry Interval: ${BOLD}60${NC}"
-            echo -e "  6. Max Retries: ${BOLD}2${NC}"
-            echo -e "  7. Click ${BOLD}Save${NC}, then copy the ${BOLD}Push URL${NC} from the monitor page"
-            echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-            echo ""
-        fi
         read -p "  Paste the Push URL (q/Enter = back): " push_url
         if [[ -z "$push_url" || "$push_url" == "q" ]]; then
             info "No changes."

@@ -4512,6 +4512,146 @@ step_immich_backup_menu() {
     return 0
 }
 
+# Print the disk-check script (stdout). $1 = Kuma push base URL, $2 = .env path.
+# Split from step_disk_monitor so the exact script that gets installed can be
+# dry-run (DISKCHECK_DRYRUN=1) before it is ever scheduled.
+_disk_check_script() {
+    printf '#!/bin/bash\nPUSH_URL=%q\nENV_FILE=%q\n' "$1" "$2"
+    cat <<'DISKEOF'
+# Exit codes: 0 healthy | 1 alert (Kuma down) | 2 cannot monitor (config) |
+# 3 healthy but the Kuma push failed.
+# DISKCHECK_DRYRUN=1: print what would be watched; no curl, no log/state write.
+THRESHOLD=85
+LOG="/var/log/disk-check.log"
+# One-line state file, overwritten every run (never grows): "<date> ok" or
+# "<date> ALERT <msg>". The menu's "Last run" reads this; the log is alerts only.
+STATE="/var/log/disk-check.last"
+FSTAB="/etc/fstab"
+umask 022   # keep the state file world-readable so the menu can read it without sudo
+NOW=$(date '+%Y-%m-%d %H:%M')
+
+envget() {
+    local line v
+    line=$(grep -E "^[[:space:]]*$1[[:space:]]*=" "$ENV_FILE" 2>/dev/null | head -1)
+    v="${line#*=}"
+    v="${v#"${v%%[![:space:]]*}"}"                       # trim leading space
+    case "$v" in
+        \"*) v="${v#\"}"; v="${v%%\"*}" ;;              # "quoted": up to closing quote
+        \'*) v="${v#\'}"; v="${v%%\'*}" ;;
+        *) v="${v%%[[:space:]]#*}"; v="${v%"${v##*[![:space:]]}"}" ;;  # drop ' # comment', trim
+    esac
+    printf '%s' "$v"
+}
+
+# Declared intent: the longest /etc/fstab mountpoint (field 2, non-comment
+# lines) that is a prefix of $1. Empty when fstab says nothing about the path.
+fstab_mount_for() {
+    local best="" mp
+    while read -r _ mp _; do
+        mp="${mp//\\040/ }"; mp="${mp%/}"
+        case "$mp" in /?*) ;; *) continue ;; esac        # skips "/", swap, none, blanks
+        case "$1" in "$mp"|"$mp"/*) (( ${#mp} > ${#best} )) && best="$mp" ;; esac
+    done < <(grep -v '^[[:space:]]*#' "$FSTAB" 2>/dev/null)
+    printf '%s' "$best"
+}
+
+MOUNTS=(/)
+WATCH=()
+PROBLEMS=()
+NLOC=0      # data locations configured in .env
+NRES=0      # ... that exist and were checked
+CONFIG_BAD=0
+
+if [ ! -f "$ENV_FILE" ]; then
+    PROBLEMS+=("config not found: $ENV_FILE"); CONFIG_BAD=1
+elif [ ! -r "$ENV_FILE" ]; then
+    PROBLEMS+=("config unreadable: $ENV_FILE"); CONFIG_BAD=1
+else
+    for key in FILES_LOCATION MUSIC_LOCATION UPLOAD_LOCATION DB_DATA_LOCATION; do
+        p=$(envget "$key")
+        [ -z "$p" ] && continue
+        NLOC=$((NLOC+1))
+        case "$p" in /*) ;; *) p="$(dirname "$ENV_FILE")/$p" ;; esac
+        pc=$(readlink -f -- "$p" 2>/dev/null) || pc=""
+        [ -n "$pc" ] && p="$pc"
+        want=$(fstab_mount_for "$p")
+        if [ ! -e "$p" ]; then
+            # An fstab-declared mount whose directory is gone = absent automount drive.
+            if [ -n "$want" ]; then PROBLEMS+=("$p not mounted"); else PROBLEMS+=("$p missing"); fi
+            continue
+        fi
+        NRES=$((NRES+1))
+        t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null | tail -n 1)
+        if [ -z "$t" ]; then
+            PROBLEMS+=("$p not mounted"); continue
+        fi
+        if [ "$t" = "/" ]; then
+            if [ -n "$want" ]; then
+                # fstab says a drive belongs here but the path resolves to /.
+                PROBLEMS+=("$p not mounted"); continue
+            fi
+            # No fstab line (udisks/automount): an EMPTY dir under a removable-drive
+            # prefix is the leftover stub of an absent drive.
+            case "$p" in /mnt/*|/media/*|/run/media/*)
+                if [ -z "$(ls -A "$p" 2>/dev/null)" ]; then
+                    PROBLEMS+=("$p not mounted"); continue
+                fi ;;
+            esac
+        fi
+        seen=false
+        for m in "${MOUNTS[@]}"; do [ "$m" = "$t" ] && seen=true; done
+        $seen || MOUNTS+=("$t")
+    done
+    if [ "$NLOC" -eq 0 ]; then
+        PROBLEMS+=("no data locations in $ENV_FILE"); CONFIG_BAD=1
+    fi
+fi
+
+for m in "${MOUNTS[@]}"; do
+    USAGE=$(df -P "$m" 2>/dev/null | awk 'NR==2 {gsub("%",""); print $5}')
+    case "$USAGE" in
+        ''|*[!0-9]*) PROBLEMS+=("$m usage unreadable"); WATCH+=("$m (?)") ;;
+        *) WATCH+=("$m (${USAGE}%)")
+           [ "$USAGE" -gt "$THRESHOLD" ] && PROBLEMS+=("$m ${USAGE}%") ;;
+    esac
+done
+
+if [ -n "$DISKCHECK_DRYRUN" ]; then
+    echo "Watching: $(IFS=,; echo "${WATCH[*]}" | sed 's/,/, /g')"
+    echo "Config: $ENV_FILE"
+    for pr in "${PROBLEMS[@]}"; do echo "Problem: $pr"; done
+    # Nothing configured is checkable = a blind monitor: refuse, never "ok".
+    [ "$CONFIG_BAD" -eq 0 ] && [ "$NRES" -eq 0 ] && { echo "Problem: no configured data location exists"; CONFIG_BAD=1; }
+    [ "$CONFIG_BAD" -eq 1 ] && exit 2
+    [ ${#PROBLEMS[@]} -gt 0 ] && exit 1
+    exit 0
+fi
+
+if [ ${#PROBLEMS[@]} -gt 0 ]; then
+    MSG=$(IFS=,; echo "${PROBLEMS[*]}")
+    STATUS=down
+    echo "$(date): WARNING - $MSG" >> "$LOG"
+    echo "$NOW ALERT $MSG" > "$STATE"
+else
+    MSG=OK
+    STATUS=up
+    echo "$NOW ok" > "$STATE"
+fi
+chmod 644 "$STATE" 2>/dev/null
+# -f: an HTTP error (bad token -> 404) fails too. stderr dropped so the token
+# URL can never reach a log or cron mail; only the exit code is kept.
+curl -sf -m 15 -G --data-urlencode "status=$STATUS" --data-urlencode "msg=$MSG" "$PUSH_URL" > /dev/null 2>&1
+rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "$(date): WARNING - Kuma push failed (curl exit $rc)" >> "$LOG"
+    EXTRA=""; [ "$STATUS" = down ] && EXTRA="; $MSG"
+    echo "$NOW ALERT Kuma push failed (curl exit $rc)$EXTRA" > "$STATE"
+    exit 3
+fi
+[ "$STATUS" = up ]
+DISKEOF
+}
+
 step_disk_monitor() {
     info "Configures a 5-minute heartbeat to your Uptime Kuma 'Disk Space' monitor."
     info "Without a Push URL the monitor stays dead — skip cleanly if Kuma isn't set up yet."
@@ -4552,83 +4692,40 @@ step_disk_monitor() {
     # the base so the script appends exactly one query string (a second "?" made
     # Kuma read the first status=up, so "down" never registered).
     push_url="${push_url%%\?*}"
-    local env_file
-    env_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.env"
 
-    # The monitored mounts are resolved by the script at RUN time from .env, so a
-    # moved or re-mounted data drive never leaves the monitor checking a dead path.
-    # Only the push URL and the .env location are baked in here.
-    { printf '#!/bin/bash\nPUSH_URL=%q\nENV_FILE=%q\n' "$push_url" "$env_file"
-      cat <<'DISKEOF'
-THRESHOLD=85
-LOG="/var/log/disk-check.log"
-# One-line state file, overwritten every run (never grows): "<date> ok" or
-# "<date> ALERT <msg>". The menu's "Last run" reads this; the log is alerts only.
-STATE="/var/log/disk-check.last"
-umask 022   # keep the state file world-readable so the menu can read it without sudo
-NOW=$(date '+%Y-%m-%d %H:%M')
+    # The .env the monitor reads is the one every other menu step uses:
+    # $SCRIPT_DIR/.env, i.e. the repo checkout (~/privcloud on the server). A copy
+    # of setup.sh run from elsewhere has no .env beside it, and the dry-run below
+    # refuses to install rather than bake a path that does not exist.
+    local SCRIPT_DIR env_file tmp dry_out dry_rc=0
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    env_file="$SCRIPT_DIR/.env"
 
-envget() {
-    local line v
-    line=$(grep -E "^[[:space:]]*$1[[:space:]]*=" "$ENV_FILE" 2>/dev/null | head -1)
-    v="${line#*=}"
-    v="${v#"${v%%[![:space:]]*}"}"                       # trim leading space
-    case "$v" in
-        \"*) v="${v#\"}"; v="${v%%\"*}" ;;              # "quoted": up to closing quote
-        \'*) v="${v#\'}"; v="${v%%\'*}" ;;
-        *) v="${v%%[[:space:]]#*}"; v="${v%"${v##*[![:space:]]}"}" ;;  # drop ' # comment', trim
-    esac
-    printf '%s' "$v"
-}
-
-MOUNTS=(/)
-PROBLEMS=()
-
-# Mountpoints that back the configured data locations. A missing mount raises
-# an alert instead of being skipped.
-for key in FILES_LOCATION MUSIC_LOCATION UPLOAD_LOCATION DB_DATA_LOCATION; do
-    p=$(envget "$key")
-    [ -z "$p" ] && continue
-    case "$p" in /*) ;; *) p="$(dirname "$ENV_FILE")/$p" ;; esac
-    t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null)
-    if [ -z "$t" ]; then
-        PROBLEMS+=("$p not mounted")
-        continue
+    # Generate, then dry-run the exact script (as this user, no curl, no writes)
+    # and show what it resolved. Nothing is installed or scheduled until it passes.
+    tmp=$(mktemp) || { fail "Could not create a temp file - disk-check NOT installed."; return 1; }
+    _disk_check_script "$push_url" "$env_file" > "$tmp"
+    info "Checking what the monitor will watch..."
+    dry_out=$(DISKCHECK_DRYRUN=1 bash "$tmp" 2>&1) || dry_rc=$?
+    echo "$dry_out" | sed 's/^/    /'
+    if (( dry_rc == 2 )); then
+        rm -f "$tmp"
+        fail "The monitor would be blind (see above) - disk-check NOT installed, nothing changed."
+        info "Run this from the repo checkout that holds your .env (federver -> 14 -> 7, or ~/privcloud/setup.sh on the server)."
+        return 1
+    elif (( dry_rc != 0 && dry_rc != 1 )); then
+        rm -f "$tmp"
+        fail "Dry-run failed unexpectedly (exit $dry_rc) - disk-check NOT installed, nothing changed."
+        return 1
+    elif (( dry_rc == 1 )); then
+        warn "Problems above are real: they will show in Kuma as down. Installing anyway - that is the monitor's job."
     fi
-    # Resolves to / but is an EMPTY dir under a removable-drive prefix = the
-    # leftover mountpoint stub of an absent drive. A non-empty plain dir is
-    # deliberate data on /, not an alert.
-    if [ "$t" = "/" ]; then
-        case "$p" in /mnt/*|/media/*|/run/media/*)
-            if [ ! -d "$p" ] || [ -z "$(ls -A "$p" 2>/dev/null)" ]; then
-                PROBLEMS+=("$p not mounted"); continue
-            fi ;;
-        esac
-    fi
-    seen=false
-    for m in "${MOUNTS[@]}"; do [ "$m" = "$t" ] && seen=true; done
-    $seen || MOUNTS+=("$t")
-done
 
-for m in "${MOUNTS[@]}"; do
-    USAGE=$(df -P "$m" 2>/dev/null | awk 'NR==2 {gsub("%",""); print $5}')
-    if [ -n "$USAGE" ] && [ "$USAGE" -gt "$THRESHOLD" ]; then
-        PROBLEMS+=("$m ${USAGE}%")
-    fi
-done
-
-if [ ${#PROBLEMS[@]} -gt 0 ]; then
-    MSG=$(IFS=,; echo "${PROBLEMS[*]}")
-    echo "$(date): WARNING - $MSG" >> "$LOG"
-    echo "$NOW ALERT $MSG" > "$STATE"
-    curl -s -m 15 -G --data-urlencode "status=down" --data-urlencode "msg=$MSG" "$PUSH_URL" > /dev/null 2>&1
-else
-    echo "$NOW ok" > "$STATE"
-    curl -s -m 15 -G --data-urlencode "status=up" --data-urlencode "msg=OK" "$PUSH_URL" > /dev/null 2>&1
-fi
-DISKEOF
-    } | sudo tee /usr/local/bin/disk-check.sh > /dev/null
-    sudo chmod +x /usr/local/bin/disk-check.sh
+    # root:root 0700 in one step: the script holds the Kuma push token.
+    sudo install -o root -g root -m 700 "$tmp" /usr/local/bin/disk-check.sh
+    local inst_rc=$?
+    rm -f "$tmp"
+    (( inst_rc == 0 )) || { fail "Could not install /usr/local/bin/disk-check.sh - NOT scheduled."; return 1; }
 
     cur=$(_cron_get root) || { fail "Could not read root's crontab - disk-check NOT scheduled."; return 1; }
     kept=$(_cron_drop "$cur" "" disk-check)
@@ -4640,7 +4737,14 @@ DISKEOF
     fi
 
     info "Sending first heartbeat to Kuma..."
-    sudo /usr/local/bin/disk-check.sh && ok "Heartbeat sent — Kuma monitor should turn green within ~6 min."
+    local hb_rc=0
+    sudo /usr/local/bin/disk-check.sh || hb_rc=$?
+    case "$hb_rc" in
+        0) ok "Heartbeat sent — Kuma monitor should turn green within ~6 min." ;;
+        1) warn "Heartbeat sent as DOWN (see the problems above)." ;;
+        *) fail "The first heartbeat did not reach Kuma: $(cat /var/log/disk-check.last 2>/dev/null)"
+           info "Check the Push URL and that Kuma is reachable from this server. It stays scheduled and retries every 5 minutes." ;;
+    esac
     echo ""
     ok "Disk space check runs every 5 minutes (alerts above 85%)."
     info "Last run: cat /var/log/disk-check.last   Alert history: cat /var/log/disk-check.log"
@@ -5164,7 +5268,7 @@ _sync_show_status() {
     # for them when the crontab could not be read or has no line for them).
     server_scripts=$(ssh "$SERVER_USER@$SERVER_IP" '
         [[ -x /usr/local/bin/immich-backup.sh ]] && echo immich-backup
-        [[ -x /usr/local/bin/disk-check.sh ]]    && echo disk-check
+        [[ -e /usr/local/bin/disk-check.sh ]]    && echo disk-check  # root 0700: -e, not -x
         true
     ' 2>/dev/null) || server_scripts=""
     # immich-backup migrated from cron to systemd timer (federver → 14 → 6).

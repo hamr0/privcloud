@@ -64,7 +64,7 @@ mkdir -p "$T/copy"
 awk '/^_disk_check_script\(\)/{p=1} /^step_logrotation\(\)/{p=0} p' "$SRC" > "$T/copy/setup.sh"   # no .env beside it
 cat > "$T/step.sh" <<'X'
 info(){ echo "I:$*"; }; warn(){ echo "W:$*"; }; fail(){ echo "F:$*"; }; ok(){ echo "O:$*"; }
-YELLOW= NC= BLUE= BOLD= DIM=
+YELLOW= NC= BLUE= BOLD= DIM= GREEN= RED=
 hostname(){ echo 1.2.3.4; }
 sudo(){ echo "SUDO $*" >> $T/sudo.log; case "$1" in grep) command grep "${@:2}"; return;; rm) command rm "${@:2}";; install) eval "$INSTALL_HOOK"; cp "${@: -2:1}" "$T/installed.sh"; chmod "$7" "$T/installed.sh";; esac; return 0; }
 _cron_get(){ echo ""; }; _cron_drop(){ :; }; _cron_set(){ echo "CRONSET $2" >> $T/sudo.log; return 0; }
@@ -123,11 +123,29 @@ newstep() { # stdin-lines script-url(optional) kuma-rows(optional, "" = docker d
 SCRIPTURL=http://example.invalid/api/push/SCRIPTTOKEN9999
 KUMAURL=http://1.2.3.4:3001/api/push/KUMATOKEN12345678
 newstep "" "$SCRIPTURL"
-check 1h "URL in the installed script + Enter -> installs with it, no setup box, token masked" '[[ "$OUT" == *"installed script (token …9999)"* && "$OUT" != *"Set up the Kuma monitor first"* && "$OUT" != *SCRIPTTOKEN* ]] && grep -q "PUSH_URL=$SCRIPTURL$" $T/installed.sh'
+check 1h "URL in the installed script + Enter -> installs with it, box titled Kuma monitor settings, token masked" '[[ "$OUT" == *"…9999"* && "$OUT" == *"from the installed script"* && "$OUT" == *"Kuma monitor settings"* && "$OUT" == *"Heartbeat Interval: "* && "$OUT" != *"Set up the Kuma monitor first"* && "$OUT" != *SCRIPTTOKEN* ]] && grep -q "PUSH_URL=$SCRIPTURL$" $T/installed.sh'
+# 1r-1u "Current" block (cron line + last run; $T/log/dc.last stands in for /var/log/disk-check.last)
+now=$(date '+%F %H:%M'); LASTF=$T/log/dc.last
+rm -f "$LASTF"; printf '%s ok\n' "$now" > "$LASTF"; newstep "" "$SCRIPTURL"
+check 1r "found + cron line + fresh ok .last -> Current block: masked URL, cron line, last run ok, no stale" '[[ "$OUT" == *"Current"* && "$OUT" == *"http://example.invalid/api/push/…9999"* && "$OUT" == *"*/5 * * * * "*"disk-check.sh"* && "$OUT" == *"Last run:  $now ok"* && "$OUT" != *"(stale)"* && "$OUT" != *"not scheduled"* ]]'
+CUROUT=$OUT
+STEP_PRE_SAVE=$STEP_PRE
+STEP_PRE='_cron_get(){ printf "0 1 * * * other\n"; }; _cron_drop(){ :; }; _cron_set(){ :; }'; newstep "" "$SCRIPTURL"
+check 1s "found + no disk-check cron line -> 'not scheduled'" '[[ "$OUT" == *"Cron:      "*"not scheduled"* ]]'
+STEP_PRE='_cron_get(){ return 1; }; _cron_drop(){ :; }; _cron_set(){ :; }'; newstep "" "$SCRIPTURL"
+check 1s2 "crontab unreadable -> 'unknown (could not read root...)'" '[[ "$OUT" == *"unknown (could not read root"* ]]'
+STEP_PRE=$STEP_PRE_SAVE
+printf '%s ALERT / 91%%\n' "$now" > "$LASTF"; newstep "" "$SCRIPTURL"
+check 1t "ALERT .last shown as the last run" '[[ "$OUT" == *"Last run:  $now ALERT / 91%"* ]]'
+printf '2020-01-01 00:00 ok\n' > "$LASTF"; newstep "" "$SCRIPTURL"
+check 1t2 "old .last -> (stale)" '[[ "$OUT" == *"2020-01-01 00:00 ok"*"(stale)"* ]]'
+rm -f "$LASTF"; newstep "" "$SCRIPTURL"
+check 1t3 "missing .last -> 'never'" '[[ "$OUT" == *"Last run:  never"* ]]'
+check 1u "full token never in Current output" '[[ "$CUROUT" != *SCRIPTTOKEN* ]]'
 newstep "" "" KUMATOKEN12345678
-check 1i "URL only in Kuma + Enter -> installs with http://<ip>:3001/api/push/<token>" '[[ "$OUT" == *"Uptime Kuma (token …5678)"* && "$OUT" != *"Set up the Kuma monitor first"* ]] && grep -q "PUSH_URL=$KUMAURL$" $T/installed.sh'
+check 1i "URL only in Kuma + Enter -> installs with http://<ip>:3001/api/push/<token>" '[[ "$OUT" == *"…5678"* && "$OUT" == *"from Uptime Kuma"* && "$OUT" == *"Kuma monitor settings"* && "$OUT" != *"Set up the Kuma monitor first"* ]] && grep -q "PUSH_URL=$KUMAURL$" $T/installed.sh'
 newstep $'p\nhttp://example.invalid/api/push/NEWTOK?status=up' "$SCRIPTURL"
-check 1j "found + p + new URL -> shows the setup box, installs the new URL" '[[ "$OUT" == *"Set up the Kuma monitor first"* ]] && grep -q "PUSH_URL=http://example.invalid/api/push/NEWTOK$" $T/installed.sh'
+check 1j "found + p + new URL -> shows the settings box once, installs the new URL" '[[ "$OUT" == *"Kuma monitor settings"* && "$OUT" != *"Set up the Kuma monitor first"* && "$(grep -c "Friendly Name" <<<"$OUT")" = 1 ]] && grep -q "PUSH_URL=http://example.invalid/api/push/NEWTOK$" $T/installed.sh'
 newstep "" "" ""; cronb=$(cat $T/cron)
 check 1k "nothing found + blank -> back, no changes: no sudo call, cron untouched" '[[ "$OUT" == *"Set up the Kuma monitor first"* && "$OUT" == *"No changes."* && "$OUT" == *"STEP_RC=2"* ]] && [ ! -e $T/sudo.log -o "$(grep -vc "SUDO grep" $T/sudo.log 2>/dev/null)" = 0 ] && [ "$(cat $T/cron)" = "$cronb" ] && [ ! -e $T/installed.sh ]'
 newstep "q" "" ""

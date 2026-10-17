@@ -165,7 +165,7 @@ privcloud
 
 Pick `install` (handles Docker, images, storage config), then `start`.
 
-`privcloud start` and `privcloud update` leave every Immich container on restart policy `unless-stopped`, the same as the federver menu's Start: a service compose runs as `always`, or one an earlier Stop left at `no`, is re-armed, so the stack comes back after a reboot unless you stop it yourself. Containers already running are not restarted. If the policy cannot be set the command says so and exits non-zero rather than reporting success.
+`privcloud start` and `privcloud update` leave every Immich container on restart policy `unless-stopped`, the same as the federver menu's Start: a service compose runs as `always`, or one an earlier Stop left at `no`, is re-armed, so the stack comes back after a reboot unless you stop it yourself. Containers already running are not restarted. If the policy cannot be set the command prints a yellow warning (the containers are already running, so it does not abort) and carries on to the Immich wait or the update message; re-run start or use federver -> Manage services -> Start.
 
 Open http://localhost:2283 in your browser. Create your first account — this becomes the admin.
 

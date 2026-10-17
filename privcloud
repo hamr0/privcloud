@@ -104,14 +104,17 @@ run_compose() {
 
 # Compose gives some services restart: always, and an earlier Stop leaves
 # restart=no. After bringing the stack up, make every container of it
-# unless-stopped - the same rule the federver menu's Start applies. A failure is
-# reported and returned (the caller runs under set -e), never swallowed.
+# unless-stopped - the same rule the federver menu's Start applies. The stack is
+# already up by now, so a failure here warns (visibly) and returns 0: it must not
+# abort the caller (set -e) before it waits for Immich / reports the update.
 keep_autostart() {
   local ids
-  ids="$(run_compose ps -aq)" || { red "Could not list the containers to set autostart."; return 1; }
-  [ -n "$ids" ] || return 0
   # shellcheck disable=SC2086  # ids is one container id per line; split on purpose
-  docker update --restart=unless-stopped $ids >/dev/null || { red "Could not set autostart (restart policy) on the containers."; return 1; }
+  if ids="$(run_compose ps -aq)" && { [ -z "$ids" ] || docker update --restart=unless-stopped $ids >/dev/null; }; then
+    return 0
+  fi
+  yellow "Could not set autostart on the containers - they're running now but may not come back after a reboot. Re-run start or use federver -> Manage services -> Start."
+  return 0
 }
 
 env_get() {

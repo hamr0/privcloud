@@ -72,14 +72,20 @@ check 2a "start: already unless-stopped stays as is" '[ $RC = 0 ] && [ "$(st web
 
 reset; mk web false no; export FAIL_UPDATE=1
 run "$T/app/privcloud" start
-check 3a "start: policy update fails -> reported, non-zero (no silent success)" '[ $RC != 0 ] && [[ "$OUT" == *autostart* ]]'
+check 3a "start: policy update fails -> warned (visible), start still reaches Waiting for Immich, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Could not set autostart"* ]] && [[ "$OUT" == *"Waiting for Immich"* ]]'
 reset; mk web false no; export FAIL_PS=1
 run "$T/app/privcloud" start
-check 3b "start: cannot list containers -> reported, non-zero" '[ $RC != 0 ] && [[ "$OUT" == *autostart* ]]'
+check 3b "start: cannot list containers -> warned, continues, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Could not set autostart"* ]] && [[ "$OUT" == *"Waiting for Immich"* ]]'
+reset; mk web true always; export FAIL_UPDATE=1
+runy "$T/app/privcloud" update
+check 3c "update: policy update fails -> warned, still prints Update applied + prunes, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Could not set autostart"* ]] && [[ "$OUT" == *"Update applied"* ]] && grep -q "docker image prune" "$DOCKER_LOG"'
+reset; mk web false no
+run "$T/app/privcloud" start
+check 3d "start success path: no warning printed" '[ $RC = 0 ] && [[ "$OUT" != *"Could not set autostart"* ]]'
 
 reset; mk web true always; mk db false no
 runy "$T/app/privcloud" update
-check 4a "update: applied update re-arms every container to unless-stopped" '[ $RC = 0 ] && [ "$(st web)" = "true unless-stopped" ] && [ "$(st db)" = "true unless-stopped" ]'
+check 4a "update: applied update re-arms every container to unless-stopped" '[ $RC = 0 ] && [ "$(st web)" = "true unless-stopped" ] && [ "$(st db)" = "true unless-stopped" ] && [[ "$OUT" != *"Could not set autostart"* ]]'
 
 echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
 [ "$FAILN" = 0 ]

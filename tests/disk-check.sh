@@ -192,6 +192,10 @@ OUT=$(CRON_ERR="no crontab for root" CRON_RC=1 cronget); RC=$?
 check 1zb "'no crontab for' -> empty, rc 0 (unchanged)" '[ $RC = 0 ] && [ -z "$OUT" ]'
 OUT=$(CRON_ERR="sudo: a password is required" CRON_RC=1 cronget); RC=$?
 check 1zc "sudo refused -> still an error (rc 1)" '[ $RC = 1 ]'
+OUT=$(CRON_ERR="bash: sudo: command not found" CRON_RC=127 cronget); RC=$?
+check 1ze "sudo missing ('sudo: command not found', rc 127) -> error, not an empty crontab" '[ $RC != 0 ]'
+OUT=$(CRON_ERR="crontab: command not found" CRON_RC=127 cronget); RC=$?
+check 1zf "bare 'crontab: command not found' (rc 127) -> still empty, rc 0" '[ $RC = 0 ] && [ -z "$OUT" ]'
 OUT=$(CRON_OUT="*/5 * * * * x" cronget); RC=$?
 check 1zd "normal crontab is printed, rc 0" '[ $RC = 0 ] && [ "$OUT" = "*/5 * * * * x" ]'
 unset STEP_IN STEP_PRE DOCKER_RC DOCKER_OUT; rm -f "$T/bin-dc.sh" "$T/installed.sh"

@@ -76,7 +76,7 @@ warn() { echo -e "  ${YELLOW}!!${NC} $1"; }
 _cron_cmd() { if [[ "$1" == root ]]; then sudo crontab "${@:2}"; else crontab "${@:2}"; fi; }
 
 # Print the current crontab. "No crontab yet" and "no crontab binary" are an
-# empty crontab (exit 0); any other failure (sudo denied, ...) returns 1.
+# empty crontab (exit 0); any other failure (sudo denied, sudo missing, ...) returns 1.
 _cron_get() {
     local out err rc=0 ef
     ef=$(mktemp) || return 1
@@ -84,8 +84,11 @@ _cron_get() {
     err=$(<"$ef"); rm -f "$ef"
     if (( rc != 0 )); then
         [[ "$err" == *"no crontab for"* ]] && return 0
-        # No crontab binary at all (stderr says so, or the shell's rc 127): nothing scheduled.
-        [[ "$err" == *"command not found"* || $rc == 127 ]] && return 0
+        # No crontab binary at all: nothing scheduled. Match the message precisely
+        # ("[sudo: ]crontab: command not found"); "sudo: command not found" (no sudo,
+        # rc 127) must stay an error. Matching beats probing `command -v crontab`
+        # under sudo, which would be a second sudo call and a possible extra prompt.
+        [[ "$err" == *"crontab: command not found"* ]] && return 0
         return 1
     fi
     printf '%s' "$out"

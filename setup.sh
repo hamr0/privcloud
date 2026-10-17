@@ -75,8 +75,8 @@ warn() { echo -e "  ${YELLOW}!!${NC} $1"; }
 # or "user" (the laptop user's crontab).
 _cron_cmd() { if [[ "$1" == root ]]; then sudo crontab "${@:2}"; else crontab "${@:2}"; fi; }
 
-# Print the current crontab. "No crontab yet" is an empty crontab (exit 0);
-# any other failure (sudo denied, crontab missing) returns 1.
+# Print the current crontab. "No crontab yet" and "no crontab binary" are an
+# empty crontab (exit 0); any other failure (sudo denied, ...) returns 1.
 _cron_get() {
     local out err rc=0 ef
     ef=$(mktemp) || return 1
@@ -84,6 +84,8 @@ _cron_get() {
     err=$(<"$ef"); rm -f "$ef"
     if (( rc != 0 )); then
         [[ "$err" == *"no crontab for"* ]] && return 0
+        # No crontab binary at all (stderr says so, or the shell's rc 127): nothing scheduled.
+        [[ "$err" == *"command not found"* || $rc == 127 ]] && return 0
         return 1
     fi
     printf '%s' "$out"
@@ -192,7 +194,7 @@ _shq() { printf '%q' "$1"; }
 # Afterwards the state AND the policy are read back; any mismatch is a failure,
 # never a false "complete". Failures print one line to stderr and exit non-zero:
 #   2 docker unreachable, 3 no such container, 4 policy update failed,
-#   5 docker action failed, 6 read-back mismatch.
+#   5 docker action failed, 6 read-back mismatch, 7 sudo refused.
 # _svc_power_body prints the shell text; the runners below execute it locally
 # (a fresh bash, so its exits never kill the menu) or over ssh -t (sudo needs a
 # TTY). c is set from an already-quoted word, so odd names survive one parse.
@@ -205,6 +207,7 @@ _svc_power_body() { # action quoted-container-word
         *) return 1 ;;
     esac
     printf '%s\n' "c=$2" \
+        "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }" \
         "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
         "sudo docker inspect \"\$c\" >/dev/null 2>&1 || { echo \"no such container: \$c\" >&2; exit 3; }" \
         "sudo docker update --restart=$p \"\$c\" >/dev/null || { echo \"\$c: could not set restart policy $p\" >&2; exit 4; }" \
@@ -220,6 +223,7 @@ _svc_power_all_body() { # action
     local list="docker ps -a --format '{{.Names}}'"
     [[ "$1" == restart ]] && list="docker ps --format '{{.Names}}'"
     printf '%s\n' \
+        "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }" \
         "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
         "rc=0; for n in \$(sudo $list); do (" \
         "$(_svc_power_body "$1" '"$n"')" \
@@ -807,7 +811,9 @@ _ts_state() {
     exp=$(sed -n 's/.*"KeyExpiry": *"\([^"]*\)".*/\1/p' <<<"$js" | head -1)
     grep -q '"Self": *{' <<<"$js" && self=1
     if [[ -n "$exp" ]]; then
-        days=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
+        # Round UP: 12h left is "1 day", so 0 (shown "expired") means really expired.
+        local diff=$(( $(date -d "$exp" +%s) - $(date +%s) ))
+        days=$(( diff > 0 ? (diff + 86399) / 86400 : 0 ))
         exp=${exp%%T*}
     elif (( self )); then
         exp=disabled    # Self present, no KeyExpiry: expiry turned off
@@ -924,7 +930,6 @@ _ts_uninstall() {
     echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    (( via_ts )) && warn "You're connected to the server over Tailscale - removing it here will drop that connection."
     _confirm_delete tailscale || return 0
 
     _ts_remove_local || return 1
@@ -2883,7 +2888,7 @@ _syncthing_uninstall_server_remote() {
     local err state
     info "Removing from server..."
     err=$(ssh "$SERVER_USER@$SERVER_IP" 'docker rm -f syncthing' 2>&1 >/dev/null) || true
-    state=$(_syncthing_server_probe verify)
+    state=$(_syncthing_server_probe)
     case "$state" in
         "") ;;
         unreachable)  fail "Server: could not confirm removal (server unreachable)."; return 1 ;;
@@ -2936,13 +2941,10 @@ _syncthing_uninstall_both() {
 
 # Server-side Syncthing state for the laptop menu (read-only, non-TTY, no sudo:
 # the server user is in the docker group). Prints: running | stopped | "" (not
-# installed) | unreachable. "verify" mode also prints docker-error when docker
-# can't be queried, so a failed query never reads as "removed"; plain mode
-# treats it as not installed (unchanged detection behaviour).
+# installed) | unreachable | docker-error (docker can't be queried, so a failed
+# query never reads as "removed" or "not installed").
 _syncthing_server_probe() {
-    local on_err=""
-    [[ "$1" == verify ]] && on_err='echo docker-error; exit 0'
-    _server_probe "n=\$(docker ps -a --format '{{.Names}}' 2>/dev/null) || { ${on_err:-exit 0}; }
+    _server_probe "n=\$(docker ps -a --format '{{.Names}}' 2>/dev/null) || { echo docker-error; exit 0; }
 if grep -qx syncthing <<<\"\$n\"; then
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx syncthing; then echo running; else echo stopped; fi
 fi"
@@ -2968,7 +2970,12 @@ step_syncthing() {
         lap_state="installed (stopped)"
         systemctl --user is-active syncthing &>/dev/null && lap_state="installed (running)"
     fi
-    srv_state=$(_syncthing_server_probe detect)
+    srv_state=$(_syncthing_server_probe)
+    if [[ "$srv_state" == docker-error ]]; then
+        # Not "not installed": offering an install here could clobber a live container.
+        fail "Cannot query docker on the server - changing nothing."
+        return 1
+    fi
     [[ -n "$srv_state" && "$srv_state" != unreachable ]] && srv_state="installed ($srv_state)"
     _two_sided_gate "Syncthing" "$lap_state" "$srv_state" _syncthing_install_laptop "_syncthing_server_step" _syncthing_uninstall_both || g=$?
     (( g == 10 )) || return $g
@@ -4762,9 +4769,11 @@ _disk_check_last_age() {
 # "Current" block shown when an existing monitor/URL was found: masked Push URL,
 # the real root cron line, and the last run (world-readable, no sudo).
 _disk_check_current() {
-    local url="$1" src="$2" cron cronline lastf=/var/log/disk-check.last last age
+    local url="$1" src="$2" other="${3:-}" cron cronline lastf=/var/log/disk-check.last last age
     echo -e "  ${BOLD}Current${NC}"
     echo -e "    Push URL:  ${url%%/api/push/*}/api/push/…${url: -4}   ${DIM}(from ${src})${NC}"
+    # $3 = the installed script's URL when it differs from Kuma's (shown masked too).
+    [[ -n "$other" ]] && echo -e "    Script's:  ${other%%/api/push/*}/api/push/…${other: -4}   ${DIM}(installed script - differs, not used)${NC}"
     if cron=$(_cron_get root 2>/dev/null); then
         cronline=$(grep disk-check <<<"$cron" | head -n 1)
         if [[ -n "$cronline" ]]; then echo -e "    Cron:      $cronline"
@@ -4793,8 +4802,19 @@ step_disk_monitor() {
     IP=$(hostname -I | awk '{print $1}')
 
     # Reuse a known URL before asking for one (the script first, then Kuma's DB).
+    local kuma script_url="" mismatch=""
     found=$(_disk_check_url_from_script); src="the installed script"
-    if [[ -z "$found" ]]; then found=$(_disk_check_url_from_kuma "$IP"); src="Uptime Kuma"; fi
+    if [[ -z "$found" ]]; then
+        found=$(_disk_check_url_from_kuma "$IP"); src="Uptime Kuma"
+    else
+        # Kuma is the truth: a script left with a stale token pushes into the void
+        # (the monitor never turns green). Compare tokens; if they differ, use Kuma's.
+        kuma=$(_disk_check_url_from_kuma "$IP")
+        if [[ -n "$kuma" && "${kuma##*/api/push/}" != "${found##*/api/push/}" ]]; then
+            mismatch="Installed script's Push URL differs from Kuma's (…${found: -4} vs …${kuma: -4})"
+            script_url="$found"; found="$kuma"; src="Uptime Kuma"
+        fi
+    fi
 
     # The box is always shown (it is the reference for how the monitor is configured).
     local title="Set up the Kuma monitor first"
@@ -4813,9 +4833,11 @@ step_disk_monitor() {
     echo ""
 
     if [[ -n "$found" ]]; then
-        _disk_check_current "$found" "$src"
+        [[ -n "$mismatch" ]] && warn "$mismatch"
+        _disk_check_current "$found" "$src" "$script_url"
         while true; do
-            read -p "  Enter = use it, p = paste a different URL, r = remove the monitor, q = back: " choice
+            # EOF (closed stdin) = back with no changes, never "use it".
+            read -p "  Enter = use it, p = paste a different URL, r = remove the monitor, q = back: " choice || choice=q
             case "$choice" in
                 "") push_url="$found"; break ;;
                 p|P) break ;;
@@ -6156,6 +6178,7 @@ _sync_one_time_backup() {
                 # the size lookup fails, pv still runs without -s (bytes + rate only).
                 local pv_stage=() size_cmd size_bytes=""
                 if command -v pv >/dev/null 2>&1; then
+                    info "Sizing source..."
                     size_cmd="du -sb $(_shq "$src_path") 2>/dev/null | cut -f1"
                     $needs_priv && size_cmd="sudo -S -p '' du -sb $(_shq "$src_path") 2>/dev/null | cut -f1"
                     size_bytes=$(printf '%s\n' "$server_pw" | ssh "$SERVER_USER@$SERVER_IP" "$size_cmd" 2>/dev/null | head -n1)

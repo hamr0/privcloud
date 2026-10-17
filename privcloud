@@ -102,6 +102,18 @@ run_compose() {
   $cc -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
 }
 
+# Compose gives some services restart: always, and an earlier Stop leaves
+# restart=no. After bringing the stack up, make every container of it
+# unless-stopped - the same rule the federver menu's Start applies. A failure is
+# reported and returned (the caller runs under set -e), never swallowed.
+keep_autostart() {
+  local ids
+  ids="$(run_compose ps -aq)" || { red "Could not list the containers to set autostart."; return 1; }
+  [ -n "$ids" ] || return 0
+  # shellcheck disable=SC2086  # ids is one container id per line; split on purpose
+  docker update --restart=unless-stopped $ids >/dev/null || { red "Could not set autostart (restart policy) on the containers."; return 1; }
+}
+
 env_get() {
   grep "^${1}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2-
 }
@@ -319,6 +331,7 @@ cmd_start() {
   bold "privcloud start"
   echo ""
   run_compose up -d
+  keep_autostart
 
   echo ""
   printf "Waiting for Immich"
@@ -944,6 +957,7 @@ cmd_update() {
 
   echo ""
   run_compose up -d
+  keep_autostart
 
   echo ""
   green "Update applied. Pruning old images..."

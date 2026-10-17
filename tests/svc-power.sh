@@ -20,7 +20,7 @@ source "$T/fn.sh"
 type _svc_power_body >/dev/null 2>&1 || { echo "FAIL  setup: _svc_power_body not found in $SRC (older setup.sh?)"; }
 cat > "$T/bin/sudo" <<'X'
 #!/bin/bash
-exec "$@"
+[ -n "$SUDO_FAIL" ] && exit 1; [ "$1" = -v ] && exit 0; exec "$@"
 X
 # docker stub: one dir per container under $C (key = sanitized name), files
 # name/running/policy. Failure knobs: DOCKER_DOWN, FAIL_UPDATE, FAIL_ACTION,
@@ -84,7 +84,7 @@ mk() { # name running policy
   local d="$T/c/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _)"; mkdir -p "$d"
   printf '%s' "$1" > "$d/name"; echo "$2" > "$d/running"; echo "$3" > "$d/policy"; }
 st() { local d="$T/c/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _)"; echo "$(cat "$d/running") $(cat "$d/policy")"; }
-reset() { rm -rf "$T/c"; mkdir -p "$T/c"; : > "$DOCKER_LOG"; : > "$SSH_LOG"; unset DOCKER_DOWN FAIL_UPDATE FAIL_ACTION LIE_ACTION SSH_DOWN; }
+reset() { rm -rf "$T/c"; mkdir -p "$T/c"; : > "$DOCKER_LOG"; : > "$SSH_LOG"; unset SUDO_FAIL DOCKER_DOWN FAIL_UPDATE FAIL_ACTION LIE_ACTION SSH_DOWN; }
 check() { # id desc cond
   if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rc=$RC err='$ERR' state='$(st "${CN:-x}" 2>&1)']"; FAILN=$((FAILN+1)); fi; }
 run() { ERR=$("$@" 2>&1 >/dev/null); RC=$?; }
@@ -119,6 +119,8 @@ reset; mk adguard true unless-stopped; export LIE_ACTION=1; run _svc_power stop 
 check 3d "stop that did not stop: read-back catches it (rc 6)" '[ $RC = 6 ] && [[ "$ERR" == *"expected"* ]]'
 reset; mk adguard false no; export DOCKER_DOWN=1; run _svc_power start adguard
 check 3e "docker down: rc 2, clear message"      '[ $RC = 2 ] && [[ "$ERR" == *"not reachable"* ]]'
+reset; mk adguard false no; export SUDO_FAIL=1; run _svc_power start adguard
+check 3f "sudo refused: rc 7, says sudo (not 'not reachable'), nothing updated" '[ $RC = 7 ] && [[ "$ERR" == *sudo* ]] && [[ "$ERR" != *"not reachable"* ]] && ! grep -q "docker update" "$DOCKER_LOG"'
 
 # 4 missing container
 CN=ghost; reset; run _svc_power start ghost
@@ -160,6 +162,8 @@ reset; export DOCKER_DOWN=1; run _svc_power_all stop
 check 7e "bulk with docker down: fail, not 'nothing to do'" '[ $RC = 2 ]'
 reset; run _svc_power_all stop
 check 7f "bulk with nothing running: ok" '[ $RC = 0 ]'
+reset; mk a true no; export SUDO_FAIL=1; run _svc_power_all stop
+check 7h "bulk, sudo refused: rc 7, says sudo (not 'not reachable'), nothing updated" '[ $RC = 7 ] && [[ "$ERR" == *sudo* ]] && [[ "$ERR" != *"not reachable"* ]] && ! grep -q "docker update" "$DOCKER_LOG"'
 
 # 8 Status marker
 reset; mk adguard false no; mk navidrome false unless-stopped; mk immich_server true always; mk fresh false no

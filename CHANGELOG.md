@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- **Manage services menu: Restart now says it re-enables autostart.** Option 4 reads `<- pick one or All (re-enables autostart)`, matching Start, since v0.12.0 made Restart set `restart=unless-stopped` just like Start. Label only, no behaviour change.
+
 ## v0.12.0 — 2026-10-17
 
 ### Fixed

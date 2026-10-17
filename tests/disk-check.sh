@@ -79,7 +79,8 @@ run_step() {
     source "$T/copy/s2.sh"
     eval "$STEP_PRE"
     [ "$3" = e ] && set -e
-    step_disk_monitor <<< "${STEP_IN-http://example.invalid/api/push/TOK?status=up&msg=OK&ping=}"
+    if [ -n "$STEP_EOF" ]; then step_disk_monitor </dev/null   # stdin closed: EOF at the first prompt
+    else step_disk_monitor <<< "${STEP_IN-http://example.invalid/api/push/TOK?status=up&msg=OK&ping=}"; fi
     echo "STEP_RC=$?"; echo "TRAPS=[$(trap -p | grep -E 'RETURN|INT|TERM')]" ) 2>&1
 }
 leaked() { ls "$T"/tmpd/tmp.* 2>/dev/null | wc -l; }
@@ -167,6 +168,36 @@ newstep "" "$SCRIPTURL" KUMATOKEN12345678
 check 1q "full token (script and Kuma) never appears in output" '[[ "$OUT" != *SCRIPTTOKEN* && "$OUT" != *KUMATOKEN12345678* ]]'
 newstep "" "" KUMATOKEN12345678
 check 1q2 "Kuma token not echoed either" '[[ "$OUT" != *KUMATOKEN12345678* ]]'
+# 1v-1z the installed script's Push URL vs Kuma's: Kuma is the truth, and EOF = back
+newstep "" "$SCRIPTURL" KUMATOKEN12345678
+check 1v "script token A, Kuma token B -> warns (…9999 vs …5678), Enter installs Kuma's URL" '[[ "$OUT" == *"Installed script'"'"'s Push URL differs from Kuma'"'"'s (…9999 vs …5678)"* ]] && grep -q "PUSH_URL=$KUMAURL$" $T/installed.sh && ! grep -q SCRIPTTOKEN $T/installed.sh'
+check 1v2 "mismatch: Current block shows both masked, neither full token leaks" '[[ "$OUT" == *"Current"* && "$OUT" == *"…9999"* && "$OUT" == *"…5678"* && "$OUT" != *SCRIPTTOKEN* && "$OUT" != *KUMATOKEN12345678* ]]'
+newstep "" "$KUMAURL" KUMATOKEN12345678
+check 1w "matching tokens -> no warning, installs it" '[[ "$OUT" != *differs* ]] && grep -q "PUSH_URL=$KUMAURL$" $T/installed.sh'
+newstep "" "$SCRIPTURL" ""
+check 1x "empty Kuma result -> comparison skipped (no warning), script URL kept" '[[ "$OUT" != *differs* ]] && grep -q "PUSH_URL=$SCRIPTURL$" $T/installed.sh'
+STEP_EOF=1 newstep "" "$SCRIPTURL" KUMATOKEN12345678; cronb=$(cat $T/cron)
+check 1y "EOF on stdin at the choice prompt -> back (rc 2), nothing installed, cron untouched" '[[ "$OUT" == *"STEP_RC=2"* ]] && [ ! -e $T/installed.sh ] && ! grep -q "install -o" $T/sudo.log 2>/dev/null && [ "$(cat $T/cron)" = "$cronb" ]'
+check 1z "EOF run: full token never in output" '[[ "$OUT" != *SCRIPTTOKEN* && "$OUT" != *KUMATOKEN12345678* ]]'
+# 1za-1zc _cron_get: a crontab that cannot be read is an error (rc 1), but "no
+# crontab yet" and "crontab binary not installed" both read as an empty crontab.
+awk '/^_cron_cmd\(\)/{print} /^_cron_get\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC" > "$T/cron.sh"
+cronget() { # env CRON_ERR/CRON_RC/CRON_OUT: what `sudo crontab -l` prints and returns -> _cron_get root
+  ( source "$T/cron.sh"
+    sudo() { [ -n "$CRON_ERR" ] && echo "$CRON_ERR" >&2; [ -n "$CRON_OUT" ] && echo "$CRON_OUT"; return "${CRON_RC:-0}"; }
+    _cron_get root ); }
+OUT=$(CRON_ERR="sudo: crontab: command not found" CRON_RC=1 cronget); RC=$?
+check 1za "crontab binary missing ('command not found', rc 1) -> empty crontab, rc 0" '[ $RC = 0 ] && [ -z "$OUT" ]'
+OUT=$(CRON_ERR="no crontab for root" CRON_RC=1 cronget); RC=$?
+check 1zb "'no crontab for' -> empty, rc 0 (unchanged)" '[ $RC = 0 ] && [ -z "$OUT" ]'
+OUT=$(CRON_ERR="sudo: a password is required" CRON_RC=1 cronget); RC=$?
+check 1zc "sudo refused -> still an error (rc 1)" '[ $RC = 1 ]'
+OUT=$(CRON_ERR="bash: sudo: command not found" CRON_RC=127 cronget); RC=$?
+check 1ze "sudo missing ('sudo: command not found', rc 127) -> error, not an empty crontab" '[ $RC != 0 ]'
+OUT=$(CRON_ERR="crontab: command not found" CRON_RC=127 cronget); RC=$?
+check 1zf "bare 'crontab: command not found' (rc 127) -> still empty, rc 0" '[ $RC = 0 ] && [ -z "$OUT" ]'
+OUT=$(CRON_OUT="*/5 * * * * x" cronget); RC=$?
+check 1zd "normal crontab is printed, rc 0" '[ $RC = 0 ] && [ "$OUT" = "*/5 * * * * x" ]'
 unset STEP_IN STEP_PRE DOCKER_RC DOCKER_OUT; rm -f "$T/bin-dc.sh" "$T/installed.sh"
 
 reset; gen "$T/missing.env"; run

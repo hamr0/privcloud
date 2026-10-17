@@ -75,8 +75,8 @@ warn() { echo -e "  ${YELLOW}!!${NC} $1"; }
 # or "user" (the laptop user's crontab).
 _cron_cmd() { if [[ "$1" == root ]]; then sudo crontab "${@:2}"; else crontab "${@:2}"; fi; }
 
-# Print the current crontab. "No crontab yet" is an empty crontab (exit 0);
-# any other failure (sudo denied, crontab missing) returns 1.
+# Print the current crontab. "No crontab yet" and "no crontab binary" are an
+# empty crontab (exit 0); any other failure (sudo denied, sudo missing, ...) returns 1.
 _cron_get() {
     local out err rc=0 ef
     ef=$(mktemp) || return 1
@@ -84,6 +84,11 @@ _cron_get() {
     err=$(<"$ef"); rm -f "$ef"
     if (( rc != 0 )); then
         [[ "$err" == *"no crontab for"* ]] && return 0
+        # No crontab binary at all: nothing scheduled. Match the message precisely
+        # ("[sudo: ]crontab: command not found"); "sudo: command not found" (no sudo,
+        # rc 127) must stay an error. Matching beats probing `command -v crontab`
+        # under sudo, which would be a second sudo call and a possible extra prompt.
+        [[ "$err" == *"crontab: command not found"* ]] && return 0
         return 1
     fi
     printf '%s' "$out"
@@ -180,6 +185,81 @@ _tcp_open() { timeout 2 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; }
 # ssh "..." string that is executed directly (one parse). Not sufficient for
 # strings later re-parsed by `bash -c` or written to scheduled scripts.
 _shq() { printf '%q' "$1"; }
+
+# ── Container power: autostart follows the last action ──────────────────────
+# ONE source of truth for starting, stopping and restarting a container, used
+# by every menu path (server-local, laptop-over-ssh, bulk, standalone):
+#   stop    -> docker update --restart=no,             then docker stop
+#   start   -> docker update --restart=unless-stopped, then docker start
+#   restart -> docker update --restart=unless-stopped, then docker restart
+# A restart means "I want it running", so it must clear a restart=no left by an
+# earlier Stop (the incident: Stop, then Restart, then a reboot left it down).
+# Afterwards the state AND the policy are read back; any mismatch is a failure,
+# never a false "complete". Failures print one line to stderr and exit non-zero:
+#   2 docker unreachable, 3 no such container, 4 policy update failed,
+#   5 docker action failed, 6 read-back mismatch, 7 sudo refused.
+# _svc_power_body prints the shell text; the runners below execute it locally
+# (a fresh bash, so its exits never kill the menu) or over ssh -t (sudo needs a
+# TTY). c is set from an already-quoted word, so odd names survive one parse.
+_svc_power_body() { # action quoted-container-word
+    local p v run
+    case "$1" in
+        start)   p=unless-stopped; v=start;   run=true  ;;
+        stop)    p=no;             v=stop;    run=false ;;
+        restart) p=unless-stopped; v=restart; run=true  ;;
+        *) return 1 ;;
+    esac
+    printf '%s\n' "c=$2" \
+        "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }" \
+        "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
+        "sudo docker inspect \"\$c\" >/dev/null 2>&1 || { echo \"no such container: \$c\" >&2; exit 3; }" \
+        "sudo docker update --restart=$p \"\$c\" >/dev/null || { echo \"\$c: could not set restart policy $p\" >&2; exit 4; }" \
+        "sudo docker $v \"\$c\" >/dev/null || { echo \"\$c: docker $v failed\" >&2; exit 5; }" \
+        "s=\$(sudo docker inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' \"\$c\" 2>/dev/null)" \
+        "[ \"\$s\" = \"$run $p\" ] || { echo \"\$c: expected '$run $p', found '\$s'\" >&2; exit 6; }"
+}
+# Same rule for every container on the host: start and stop = all (incl. exited
+# ones, so a stopped-on-its-own unless-stopped container gets restart=no and
+# stays down after a daemon start); restart = the running ones only. Standalone ones (adguard, syncthing) are
+# ordinary containers here, so they are covered with no special case.
+_svc_power_all_body() { # action
+    local list="docker ps -a --format '{{.Names}}'"
+    [[ "$1" == restart ]] && list="docker ps --format '{{.Names}}'"
+    printf '%s\n' \
+        "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }" \
+        "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
+        "rc=0; for n in \$(sudo $list); do (" \
+        "$(_svc_power_body "$1" '"$n"')" \
+        ") || rc=1; done; exit \$rc"
+}
+_svc_power()            { # action container   (on the server itself)
+    if [[ "${DRY_RUN:-0}" == 1 ]]; then echo "    [dry-run] container $1 $2" >&2; return 0; fi
+    bash -c "$(_svc_power_body "$1" "$(_shq "$2")")"
+}
+_svc_power_all()        { # action             (on the server itself)
+    if [[ "${DRY_RUN:-0}" == 1 ]]; then echo "    [dry-run] all containers $1" >&2; return 0; fi
+    bash -c "$(_svc_power_all_body "$1")"
+}
+_svc_power_remote()     { ssh -t "$SERVER_USER@$SERVER_IP" "$(_svc_power_body "$1" "$(_shq "$2")")"; }  # action container
+_svc_power_all_remote() { ssh -t "$SERVER_USER@$SERVER_IP" "$(_svc_power_all_body "$1")"; }              # action
+
+# Print "name|status" like `docker ps -a --format '{{.Names}}|{{.Status}}'`, but
+# a stopped container whose restart policy is "no" reads "stopped (autostart
+# off)", so a deliberate stop is visible before a reboot. Pass the docker
+# command words: _ps_autostart docker | _ps_autostart sudo docker.
+_ps_autostart() {
+    local ps pol n s
+    ps=$("$@" ps -a --format '{{.Names}}|{{.Status}}') || return $?
+    [[ -z "$ps" ]] && return 0
+    pol=$("$@" inspect -f '{{.Name}} {{.HostConfig.RestartPolicy.Name}}' $("$@" ps -aq) 2>/dev/null)
+    while IFS='|' read -r n s; do
+        [[ -z "$n" ]] && continue
+        if [[ "$s" == Exited* || "$s" == Created* ]] && grep -qxF "/$n no" <<<"$pol"; then
+            s="stopped (autostart off)"
+        fi
+        printf '%s|%s\n' "$n" "$s"
+    done <<<"$ps"
+}
 
 # Run a read-only shell snippet on the server (non-TTY, no sudo) and print its
 # stdout. Prints "unreachable" if the ssh itself fails, so callers can tell
@@ -412,9 +492,11 @@ step_emergency() {
     info "Starting compose stack..."
     sg docker -c "docker compose up -d" 2>&1 | grep -v "^$" || true
     info "Starting standalone containers..."
+    # Per-container rule (autostart follows the action). A standalone one that
+    # was never installed is skipped quietly; a real failure is reported.
     for c in adguard syncthing; do
-        sudo docker update --restart=unless-stopped "$c" > /dev/null 2>&1 || true
-        sudo docker start "$c" > /dev/null 2>&1 || true
+        sudo docker inspect "$c" > /dev/null 2>&1 || continue
+        _svc_power start "$c" || warn "Could not start $c."
     done
 
     # Step 3: Once AdGuard is back, re-disable the stub so AdGuard can bind 53
@@ -732,7 +814,9 @@ _ts_state() {
     exp=$(sed -n 's/.*"KeyExpiry": *"\([^"]*\)".*/\1/p' <<<"$js" | head -1)
     grep -q '"Self": *{' <<<"$js" && self=1
     if [[ -n "$exp" ]]; then
-        days=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
+        # Round UP: 12h left is "1 day", so 0 (shown "expired") means really expired.
+        local diff=$(( $(date -d "$exp" +%s) - $(date +%s) ))
+        days=$(( diff > 0 ? (diff + 86399) / 86400 : 0 ))
         exp=${exp%%T*}
     elif (( self )); then
         exp=disabled    # Self present, no KeyExpiry: expiry turned off
@@ -849,7 +933,6 @@ _ts_uninstall() {
     echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    (( via_ts )) && warn "You're connected to the server over Tailscale - removing it here will drop that connection."
     _confirm_delete tailscale || return 0
 
     _ts_remove_local || return 1
@@ -1751,7 +1834,7 @@ _services_status() {
 
     # Fetch container list + stats (same data as step_status uses)
     local CONTAINERS DSTATS
-    CONTAINERS=$(sg docker -c "docker ps -a --format '{{.Names}}|{{.Status}}'" 2>/dev/null)
+    CONTAINERS=$(sg docker -c "$(declare -f _ps_autostart); _ps_autostart docker" 2>/dev/null)
     DSTATS=$(sg docker -c "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}'" 2>/dev/null)
 
     echo -e "  ${BOLD}Server containers${NC}"
@@ -1767,7 +1850,7 @@ _services_status() {
             local suffix=""
             [[ -n "$cpu" ]] && suffix="$suffix  ${DIM}cpu ${cpu}${NC}"
             [[ -n "$mem" ]] && suffix="$suffix  ${DIM}mem ${mem}${NC}"
-            if echo "$status" | grep -qi "unhealthy\|exit\|restart"; then
+            if echo "$status" | grep -qi "unhealthy\|exit\|restart\|^stopped"; then
                 echo -e "    ${RED}✗${NC} $(printf '%-24s' "$name")  $status$suffix"
             elif echo "$status" | grep -qi "healthy\|^Up "; then
                 echo -e "    ${GREEN}✓${NC} $(printf '%-24s' "$name")  $status$suffix"
@@ -1840,7 +1923,7 @@ _pick_container() {
     local idx=1
     declare -a arr
     local all_statuses
-    all_statuses=$(sudo docker ps -a --format '{{.Names}}|{{.Status}}' 2>/dev/null)
+    all_statuses=$(_ps_autostart sudo docker 2>/dev/null)
     while IFS= read -r n; do
         local status
         status=$(echo "$all_statuses" | awk -F'|' -v name="$n" '$1==name{print $2; exit}')
@@ -1898,26 +1981,14 @@ _services_action() {
         cd "$SCRIPT_DIR"
         case "$action" in
             start)
-                for c in $(sudo docker ps -a --format '{{.Names}}'); do
-                    sudo docker update --restart=unless-stopped "$c" > /dev/null 2>&1 || true
-                done
+                # compose up -d creates anything missing but never re-applies a
+                # restart policy to an existing container, so the per-container
+                # rule runs after it (covers adguard/syncthing too).
                 sg docker -c "docker compose up -d"; rc=$?
-                # Also start standalone containers (not in docker-compose.yml)
-                for c in adguard syncthing; do
-                    sudo docker start "$c" > /dev/null 2>&1 || true
-                done
+                _svc_power_all start || rc=1
                 ;;
-            stop)
-                for c in $(sudo docker ps --format '{{.Names}}'); do
-                    sudo docker update --restart=no "$c" > /dev/null 2>&1 || true
-                done
-                sg docker -c "docker compose stop"; rc=$?
-                # Also stop standalone containers
-                for c in adguard syncthing; do
-                    sudo docker stop "$c" > /dev/null 2>&1 || true
-                done
-                ;;
-            restart) sg docker -c "docker compose restart"; rc=$? ;;
+            stop)    _svc_power_all stop    || rc=1 ;;
+            restart) _svc_power_all restart || rc=1 ;;
         esac
     else
         # Extras with both-sides lifecycle have their own submenus.
@@ -1934,15 +2005,7 @@ _services_action() {
                 ;;
         esac
         case "$action" in
-            start)
-                sudo docker update --restart=unless-stopped "$target" > /dev/null 2>&1 || true
-                sudo docker start "$target" > /dev/null; rc=$?
-                ;;
-            stop)
-                sudo docker update --restart=no "$target" > /dev/null 2>&1 || true
-                sudo docker stop "$target" > /dev/null; rc=$?
-                ;;
-            restart) sudo docker restart "$target" > /dev/null; rc=$? ;;
+            start|stop|restart) _svc_power "$action" "$target" || rc=$? ;;
         esac
     fi
 
@@ -2020,7 +2083,7 @@ _unified_service_picker() {
     # ── 2. Collect server container states via single SSH call ──
     local server_data
     server_data=$(ssh "$SERVER_USER@$SERVER_IP" \
-        'docker ps -a --format "{{.Names}}|{{.Status}}" 2>/dev/null') || {
+        "$(declare -f _ps_autostart); _ps_autostart docker 2>/dev/null") || {
         fail "Could not reach server."
         return 1
     }
@@ -2164,29 +2227,17 @@ _unified_service_picker() {
         "_ts_${action}_both"
         "_syncthing_${action}_both"
         # Server containers via SSH
-        case "$action" in
-            start)
-                ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && \
-                    for c in \$(sudo docker ps -a --format '{{.Names}}'); do \
-                        sudo docker update --restart=unless-stopped \"\$c\" >/dev/null 2>&1 || true; \
-                    done; \
-                    sg docker -c 'docker compose up -d'; \
-                    for c in adguard syncthing; do sudo docker start \"\$c\" >/dev/null 2>&1 || true; done"
-                ;;
-            stop)
-                ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && \
-                    for c in \$(sudo docker ps --format '{{.Names}}'); do \
-                        sudo docker update --restart=no \"\$c\" >/dev/null 2>&1 || true; \
-                    done; \
-                    sg docker -c 'docker compose stop'; \
-                    for c in adguard syncthing; do sudo docker stop \"\$c\" >/dev/null 2>&1 || true; done"
-                ;;
-            restart)
-                ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && \
-                    sg docker -c 'docker compose restart'; \
-                    for c in adguard syncthing; do sudo docker restart \"\$c\" >/dev/null 2>&1 || true; done"
-                ;;
-        esac
+        local all_rc=0
+        if [[ "$action" == start ]]; then
+            # compose up -d creates what is missing but never re-applies a
+            # restart policy; the per-container rule after it does.
+            ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && sg docker -c 'docker compose up -d'" || all_rc=1
+        fi
+        _svc_power_all_remote "$action" || all_rc=1
+        if (( all_rc != 0 )); then
+            fail "${action^} did not complete for every service (see above)."
+            return 1
+        fi
         ok "${action^} complete (all services)."
         return 0
     fi
@@ -2235,19 +2286,10 @@ _unified_service_picker() {
         [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return 0; }
     fi
 
-    case "$action" in
-        start)
-            ssh -t "$SERVER_USER@$SERVER_IP" \
-                "sudo docker update --restart=unless-stopped '$cname' >/dev/null 2>&1 || true; sudo docker start '$cname'"
-            ;;
-        stop)
-            ssh -t "$SERVER_USER@$SERVER_IP" \
-                "sudo docker update --restart=no '$cname' >/dev/null 2>&1 || true; sudo docker stop '$cname'"
-            ;;
-        restart)
-            ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker restart '$cname'"
-            ;;
-    esac
+    if ! _svc_power_remote "$action" "$cname"; then
+        fail "${action^} failed: $cname"
+        return 1
+    fi
     ok "${action^} complete: $cname"
 }
 
@@ -2663,7 +2705,9 @@ _syncthing_status() {
             echo -e "    Device ID: ${BOLD}$id${NC}"
         fi
     elif _syncthing_exists; then
-        echo -e "    State:     ${RED}stopped${NC}"
+        local rp
+        rp=$(sudo docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' syncthing 2>/dev/null)
+        echo -e "    State:     ${RED}stopped${NC}$([[ "$rp" == no ]] && echo " (autostart off)")"
     else
         echo -e "    State:     ${DIM}not installed${NC}"
     fi
@@ -2805,15 +2849,15 @@ _syncthing_stop_both() {
     [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
     info "Stopping..."
     systemctl --user stop syncthing 2>/dev/null && ok "Laptop: stopped." || warn "Laptop: not running."
-    ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=no syncthing >/dev/null 2>&1; sudo docker stop syncthing >/dev/null 2>&1" \
-        && ok "Server: stopped." || warn "Server: not running."
+    _svc_power_remote stop syncthing \
+        && ok "Server: stopped." || warn "Server: could not stop (is it installed?)."
 }
 
 _syncthing_start_both() {
     info "Starting Syncthing on both laptop and server..."
     systemctl --user start syncthing 2>/dev/null && ok "Laptop: started." || warn "Laptop: failed to start."
     # ssh -t for sudo TTY. NOT inside $() — that captures the prompt.
-    ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker update --restart=unless-stopped syncthing >/dev/null 2>&1; sudo docker start syncthing >/dev/null 2>&1" \
+    _svc_power_remote start syncthing \
         && ok "Server: started." \
         || { warn "Server: failed to start."; info "If container has bad config: federver → 12 to reinstall."; }
 }
@@ -2821,7 +2865,7 @@ _syncthing_start_both() {
 _syncthing_restart_both() {
     info "Restarting Syncthing on both laptop and server..."
     systemctl --user restart syncthing 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."
-    ssh -t "$SERVER_USER@$SERVER_IP" "sudo docker restart syncthing >/dev/null 2>&1" \
+    _svc_power_remote restart syncthing \
         && ok "Server: restarted." || warn "Server: failed."
 }
 
@@ -2847,7 +2891,7 @@ _syncthing_uninstall_server_remote() {
     local err state
     info "Removing from server..."
     err=$(ssh "$SERVER_USER@$SERVER_IP" 'docker rm -f syncthing' 2>&1 >/dev/null) || true
-    state=$(_syncthing_server_probe verify)
+    state=$(_syncthing_server_probe)
     case "$state" in
         "") ;;
         unreachable)  fail "Server: could not confirm removal (server unreachable)."; return 1 ;;
@@ -2900,13 +2944,10 @@ _syncthing_uninstall_both() {
 
 # Server-side Syncthing state for the laptop menu (read-only, non-TTY, no sudo:
 # the server user is in the docker group). Prints: running | stopped | "" (not
-# installed) | unreachable. "verify" mode also prints docker-error when docker
-# can't be queried, so a failed query never reads as "removed"; plain mode
-# treats it as not installed (unchanged detection behaviour).
+# installed) | unreachable | docker-error (docker can't be queried, so a failed
+# query never reads as "removed" or "not installed").
 _syncthing_server_probe() {
-    local on_err=""
-    [[ "$1" == verify ]] && on_err='echo docker-error; exit 0'
-    _server_probe "n=\$(docker ps -a --format '{{.Names}}' 2>/dev/null) || { ${on_err:-exit 0}; }
+    _server_probe "n=\$(docker ps -a --format '{{.Names}}' 2>/dev/null) || { echo docker-error; exit 0; }
 if grep -qx syncthing <<<\"\$n\"; then
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx syncthing; then echo running; else echo stopped; fi
 fi"
@@ -2932,7 +2973,12 @@ step_syncthing() {
         lap_state="installed (stopped)"
         systemctl --user is-active syncthing &>/dev/null && lap_state="installed (running)"
     fi
-    srv_state=$(_syncthing_server_probe detect)
+    srv_state=$(_syncthing_server_probe)
+    if [[ "$srv_state" == docker-error ]]; then
+        # Not "not installed": offering an install here could clobber a live container.
+        fail "Cannot query docker on the server - changing nothing."
+        return 1
+    fi
     [[ -n "$srv_state" && "$srv_state" != unreachable ]] && srv_state="installed ($srv_state)"
     _two_sided_gate "Syncthing" "$lap_state" "$srv_state" _syncthing_install_laptop "_syncthing_server_step" _syncthing_uninstall_both || g=$?
     (( g == 10 )) || return $g
@@ -2951,6 +2997,7 @@ step_syncthing() {
     echo -e "  ${BOLD}── Server ──${NC}"
     ssh "$SERVER_USER@$SERVER_IP" bash -s <<'REMOTE_STATUS'
         state="stopped"
+        [ "$(docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' syncthing 2>/dev/null)" = no ] && state="stopped (autostart off)"
         if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^syncthing$'; then
             uptime=$(docker ps --filter name=syncthing --format '{{.Status}}' 2>/dev/null)
             state="running  ($uptime)"
@@ -3034,9 +3081,9 @@ _syncthing_server_step() {
         2) _syncthing_show_device_id ;;
         3) _syncthing_show_paths ;;
         4) _syncthing_reapply_paths ;;
-        5) info "Starting..."; sudo docker update --restart=unless-stopped syncthing > /dev/null 2>&1 || true; sudo docker start syncthing > /dev/null && ok "Started." ;;
-        6) info "Stopping..."; sudo docker update --restart=no syncthing > /dev/null 2>&1 || true; sudo docker stop syncthing > /dev/null && ok "Stopped." ;;
-        7) info "Restarting..."; sudo docker restart syncthing > /dev/null && ok "Restarted." ;;
+        5) info "Starting...";   _svc_power start syncthing   && ok "Started."   || fail "Start failed." ;;
+        6) info "Stopping...";   _svc_power stop syncthing    && ok "Stopped."   || fail "Stop failed." ;;
+        7) info "Restarting..."; _svc_power restart syncthing && ok "Restarted." || fail "Restart failed." ;;
         8)
             info "Last 50 lines (Ctrl+C to exit follow mode)..."
             sudo docker logs --tail 50 -f syncthing || true
@@ -3754,7 +3801,7 @@ step_adguard() {
             ok "AdGuard is already running."
         else
             warn "AdGuard container exists but is stopped. Starting it..."
-            sudo docker start adguard > /dev/null && ok "Started." || { fail "Could not start AdGuard."; return 1; }
+            _svc_power start adguard && ok "Started." || { fail "Could not start AdGuard."; return 1; }
         fi
         echo -e "  Dashboard: ${BLUE}http://$IP${NC}"
         echo ""
@@ -3769,7 +3816,7 @@ step_adguard() {
         case "$ag_choice" in
             1) [[ -n "$TS_IP" ]] && _adguard_tailscale_guide "$TS_IP" || warn "Tailscale not detected." ;;
             2) _adguard_dns_upstream_guide ;;
-            3) info "Restarting..."; sudo docker restart adguard > /dev/null && ok "Restarted." ;;
+            3) info "Restarting..."; _svc_power restart adguard && ok "Restarted." || fail "Restart failed." ;;
             4) sudo docker logs --tail 50 -f adguard || true ;;
             5) _adguard_uninstall ;;
             0|*) return ;;
@@ -4725,9 +4772,11 @@ _disk_check_last_age() {
 # "Current" block shown when an existing monitor/URL was found: masked Push URL,
 # the real root cron line, and the last run (world-readable, no sudo).
 _disk_check_current() {
-    local url="$1" src="$2" cron cronline lastf=/var/log/disk-check.last last age
+    local url="$1" src="$2" other="${3:-}" cron cronline lastf=/var/log/disk-check.last last age
     echo -e "  ${BOLD}Current${NC}"
     echo -e "    Push URL:  ${url%%/api/push/*}/api/push/…${url: -4}   ${DIM}(from ${src})${NC}"
+    # $3 = the installed script's URL when it differs from Kuma's (shown masked too).
+    [[ -n "$other" ]] && echo -e "    Script's:  ${other%%/api/push/*}/api/push/…${other: -4}   ${DIM}(installed script - differs, not used)${NC}"
     if cron=$(_cron_get root 2>/dev/null); then
         cronline=$(grep disk-check <<<"$cron" | head -n 1)
         if [[ -n "$cronline" ]]; then echo -e "    Cron:      $cronline"
@@ -4756,8 +4805,19 @@ step_disk_monitor() {
     IP=$(hostname -I | awk '{print $1}')
 
     # Reuse a known URL before asking for one (the script first, then Kuma's DB).
+    local kuma script_url="" mismatch=""
     found=$(_disk_check_url_from_script); src="the installed script"
-    if [[ -z "$found" ]]; then found=$(_disk_check_url_from_kuma "$IP"); src="Uptime Kuma"; fi
+    if [[ -z "$found" ]]; then
+        found=$(_disk_check_url_from_kuma "$IP"); src="Uptime Kuma"
+    else
+        # Kuma is the truth: a script left with a stale token pushes into the void
+        # (the monitor never turns green). Compare tokens; if they differ, use Kuma's.
+        kuma=$(_disk_check_url_from_kuma "$IP")
+        if [[ -n "$kuma" && "${kuma##*/api/push/}" != "${found##*/api/push/}" ]]; then
+            mismatch="Installed script's Push URL differs from Kuma's (…${found: -4} vs …${kuma: -4})"
+            script_url="$found"; found="$kuma"; src="Uptime Kuma"
+        fi
+    fi
 
     # The box is always shown (it is the reference for how the monitor is configured).
     local title="Set up the Kuma monitor first"
@@ -4776,9 +4836,11 @@ step_disk_monitor() {
     echo ""
 
     if [[ -n "$found" ]]; then
-        _disk_check_current "$found" "$src"
+        [[ -n "$mismatch" ]] && warn "$mismatch"
+        _disk_check_current "$found" "$src" "$script_url"
         while true; do
-            read -p "  Enter = use it, p = paste a different URL, r = remove the monitor, q = back: " choice
+            # EOF (closed stdin) = back with no changes, never "use it".
+            read -p "  Enter = use it, p = paste a different URL, r = remove the monitor, q = back: " choice || choice=q
             case "$choice" in
                 "") push_url="$found"; break ;;
                 p|P) break ;;
@@ -6119,6 +6181,7 @@ _sync_one_time_backup() {
                 # the size lookup fails, pv still runs without -s (bytes + rate only).
                 local pv_stage=() size_cmd size_bytes=""
                 if command -v pv >/dev/null 2>&1; then
+                    info "Sizing source..."
                     size_cmd="du -sb $(_shq "$src_path") 2>/dev/null | cut -f1"
                     $needs_priv && size_cmd="sudo -S -p '' du -sb $(_shq "$src_path") 2>/dev/null | cut -f1"
                     size_bytes=$(printf '%s\n' "$server_pw" | ssh "$SERVER_USER@$SERVER_IP" "$size_cmd" 2>/dev/null | head -n1)
@@ -6417,7 +6480,7 @@ step_status() {
 
     if [[ "$remote" == "true" ]]; then
         local server_info
-        server_info=$( { declare -f _ts_state; cat <<'REMOTE_STATUS'
+        server_info=$( { declare -f _ts_state _ps_autostart; cat <<'REMOTE_STATUS'
             echo "@@HOSTNAME@@$(hostname)"
             echo "@@IP@@$(hostname -I | awk '{print $1}')"
             echo "@@TS_STATE@@$(_ts_state)"
@@ -6431,7 +6494,7 @@ step_status() {
             free -h 2>/dev/null | awk '/^Mem:/{print "mem|"$2"|"$3"|"$7} /^Swap:/{print "swap|"$2"|"$3}'
             echo "@@MEM_END@@"
             echo "@@CONTAINERS_START@@"
-            docker ps -a --format '{{.Names}}|{{.Status}}' 2>/dev/null
+            _ps_autostart docker 2>/dev/null
             echo "@@CONTAINERS_END@@"
             echo "@@DSTATS_START@@"
             docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null
@@ -6469,7 +6532,7 @@ REMOTE_STATUS
         UPLOAD=$(grep UPLOAD_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
         DB=$(grep DB_DATA_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
         MEM=$(free -h 2>/dev/null | awk '/^Mem:/{print "mem|"$2"|"$3"|"$7} /^Swap:/{print "swap|"$2"|"$3}')
-        CONTAINERS=$(docker ps -a --format '{{.Names}}|{{.Status}}' 2>/dev/null)
+        CONTAINERS=$(_ps_autostart docker 2>/dev/null)
         DSTATS=$(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null)
         USB_DISKS=$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}' | paste -sd'|' -)
         DISK=$(df -h / /home /mnt/data 2>/dev/null | tail -n +2 | awk '!seen[$1]++')
@@ -6560,7 +6623,7 @@ REMOTE_STATUS
             # Containers without a HEALTHCHECK just report "Up X" — treat
             # those as OK (not warn). Only warn when the state is genuinely
             # ambiguous (Created, Paused, etc).
-            if echo "$status" | grep -qi "unhealthy\|exit\|restart"; then
+            if echo "$status" | grep -qi "unhealthy\|exit\|restart\|^stopped"; then
                 echo -e "    ${RED}✗${NC} $(printf '%-24s' "$name")  $status$suffix"
             elif echo "$status" | grep -qi "healthy\|^Up "; then
                 echo -e "    ${GREEN}✓${NC} $(printf '%-24s' "$name")  $status$suffix"

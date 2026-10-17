@@ -102,6 +102,21 @@ run_compose() {
   $cc -f "$COMPOSE_FILE" --env-file "$ENV_FILE" "$@"
 }
 
+# Compose gives some services restart: always, and an earlier Stop leaves
+# restart=no. After bringing the stack up, make every container of it
+# unless-stopped - the same rule the federver menu's Start applies. The stack is
+# already up by now, so a failure here warns (visibly) and returns 0: it must not
+# abort the caller (set -e) before it waits for Immich / reports the update.
+keep_autostart() {
+  local ids
+  # shellcheck disable=SC2086  # ids is one container id per line; split on purpose
+  if ids="$(run_compose ps -aq)" && { [ -z "$ids" ] || docker update --restart=unless-stopped $ids >/dev/null; }; then
+    return 0
+  fi
+  yellow "Could not set autostart on the containers - they're running now but may not come back after a reboot. Re-run start or use federver -> Manage services -> Start."
+  return 0
+}
+
 env_get() {
   grep "^${1}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2-
 }
@@ -319,6 +334,7 @@ cmd_start() {
   bold "privcloud start"
   echo ""
   run_compose up -d
+  keep_autostart
 
   echo ""
   printf "Waiting for Immich"
@@ -944,6 +960,7 @@ cmd_update() {
 
   echo ""
   run_compose up -d
+  keep_autostart
 
   echo ""
   green "Update applied. Pruning old images..."

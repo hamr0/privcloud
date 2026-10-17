@@ -676,13 +676,14 @@ federver
 
 If you run `federver` on the server by mistake, it shows a reduced menu with only step 1 (bootstrap), Status, Power, and Emergency restart — and a note to run from the laptop for the full menu. No errors, just a redirect.
 
-**Emergency restart (`e` on the server menu):** if DNS breaks because AdGuard stopped (you can't SSH from the laptop because domain names don't resolve), walk to the server, open a terminal, run `federver`, pick `e`. It restores systemd-resolved as a DNS fallback, starts all containers (compose stack + standalone AdGuard/Syncthing), and re-disables the stub once AdGuard is back. One action, everything recovers. Confirms with `[Y/n]` before proceeding.
+**Emergency restart (`e` on the server menu):** if DNS breaks because AdGuard stopped (you can't SSH from the laptop because domain names don't resolve), walk to the server, open a terminal, run `federver`, pick `e`. It restores systemd-resolved as a DNS fallback, starts all containers (compose stack + standalone AdGuard/Syncthing, each with autostart switched back on), and re-disables the stub once AdGuard is back. One action, everything recovers. Confirms with `[Y/n]` before proceeding.
 
 **Steps 3-9 + Extras:** Go through each step:
 
 - **3-4:** System update + auto-updates (userspace security only — kernel is excluded so the server never auto-reboots into an untested kernel while you're away; update kernels manually with `sudo dnf upgrade kernel` + reboot when you're home)
 - **5:** Docker — **log out and SSH back in after this** (docker group)
 - **6:** Manage firewall → 4 (Apply defaults) — opens service ports locally, trusts Tailscale
+- **7:** Manage services — **autostart follows your last action**, for every container (compose services and the standalone AdGuard and Syncthing alike), one container or All: **Stop** turns autostart off and stops it, so it stays down after a reboot; **Start** and **Restart** both turn autostart on and run it, so a container you stopped earlier and then restarted comes back after a reboot too. Each action reads the container's state and restart policy back and reports a failure (container missing, Docker down, a step refused) instead of saying "complete". Status marks a stopped container whose autostart is off as `stopped (autostart off)`, so a deliberate stop is visible before you reboot.
 - **7:** Manage services → 6 (Deploy / redeploy) — asks for base data path, starts all services. Shows setup instructions for each service.
 - **8:** Backups — daily Immich DB dump at 3am
 - **9:** Log rotation — limits Docker logs to 10MB per container
@@ -1112,7 +1113,7 @@ Re-running option 12 from the laptop once both sides are installed opens a unifi
 2. **Show Device IDs** — laptop + server IDs for pairing new clients
 3. **Start both** — laptop `systemctl --user start` + server `docker start` (re-enables autostart on both)
 4. **Stop both** — stops on both sides, disables autostart so they stay off across reboots
-5. **Restart both** — bounces both without changing autostart policy
+5. **Restart both** — bounces both and re-enables autostart on the server (a restart means "I want it running")
 6. **Show sync paths** — server-side container bind mounts vs `.env`
 7. **Reapply paths from .env** — recreates the server container with fresh mounts (pairings persist)
 8. **Logs (server)** — `docker logs -f syncthing` via SSH

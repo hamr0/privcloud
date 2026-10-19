@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **A third in-script AdGuard guide: block DNS bypass and extra ad networks (`federver -> 10 -> 3`).** Some apps skip AdGuard by using their own encrypted DNS (DoH/DoT), so their ads and trackers never reach it. The new `_adguard_blocklist_guide` walks through adding the Hagezi `doh.txt` list as a custom blocklist named `Encrypted DNS bypass` (blocking those resolver names makes the apps fall back to AdGuard), then pasting a short set of custom rules: two `@@` allow rules that keep `tailscale.com` and `tailscale.io` reachable whatever a list blocks, plus a handful of ad-network domains (AppsFlyer and Google ad domains are left out on purpose, since they can break app links and logins). A third step shows how to check the Query log for entries from that list and explains that a quiet list is normal, because most bypass happens by hardcoded resolver IP (1.1.1.1, 8.8.8.8), which DNS cannot stop; that takes routing traffic through an exit node and is not covered. It also notes the side effect that blocking `mask.icloud.com` turns off iCloud Private Relay on this network (the iPhone says so), which is intended since Safari's DNS would otherwise skip AdGuard, and adds an iPhone tip: Mail -> Protect Mail Activity ON hides opens and your IP from email trackers. The guide is on the AdGuard management screen as option 3, so Restart, Logs and Uninstall move to 4, 5 and 6, and it prints at the end of a fresh install after the upstream guide.
+
 ### Changed
 
 - **Manage services menu: Restart now says it re-enables autostart.** Option 4 reads `<- pick one or All (re-enables autostart)`, matching Start, since v0.12.0 made Restart set `restart=unless-stopped` just like Start. Label only, no behaviour change.

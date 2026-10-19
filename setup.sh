@@ -3807,18 +3807,20 @@ step_adguard() {
         echo ""
         echo -e "  ${BOLD}1)${NC} Show Tailscale DNS guide"
         echo -e "  ${BOLD}2)${NC} Show upstream + fallback DNS guide"
-        echo -e "  ${BOLD}3)${NC} Restart container"
-        echo -e "  ${BOLD}4)${NC} Logs"
-        echo -e "  ${BOLD}5)${NC} ${RED}Uninstall${NC}"
+        echo -e "  ${BOLD}3)${NC} Show blocklist + bypass guide"
+        echo -e "  ${BOLD}4)${NC} Restart container"
+        echo -e "  ${BOLD}5)${NC} Logs"
+        echo -e "  ${BOLD}6)${NC} ${RED}Uninstall${NC}"
         echo -e "  ${BOLD}0)${NC} Back"
         echo ""
         read -p "  Choose: " ag_choice
         case "$ag_choice" in
             1) [[ -n "$TS_IP" ]] && _adguard_tailscale_guide "$TS_IP" || warn "Tailscale not detected." ;;
             2) _adguard_dns_upstream_guide ;;
-            3) info "Restarting..."; _svc_power restart adguard && ok "Restarted." || fail "Restart failed." ;;
-            4) sudo docker logs --tail 50 -f adguard || true ;;
-            5) _adguard_uninstall ;;
+            3) _adguard_blocklist_guide ;;
+            4) info "Restarting..."; _svc_power restart adguard && ok "Restarted." || fail "Restart failed." ;;
+            5) sudo docker logs --tail 50 -f adguard || true ;;
+            6) _adguard_uninstall ;;
             0|*) return ;;
         esac
         return 0
@@ -3924,6 +3926,8 @@ ADGUARDEOF
         _adguard_tailscale_guide "$TS_IP"
         echo ""
         _adguard_dns_upstream_guide
+        echo ""
+        _adguard_blocklist_guide
     else
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "  ${YELLOW}AdGuard is running, but no devices are pointed at it yet.${NC}"
@@ -4068,6 +4072,61 @@ _adguard_dns_upstream_guide() {
     echo -e "  failures against Quad9's DoH endpoint (silent dropped queries,"
     echo -e "  half-loaded pages) — plain DNS has no persistent connection to"
     echo -e "  go stale, so that failure mode doesn't exist."
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# Prints the blocklist + extra ad-network setup for AdGuard. Displayed after
+# install (post upstream guide) and available from the manage menu.
+# Point: apps that use their own encrypted DNS (DoH/DoT) skip AdGuard; block
+# those resolver names and they fall back to it.
+_adguard_blocklist_guide() {
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}RECOMMENDED: Block DNS bypass + extra ad networks${NC}"
+    echo ""
+    echo -e "  Some apps skip AdGuard by using their own encrypted DNS"
+    echo -e "  (DoH/DoT). Blocking those resolvers' names makes them fall"
+    echo -e "  back to AdGuard. Apps that hardcode a resolver IP (1.1.1.1,"
+    echo -e "  8.8.8.8) can't be stopped by DNS — only by routing traffic"
+    echo -e "  through an exit node; not covered here."
+    echo ""
+    echo -e "  ${BOLD}Step 1: bypass blocklist${NC}"
+    echo -e "  Open ${BLUE}http://federver${NC} → ${BOLD}Filters → DNS blocklists${NC} →"
+    echo -e "  ${BOLD}Add blocklist → Add a custom list${NC}:"
+    echo -e "    Name   ${BOLD}Encrypted DNS bypass${NC}"
+    echo -e "    URL    ${BOLD}https://raw.githubusercontent.com/hagezi/dns-blocklists/main/adblock/doh.txt${NC}"
+    echo -e "  Save, keep it enabled."
+    echo ""
+    echo -e "  ${BOLD}Step 2: extra rules${NC}"
+    echo -e "  ${BOLD}Filters → Custom filtering rules${NC}, paste, ${BOLD}Apply${NC}:"
+    echo -e "    ${BOLD}@@||tailscale.com^${NC}"
+    echo -e "    ${BOLD}@@||tailscale.io^${NC}"
+    echo -e "    ${BOLD}||locsensads.com^${NC}"
+    echo -e "    ${BOLD}||readpeak.com^${NC}"
+    echo -e "    ${BOLD}||pubmatic.com^${NC}"
+    echo -e "    ${BOLD}||openx.net^${NC}"
+    echo -e "    ${BOLD}||smartadserver.com^${NC}"
+    echo -e "    ${BOLD}||applovin.com^${NC}"
+    echo -e "    ${BOLD}||unityads.unity3d.com^${NC}"
+    echo -e "    ${BOLD}||vungle.com^${NC}"
+    echo -e "    ${BOLD}||inmobi.com^${NC}"
+    echo -e "  ${DIM}The two @@ lines keep Tailscale reachable whatever a list"
+    echo -e "  blocks. AppsFlyer/Google ad domains are left out on purpose:"
+    echo -e "  they can break app links and logins.${NC}"
+    echo ""
+    echo -e "  ${BOLD}Step 3: check${NC}"
+    echo -e "  ${BOLD}Query log${NC} → filter ${BOLD}Blocked${NC} → look for entries whose rule"
+    echo -e "  is from ${BOLD}Encrypted DNS bypass${NC}. A quiet list is normal: most"
+    echo -e "  bypass happens by IP, so dns.* names may never show."
+    echo -e "  Blocking ${BOLD}mask.icloud.com${NC} turns off iCloud Private Relay on"
+    echo -e "  this network (the iPhone says so) — intended, otherwise"
+    echo -e "  Safari's DNS skips AdGuard."
+    echo ""
+    echo -e "  ${BOLD}Phone tip:${NC} iPhone Mail → Settings → Apps → Mail → Privacy"
+    echo -e "  Protection → ${BOLD}Protect Mail Activity${NC} ON (hides opens and your"
+    echo -e "  IP from email trackers)."
+    echo ""
+    echo -e "  ${DIM}AdGuard's own upstream is plain IPs, not DoH names, so it is"
+    echo -e "  unaffected by this blocklist.${NC}"
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 

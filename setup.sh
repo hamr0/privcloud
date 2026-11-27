@@ -2068,6 +2068,19 @@ _show_laptop_services() {
     echo ""
 }
 
+# Data-drive guard for the picker's start paths. The picker runs on the laptop
+# but the drive is on the server, so the check (and the .env it reads, same keys
+# and defaults as _services_action) runs there over ssh. Unreachable = refused.
+_picker_data_guard() { # navidrome|filebrowser|all
+    local var def
+    case "$1" in
+        navidrome)       var=MUSIC_LOCATION; def=/mnt/data/media ;;
+        filebrowser|all) var=FILES_LOCATION; def=/mnt/data ;;
+        *) return 0 ;;
+    esac
+    ssh "$SERVER_USER@$SERVER_IP" "$(declare -p GREEN RED YELLOW BOLD DIM NC; declare -f _env_get _require_data_mount fail info); p=\$(_env_get $var \"\$HOME/privcloud/.env\" 2>/dev/null); _require_data_mount \"\${p:-$def}\""
+}
+
 # Unified service picker: shows laptop services + server containers in one
 # list. Runs locally on the laptop, SSHes once to get server container states.
 # Usage: _unified_service_picker start|stop|restart
@@ -2230,6 +2243,7 @@ _unified_service_picker() {
             echo ""
             [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
         fi
+        [[ "$action" == start ]] && { _picker_data_guard all || return 1; }
         # Both-sides services
         "_ts_${action}_both"
         "_syncthing_${action}_both"
@@ -2293,6 +2307,7 @@ _unified_service_picker() {
         [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return 0; }
     fi
 
+    [[ "$action" == start ]] && { _picker_data_guard "$cname" || return 1; }
     if ! _svc_power_remote "$action" "$cname"; then
         fail "${action^} failed: $cname"
         return 1

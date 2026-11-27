@@ -1,6 +1,6 @@
 # PRD: Single source of truth — stop copy drift in federver and privcloud
 
-Status: **Planned.** Starts on a fresh branch (`refactor/single-source`) after `feat/smb-share` is released.
+Status: **In progress** on branch `refactor/single-source` (decisions settled 2026-11-27, below).
 Details per group and per piece: [spec-single-source.md](spec-single-source.md). This PRD is the contract; the spec holds the details.
 
 ## Goal
@@ -34,16 +34,36 @@ code-proven), **15 P2** (maintenance drift), **10 P3** (cosmetic / scaffolding).
 | QW | Quick wins (no redesign) | D9 guard, D5 `privcloud config`, D29 wrong menu numbers | `federver -> 7` Start refuses an unmounted data drive; `privcloud config` never drops `.env` keys; docs point at the right menu |
 | 0 | Shared test harness `tests/lib.sh` | D27 | every suite uses one `check` / function-extract / stub set |
 | 1 | One drive-mount verdict | D8 (+ guards for D9, D14, D16) | one function and one drive-roots list decide "really mounted"; SMB, mirror, disk-check, start guards and backup defaults all call it |
-| 2 | One sync-job generator | D1, D2, D6, D13, D23, part of D12 | create and every edit render the script from one record; legacy scripts are imported then re-rendered (never patched); names validated; scripts resolve the server endpoint at run time (LAN → Tailscale) and use the `ssh()` rules |
+| 2 | One sync-job generator | D1, D2, D6, D13, D23, part of D12 | create and every edit render the script from one record; legacy scripts are imported (only the fields we generate; a script that doesn't match is left alone and flagged in Status, never guessed) then re-rendered (never patched); names validated; scripts resolve the server endpoint at run time (LAN → Tailscale) and use the `ssh()` rules |
 | 3 | One Immich backup | D3, D7, D14, D20 | one implementation for scheduled and one-time; reads `.env` at run time; same excludes, layout and guards |
 | 4 | Service lifecycle and status | D9, D10, D11, D19, D25, D28, D30 | dead picker removed; one container-state probe, one service list, one renderer for rows and URLs |
-| 5 | `.env` and compose files | D5, D4, D33 | one reader and one key-updating writer in `lib/env.sh`, sourced by both tools (needed even if piece 8 is declined); compose never edited in place; `.env.example` matches what deploy writes |
+| 5 | Shared lib `lib/common.sh`: `.env`, compose and duplicated helpers | D5, D4, D33, D26, D15, D16, D17 | one `lib/common.sh`, sourced by both tools, holds the only `.env` reader and key-updating writer plus each helper both tools duplicate today (moved one at a time, nothing speculative); compose never edited in place; `.env.example` matches what deploy writes; storage path changes refuse an unmounted drive |
 | 6 | Uninstall / firewall / confirm helpers | D18, D21, D22, D24 | shared helpers, adopted as each service is next touched |
 | 7 | Menu table and doc checks | D29, D31, D32 | menu numbers come from one table; a test fails on a stale `federver -> N` in docs |
-| 8 | privcloud ↔ setup.sh shared lib (optional) | D26, D15, D16, D17 | only if a sourced `lib/common.sh` is accepted under the "lightweight" rule; `lib/env.sh` (piece 5) stays either way |
 
-Order: QW → 0 → 1 → 2 → 3 → 5 → 4 → 6 → 7 → (8). Pieces 1 and 2 get a design review with the
+Order: QW → 0 → 1 → 2 → 3 → 5 → 4 → 6 → 7. Pieces 1 and 2 get a design review with the
 user before any code.
+
+## Work plan
+
+One branch (`refactor/single-source`), one module at a time, one release at the end. The "Also
+fixes" column folds in the open review-ledger items, so nothing is fixed twice.
+
+| Step | Module | Also fixes (review ledger) | Size / risk | Gate before the next step | Status |
+|---|---|---|---|---|---|
+| 1 | QW quick wins | – | S / low | each fix has a fail-first test | ☐ |
+| 2 | 0 test harness `tests/lib.sh` | disk-check flake: capture `tmpd` when it fails | S / low | check counts per suite unchanged | ☐ |
+| 3 | 1 drive-mount verdict | `_MIRROR_DRIVE_ROOTS` test override in the production guard | M / medium | **design review**, then live check on the USB drive | ☐ |
+| 4 | 2 sync-job generator | legacy finish-line patch gap (CRLF), `mktemp` leak in Change copy mode, untested `_mirror_banner` in step_sync, mirror preview not listing empty folders, duplicated `last:` label mapping, exit 24 (decision 1) | L / high | **design review**; atomic write + `.bak`; live mirror run, home and away | ☐ |
+| 5 | 3 Immich backup | install-time dry-run runs as the user, not root | M / medium | live scheduled run + one one-time run | ☐ |
+| 6 | 5 shared lib `lib/common.sh` | – | M / medium | `.env` stays mode 600; both tools work from the `/usr/local/bin` wrappers | ☐ |
+| 7 | 4 service lifecycle and status | inline `samba-poc` container probe; first live run of `federver -> 16` from the laptop | M–L / medium | live Status and Start/Stop | ☐ |
+| 8 | 6 uninstall / firewall / confirm helpers | SMB firewall check queries only the default zone | M / low | typed-name confirm and kept `/opt/<service>` config unchanged | ☐ |
+| 9 | 7 menu table and doc checks | findings.md rules duplicated in project memory; docs index filing wiki pages under "Product" | S / low | a test fails on a stale `federver -> N` | ☐ |
+| 10 | Release | – | – | `/branch-review`, then `/release` | ☐ |
+
+Each module runs the same loop: ~15 min POC → build with tests that fail first against the old code
+→ full suite green → `/self-review` → commit. Tick the Status box in the same commit.
 
 ## Rules for every piece
 
@@ -57,18 +77,20 @@ user before any code.
    CHANGELOG entry.
 4. **Members that differ on purpose are not merged**; the difference is documented.
 5. One piece per commit (or small commit series), each through `/self-review`; the branch through
-   `/branch-review` before merge.
+   `/branch-review` before merge, and the whole cleanup ships as one release.
+6. **Simple > clever.** One plain function every caller uses beats a configurable framework; when
+   input is ambiguous (e.g. a hand-edited job script), refuse and say so rather than guess.
 
-## Open decisions
+## Decisions (2026-11-27)
 
-- rsync exit 24 ("source files vanished during transfer") in sync jobs: success-with-note or failure.
-  Recommended: success with `last: ok (some files vanished)`.
-- Legacy job scripts: re-render on first edit only, or on first Status view with a one-line notice.
-  Recommended: on first Status view (old scripts carry the exit-code bug).
-- Piece 8 (`lib/common.sh` sourced by both tools): yes / no. A "no" does not remove piece 5's `lib/env.sh`.
-- `privcloud config` on a federver server: keep (key-updating only) or remove in favour of
-  `federver -> 11`. Recommended: keep, update only its own keys
-  (`UPLOAD_LOCATION`, `DB_DATA_LOCATION`); every other `.env` key is left untouched.
+1. rsync exit 24 ("source files vanished during transfer") in sync jobs counts as **success**, logged
+   `last: ok (some files vanished)`.
+2. Legacy job scripts are re-rendered on the **first Status view**, with a one-line notice: render,
+   compare with the file on disk, replace only if different (atomic write, `.bak` kept).
+3. **One shared lib, `lib/common.sh`**, sourced by both tools: the `.env` reader/writer and every helper
+   both tools duplicate. The former optional piece 8 is folded into piece 5; there is no `lib/env.sh`.
+4. `privcloud config` **stays** (privcloud-only installs need it) and writes through `env_set`, updating
+   only `UPLOAD_LOCATION` and `DB_DATA_LOCATION`; every other `.env` key is left untouched.
 
 ## Non-goals
 

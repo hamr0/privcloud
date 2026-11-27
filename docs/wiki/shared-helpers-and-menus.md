@@ -7,7 +7,7 @@ sources:
 
 # Shared helpers and menus
 
-This page covers pieces 6 to 8 of the single-source spec. Piece 6 consolidates uninstall, firewall and confirm helpers. Piece 7 adds a menu table and doc checks. Piece 8 is an optional shared library. All three are adopted incrementally, with no big-bang rewrite (docs/archive/spec-single-source.md:439-439).
+This page covers pieces 6 to 8 of the single-source spec. Piece 6 consolidates uninstall, firewall and confirm helpers. Piece 7 adds a menu table and doc checks. The shared library (formerly piece 8) was accepted on 2026-11-27 and folded into piece 5. All are adopted incrementally, with no big-bang rewrite (docs/archive/spec-single-source.md:439-439).
 
 ## Piece 6: uninstall, firewall and confirm helpers
 
@@ -81,9 +81,9 @@ Closes D29 (structural), D31 and D32 (docs/archive/spec-single-source.md:481-481
   - Every payload list is a named bundle and runs in a clean shell.
   - The 85 / 5 min / 720 s constants each appear once.
 
-## Piece 8: shared lib (optional)
+## Shared lib (former piece 8, now part of piece 5)
 
-Closes D26, D15, D16 and D17. It applies only if a sourced `lib/common.sh` is accepted under the "lightweight" rule, which is an open decision. If declined, the members stay as documented copies and D16's drive guard is still added in piece 1's follow-up (docs/archive/spec-single-source.md:515-515).
+Closes D26, D15, D16 and D17. Decided 2026-11-27: one `lib/common.sh`, sourced by both tools, built in piece 5 together with the `.env` reader/writer (docs/archive/spec-single-source.md:515-515).
 
 ### D26: helper copies
 
@@ -113,15 +113,15 @@ Closes D26, D15, D16 and D17. It applies only if a sourced `lib/common.sh` is ac
 
 ### Design
 
-- `lib/common.sh` is sourced by both tools and holds colours, `local_ip`, version, `immich_ping` and the compose helper. The path to it must be relative to the script and work from the `/usr/local/bin` wrappers. If declined, do only D15, D16 and D17 inside setup.sh (docs/archive/spec-single-source.md:545-545).
+- `lib/common.sh` is sourced by both tools and holds colours, `local_ip`, version, `immich_ping` and the compose helper. It also holds `env_get`/`env_set` (piece 5). The path to it must be relative to the script and work from the `/usr/local/bin` wrappers (docs/archive/spec-single-source.md:545-545).
 - Not merged: `step_docker` versus `ensure_docker`. The macOS-aware `get_ip` stays privcloud-side unless the lib keeps the macOS branch (docs/archive/spec-single-source.md:546-546).
 
-### Piece 8 tests and acceptance
+### Shared lib tests and acceptance
 
 - Pin: privcloud-autostart.sh, syncthing-gate.sh and sync-mirror.sh. Add: version reader agreement, a fail-first test that `_storage_change` refuses an unmounted `/mnt/...` path, and sourcing from the wrapper location (docs/archive/spec-single-source.md:550-550).
 - Gaps: `_storage_change_*`, `_syncthing_status`, and privcloud helpers other than `keep_autostart` (docs/archive/spec-single-source.md:551-551).
 - Size S to M. Risk is medium for the lib, because both entry points depend on it, and low for D15 to D17 (docs/archive/spec-single-source.md:552-552).
 - Acceptance (docs/archive/spec-single-source.md:553-556):
-  - If accepted, each of colours, local IP, version, immich ping and compose has one definition. Both tools source it and the suites pass.
+  - Each of colours, local IP, version, immich ping and compose has one definition. Both tools source it and the suites pass.
   - `_storage_change_*` share one function and refuse an unmounted new path.
   - Syncthing paths are resolved in one function.

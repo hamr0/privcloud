@@ -39,7 +39,7 @@ Kinds: 1 = same job in several places, 2 = helper re-implemented, 3 = generated 
 | D11 | 1 | server-side Status shows only `/`, `/home`, `/mnt/data`; USB drive vanishes | 4 | (docs/archive/spec-single-source.md:37) |
 | D12 | 1 | `-s` exists only on the recurring copy path | 2 (part) | (docs/archive/spec-single-source.md:38) |
 | D13 | 1 | delete-a-job exists twice; only success wording differs | 2 | (docs/archive/spec-single-source.md:39) |
-| D16 | 1 | new `/mnt/...` path answered while unmounted is created on the system disk (UNVERIFIED) | 8 (guard from 1) | (docs/archive/spec-single-source.md:40) |
+| D16 | 1 | new `/mnt/...` path answered while unmounted is created on the system disk (UNVERIFIED) | 5 (guard from 1) | (docs/archive/spec-single-source.md:40) |
 | D18 | 1 | six uninstallers each had the "printed removed, nothing removed" bug | 6 | (docs/archive/spec-single-source.md:41) |
 | D19 | 2 | only two of 14 probes tell "query failed" from "absent" | 4 | (docs/archive/spec-single-source.md:42) |
 | D20 | 2 | legacy `immich-db` cron line shown and removed by Status/Remove but left by Set up (UNVERIFIED) | 3 | (docs/archive/spec-single-source.md:43) |
@@ -53,8 +53,8 @@ Kinds: 1 = same job in several places, 2 = helper re-implemented, 3 = generated 
 
 (docs/archive/spec-single-source.md:50-63)
 
-- No failure seen: D15 (path pickers, piece 8), D17 (Syncthing path logic, piece 8), D24 (confirm prompts, piece 6), D25 (state vocabulary, piece 4), D27 (test scaffolding, piece 0), D28 (service URL blocks, piece 4), D32 (disk-check constants, piece 7) (docs/archive/spec-single-source.md:54-62).
-- D26 (helper copies, piece 8): partly harmful; the two version fallbacks differ and `keep_autostart` has no read-back (docs/archive/spec-single-source.md:58).
+- No failure seen: D15 (path pickers, piece 5), D17 (Syncthing path logic, piece 5), D24 (confirm prompts, piece 6), D25 (state vocabulary, piece 4), D27 (test scaffolding, piece 0), D28 (service URL blocks, piece 4), D32 (disk-check constants, piece 7) (docs/archive/spec-single-source.md:54-62).
+- D26 (helper copies, piece 5): partly harmful; the two version fallbacks differ and `keep_autostart` has no read-back (docs/archive/spec-single-source.md:58).
 - D31 (`declare -f` payload lists, piece 7): a helper gaining a dependency breaks only the remote call (docs/archive/spec-single-source.md:61).
 - D33 (data-path defaults, piece 5): reachable only when `.env` lacks the key (docs/archive/spec-single-source.md:63).
 
@@ -80,9 +80,9 @@ Acceptance (docs/archive/spec-single-source.md:110-113):
 
 ## Decisions log
 
-All open until the user decides (docs/archive/spec-single-source.md:560-562).
+Decided 2026-11-27 (options as in docs/archive/spec-single-source.md:560-598). The former piece 8 is folded into piece 5.
 
-1. **rsync exit 24 in sync jobs.** Option A (recommended): success with note, `last: ok (some files vanished)`. Option B: failure, `last: failed (exit 24)` (docs/archive/spec-single-source.md:564-569). Before d57409f every failure logged as 0, so 24 becomes visible for the first time; B is safer for mirror jobs; either is a single `case` line (docs/archive/spec-single-source.md:571).
-2. **Legacy job scripts re-render.** Option A (recommended): on first Status view with a one-line notice. Option B: on first edit only, so untouched jobs keep logging `last: ok` for failures (docs/archive/spec-single-source.md:573-578). A Status view that writes needs the atomic write and `.bak` (docs/archive/spec-single-source.md:580).
-3. **Piece 8, shared `lib/common.sh`.** Option A: yes, one definition, at the cost of a sourced file and wrapper path resolution. Option B: no, copies stay (docs/archive/spec-single-source.md:582-587). Real drift is only the version fallback and autostart read-back; "lightweight" weighs against, "one source" for; piece 5 assumes at least `lib/env.sh` (docs/archive/spec-single-source.md:589).
-4. **`privcloud config` on a server.** Option A (recommended): keep, update only its own keys via `env_set`. Option B: remove in favour of `federver -> 11` (docs/archive/spec-single-source.md:591-596). QW ships option A either way (docs/archive/spec-single-source.md:598).
+1. **rsync exit 24 in sync jobs:** success with note, `last: ok (some files vanished)` (option A).
+2. **Legacy job scripts re-render:** on first Status view with a one-line notice (option A); render, compare, replace only if different, atomic write plus `.bak`.
+3. **Shared lib:** yes, one `lib/common.sh` sourced by both tools, holding the `.env` reader/writer and the helpers both tools duplicate (D15, D16, D17, D26). Piece 8 is folded into piece 5; no separate `lib/env.sh`.
+4. **`privcloud config` on a server:** keep, update only `UPLOAD_LOCATION` and `DB_DATA_LOCATION` via `env_set` (option A).

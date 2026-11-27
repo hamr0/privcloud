@@ -7,7 +7,7 @@ sources:
 
 # Service config, lifecycle and status
 
-This page covers two pieces of the single-source spec: Piece 5 (`.env` and compose files) and Piece 4 (service lifecycle and status). Piece 5 closes D5 (structural part), D4 and D33 (docs/archive/spec-single-source.md:333-335). Piece 4 closes D9 (structural part), D10, D11, D19, D25, D28 and D30 (docs/archive/spec-single-source.md:376-378).
+This page covers two pieces of the single-source spec: Piece 5 (`.env` and compose files) and Piece 4 (service lifecycle and status). Piece 5 closes D5 (structural part), D4 and D33 (docs/archive/spec-single-source.md:333-335), plus D26, D15, D16 and D17 from the shared lib folded in from the former piece 8. Piece 4 closes D9 (structural part), D10, D11, D19, D25, D28 and D30 (docs/archive/spec-single-source.md:376-378).
 
 ## Piece 5: `.env` and compose files
 
@@ -16,7 +16,7 @@ This page covers two pieces of the single-source spec: Piece 5 (`.env` and compo
 - Several readers exist: `_env_get` in setup.sh (26 call sites, strips quotes), an `envget` inside the generated disk-check (handles inline comments and whitespace), privcloud's `env_get` (11 call sites, no quote strip), and inline unanchored greps in the remote and local status code (docs/archive/spec-single-source.md:339).
 - Writers are `_set_env` (a `sed -i` substitution, so `|`, `&` and `\` corrupt a value), privcloud `cmd_config`, and `.env.example`, which still has the stale `DATA_ROOT` key and no `FILES_LOCATION` (docs/archive/spec-single-source.md:340).
 - The drift: quote handling differs across the three readers, and unanchored greps match any line containing the key, including a commented-out one (docs/archive/spec-single-source.md:341).
-- Design: one reader and one writer in `lib/env.sh`, namely `env_get KEY` and `env_set KEY VAL`. The writer updates in place with literal awk matching, anchored on `^KEY=`, handles quotes one way, and creates the line if missing. Both setup.sh and privcloud source it (docs/archive/spec-single-source.md:354).
+- Design: one reader and one writer in `lib/common.sh` (the shared lib, decided 2026-11-27), namely `env_get KEY` and `env_set KEY VAL`. The writer updates in place with literal awk matching, anchored on `^KEY=`, handles quotes one way, and creates the line if missing. Both setup.sh and privcloud source it (docs/archive/spec-single-source.md:354).
 - The generated disk-check keeps its own `envget` because it must be self-contained. A test asserts all three readers agree on one fixture (docs/archive/spec-single-source.md:355).
 - `step_status` gets anchored reads, and `_set_env` becomes a call to `env_set` (docs/archive/spec-single-source.md:356).
 - `.env.example` should match what `step_deploy` writes, with a test that every key `step_deploy` writes appears in it (docs/archive/spec-single-source.md:357).

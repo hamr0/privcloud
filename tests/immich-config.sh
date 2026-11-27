@@ -39,7 +39,7 @@ NEW="$T/new|loc&x\\y"
 cfg "$NEW"
 check 1a "config rc 0" '[ $RC = 0 ]'
 check 1b "UPLOAD_LOCATION updated literally (| & \\ intact)" '[ "$(grep ^UPLOAD_LOCATION= "$ENV_FILE")" = "UPLOAD_LOCATION=$NEW" ]'
-check 1c "DB_DATA_LOCATION follows" '[ "$(grep ^DB_DATA_LOCATION= "$ENV_FILE")" = "DB_DATA_LOCATION=$T/postgres" ]'
+check 1c "an existing, different DB_DATA_LOCATION is kept (a live Postgres dir is never moved), and said so" '[ "$(grep ^DB_DATA_LOCATION= "$ENV_FILE")" = "DB_DATA_LOCATION=/old/postgres" ] && grep -q "Database path unchanged: /old/postgres" "$T/out" && [ ! -d "$T/postgres" ]'
 check 1d "every other line byte-identical (MEDIA/MUSIC/FILES/password/version kept)" 'cmp -s <(others "$T/before") <(others "$ENV_FILE")'
 check 1e "mode tightened to 600" '[ "$(mode "$ENV_FILE")" = 600 ]'
 check 1f "no temp file left behind" '[ "$(ls -A "$T" | grep -c "^\.env\.")" = 0 ]'
@@ -62,4 +62,18 @@ rm -f "$ENV_FILE"; cfg "$T/first"
 check 4a "fresh .env has the six keys" '[ $RC = 0 ] && [ "$(cut -d= -f1 "$ENV_FILE" | tr "\n" " ")" = "UPLOAD_LOCATION DB_DATA_LOCATION IMMICH_VERSION DB_PASSWORD DB_USERNAME DB_DATABASE_NAME " ]'
 check 4b "fresh .env mode 600, upload dir made" '[ "$(mode "$ENV_FILE")" = 600 ] && [ -d "$T/first" ]'
 
+
+# 5 Enter keeps the current photo path: nothing changes, nothing is created
+printf 'UPLOAD_LOCATION=%s/keep\nDB_DATA_LOCATION=/elsewhere/pg\nDB_PASSWORD=real\nFILES_LOCATION=/f\n' "$T" > "$ENV_FILE"; chmod 600 "$ENV_FILE"; cp "$ENV_FILE" "$T/before"
+rm -rf "$T/postgres"; cfg ""
+check 5a "Enter: .env byte-identical (DB_DATA_LOCATION untouched), 'Kept - nothing changed.'" '[ $RC = 0 ] && cmp -s "$T/before" "$ENV_FILE" && grep -q "Kept - nothing changed." "$T/out"'
+check 5b "Enter: no directory created (neither the photo path nor a derived postgres)" '[ ! -e "$T/keep" ] && [ ! -e "$T/postgres" ]'
+cfg "$T/keep"
+check 5c "typing the same path counts as keep" '[ $RC = 0 ] && cmp -s "$T/before" "$ENV_FILE" && grep -q "Kept - nothing changed." "$T/out"'
+check 5d "the prompt shows both current values and says Enter keeps it" 'grep -q "Photos: *$T/keep" "$T/out" && grep -q "Database: */elsewhere/pg" "$T/out" && extract_fn step_immich_config "$SRC" | grep -q "Photo storage path (Enter keeps it)"'
+printf 'UPLOAD_LOCATION=%s/keep\nDB_DATA_LOCATION=/elsewhere/pg\nDB_PASSWORD=changeme_use_a_real_password\n' "$T" > "$ENV_FILE"
+cfg ""
+check 5e "Enter still replaces the placeholder password (decision 4) and nothing else" '[ $RC = 0 ] && grep -qE "^DB_PASSWORD=privcloud_" "$ENV_FILE" && grep -qx "DB_DATA_LOCATION=/elsewhere/pg" "$ENV_FILE"'
+rm -f "$ENV_FILE"; cfg ""
+check 5f "no .env yet: the prompt says Enter = <default> (read -p is silent off a tty, so the source is read), which is used" 'extract_fn step_immich_config "$SRC" | grep -q "Photo storage path (Enter = " && [ -f "$ENV_FILE" ]'
 check_total

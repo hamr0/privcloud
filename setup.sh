@@ -4208,22 +4208,39 @@ step_immich_status() {
 }
 
 step_immich_config() {
-    local current_loc default_loc upload_loc db_loc db_pass
+    local current_loc current_db default_loc upload_loc db_loc db_pass kept=0
     current_loc="$(_env_get UPLOAD_LOCATION "$_IMMICH_ENV")"
-    [[ -n "$current_loc" ]] && echo "  Current photo storage: $current_loc"
+    current_db="$(_env_get DB_DATA_LOCATION "$_IMMICH_ENV")"
+    [[ -n "$current_loc" ]] && echo "  Photos:   $current_loc"
+    [[ -n "$current_db" ]] && echo "  Database: $current_db"
 
     default_loc="${current_loc:-$HOME/privcloud/photos}"
-    read -rp "  Photo storage path [$default_loc]: " upload_loc
+    if [[ -n "$current_loc" ]]; then
+        read -rp "  Photo storage path (Enter keeps it): " upload_loc
+    else
+        read -rp "  Photo storage path (Enter = $default_loc): " upload_loc
+    fi
     upload_loc="${upload_loc:-$default_loc}"
     upload_loc="${upload_loc/#\~/$HOME}"
+    [[ -n "$current_loc" && "$upload_loc" == "$current_loc" ]] && kept=1
 
-    if ! mkdir -p "$upload_loc" 2>/dev/null; then
-        fail "Cannot create directory: $upload_loc"
-        return 1
+    if (( kept )); then
+        # Same path: touch neither directory nor DB_DATA_LOCATION.
+        db_loc="$current_db"
+    else
+        if ! mkdir -p "$upload_loc" 2>/dev/null; then
+            fail "Cannot create directory: $upload_loc"
+            return 1
+        fi
+        if [[ -n "$current_db" ]]; then
+            # Moving a live Postgres directory is out of scope: an existing one stays.
+            db_loc="$current_db"
+            info "Database path unchanged: $db_loc"
+        else
+            db_loc="$(dirname "$upload_loc")/postgres"
+            mkdir -p "$db_loc"
+        fi
     fi
-
-    db_loc="$(dirname "$upload_loc")/postgres"
-    mkdir -p "$db_loc"
 
     db_pass="$(_env_get DB_PASSWORD "$_IMMICH_ENV")"
     if [[ -z "$db_pass" || "$db_pass" == changeme_use_a_real_password ]]; then
@@ -4234,8 +4251,8 @@ step_immich_config() {
         # Existing .env: touch only what this step asks for; MEDIA/MUSIC/FILES
         # and every other key stay as they are. The password changes only when it
         # is still the .env.example placeholder (the documented flow).
-        _set_env UPLOAD_LOCATION "$upload_loc" "$_IMMICH_ENV"
-        _set_env DB_DATA_LOCATION "$db_loc" "$_IMMICH_ENV"
+        (( kept )) || { _set_env UPLOAD_LOCATION "$upload_loc" "$_IMMICH_ENV"
+                        _set_env DB_DATA_LOCATION "$db_loc" "$_IMMICH_ENV"; }
         [[ "$db_pass" == "$(_env_get DB_PASSWORD "$_IMMICH_ENV")" ]] || _set_env DB_PASSWORD "$db_pass" "$_IMMICH_ENV"
         chmod 600 "$_IMMICH_ENV" 2>/dev/null || true
     else
@@ -4253,6 +4270,10 @@ EOF
         )
     fi
 
+    if (( kept )); then
+        ok "Kept - nothing changed."
+        return 0
+    fi
     ok "Config saved."
     echo "    Photos:   $upload_loc"
     echo "    Database: $db_loc"

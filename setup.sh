@@ -210,7 +210,7 @@ _svc_power_body() { # action quoted-container-word
         *) return 1 ;;
     esac
     printf '%s\n' "c=$2" \
-        "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }" \
+        "$(_svc_sudo_guard)" \
         "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
         "sudo docker inspect \"\$c\" >/dev/null 2>&1 || { echo \"no such container: \$c\" >&2; exit 3; }" \
         "sudo docker update --restart=$p \"\$c\" >/dev/null || { echo \"\$c: could not set restart policy $p\" >&2; exit 4; }" \
@@ -218,6 +218,8 @@ _svc_power_body() { # action quoted-container-word
         "s=\$(sudo docker inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' \"\$c\" 2>/dev/null)" \
         "[ \"\$s\" = \"$run $p\" ] || { echo \"\$c: expected '$run $p', found '\$s'\" >&2; exit 6; }"
 }
+# The sudo-refused guard both bodies start with (exit 7), one text for both.
+_svc_sudo_guard() { echo "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }"; }
 # Same rule for every container on the host: start and stop = all (incl. exited
 # ones, so a stopped-on-its-own unless-stopped container gets restart=no and
 # stays down after a daemon start); restart = the running ones only. Standalone ones (adguard, syncthing) are
@@ -226,7 +228,7 @@ _svc_power_all_body() { # action
     local list="docker ps -a --format '{{.Names}}'"
     [[ "$1" == restart ]] && list="docker ps --format '{{.Names}}'"
     printf '%s\n' \
-        "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }" \
+        "$(_svc_sudo_guard)" \
         "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
         "rc=0; for n in \$(sudo $list); do (" \
         "$(_svc_power_body "$1" '"$n"')" \
@@ -7407,7 +7409,7 @@ _smb_summary_render() { # summary-line [devices-lines]   (the (s) Status section
 # Full status block for the submenu (folders from the saved list, so a down
 # container still shows what it should be sharing).
 _smb_status() {
-    local st i c pol fw sess ip name
+    local st i c pol fw sess shares since name
     echo ""
     echo -e "  ${BOLD}File sharing (SMB)${NC}"
     st=$(_ps_autostart sudo docker 2>/dev/null | sed -n 's/^samba|//p' | head -1)
@@ -7437,8 +7439,8 @@ _smb_status() {
     if [[ -z "$sess" ]]; then
         echo -e "      ${DIM}nobody right now (an iPhone drops idle connections: none = no recent use)${NC}"
     else
-        while IFS='|' read -r name c ip; do
-            echo -e "      $name  ${DIM}opened: $c  since $ip${NC}"
+        while IFS='|' read -r name shares since; do
+            echo -e "      $name  ${DIM}opened: $shares  since $since${NC}"
         done <<<"$sess"
     fi
 }

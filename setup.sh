@@ -1303,23 +1303,23 @@ _storage_mount_source() {
 # stub at the mount point that passes `mountpoint -q` even when the actual disk
 # never mounted (wrong/duplicate fstab UUID, hot-unplug). Docker then fails with
 # "no such device" and silently creates empty dirs on the system disk that look
-# like data loss. Only /mnt/* paths are guarded - internal /home paths never
-# need a separate mount. The mount point (first two components, /mnt/data) goes
-# to _drive_verdict: ok or empty (a fresh drive) starts; anything else, and "no
-# findmnt to ask", refuses. Returns 0 if safe to start, 1 (with guidance) if not.
+# like data loss. Only paths under _DRIVE_ROOTS (/mnt, /media, /run/media) are
+# guarded - internal /home paths never need a separate mount. The nearest EXISTING
+# ancestor of the path goes to _dest_drive_verdict (so /mnt/data/media and
+# /media/<user>/<drive>/music both work): ok or empty (a fresh drive) passes; anything
+# else, and "no findmnt to ask", refuses. Used before a service starts and before a
+# storage path change creates a folder. Returns 0 if safe, 1 (with guidance) if not.
 _require_data_mount() {
-    local path="$1"
-    [[ "$path" == /mnt/* ]] || return 0
-    # Mount point is the first two components, e.g. /mnt/data.
-    local mp v; mp="/$(echo "${path#/}" | cut -d/ -f1-2)"
-    v=$(_drive_verdict "$mp")
-    case "$v" in ok|empty) return 0 ;; esac
+    local path="$1" mp v
+    v=$(_dest_drive_verdict "$path")
+    [[ "$v" == ok ]] && return 0
+    mp=$(_drive_mount_point "$path")
     if [[ "$v" == unknown ]]; then
-        fail "Cannot check whether the data drive is mounted at $mp (findmnt is missing) - not starting."
+        fail "Cannot check whether the data drive is mounted at $mp (findmnt is missing) - refusing."
     else
         fail "Data drive is not mounted at $mp (check: $v)."
     fi
-    info "Services bind-mount your photos/music/files from here. Starting now"
+    info "Services bind-mount your photos/music/files from here. Using it now"
     info "would fail with 'no such device' and create empty folders on the"
     info "system disk that look like data loss."
     info "Fix it: ${BOLD}federver → 11 → 2${NC} (Mount USB drive), then retry."
@@ -1394,18 +1394,18 @@ _storage_status() {
     echo -e "  ${BOLD}Disk usage${NC}"
     df -h 2>/dev/null | awk 'NR==1 || ($1 ~ /^\/dev\// && $1 !~ /loop/ && !seen[$1]++){mp=$6; for(i=7;i<=NF;i++) mp=mp" "$i; printf "    %-22s %6s %6s %6s %5s  %s\n",$1,$2,$3,$4,$5,mp}'
 
-    # Flag any /mnt/* data path whose drive isn't actually mounted — an autofs
-    # stub or unmounted point that would make services die with "no such device"
-    # while everything above still looks fine.
+    # Flag any data path under a drive root (/mnt, /media, /run/media) whose drive
+    # isn't actually mounted — an autofs stub or unmounted point that would make
+    # services die with "no such device" while everything above still looks fine.
     local p mp seen_mp=""
     for p in "$data_path" "$media_path" "$immich_path"; do
-        [[ "$p" == /mnt/* ]] || continue
-        mp="/$(echo "${p#/}" | cut -d/ -f1-2)"
+        [[ -n "$p" ]] || continue
+        local v; v=$(_dest_drive_verdict "$p")
+        [[ "$v" == ok ]] && continue
+        mp=$(_drive_mount_point "$p")
         case " $seen_mp " in *" $mp "*) continue ;; esac
         seen_mp+=" $mp"
-        local v; v=$(_drive_verdict "$mp")
         case "$v" in
-            ok|empty) ;;
             unknown)
                 echo ""
                 warn "Cannot check whether $mp is mounted (findmnt is missing)." ;;
@@ -1739,15 +1739,20 @@ _install_smart_playlists() {
     return 0
 }
 
-_storage_change_music() {
+# Change one data folder: _storage_change KEY LABEL APP SERVICE PURPOSE [HOOK]. Asks for
+# the new path, refuses it (before any mkdir) when it is under a drive root but that
+# drive is not mounted (_require_data_mount), offers to create it, writes KEY to .env,
+# runs HOOK (e.g. re-installing the smart playlists into the new folder) and recreates
+# the compose SERVICE so it mounts the new folder.
+_storage_change() {
+    local key="$1" label="$2" app="$3" service="$4" purpose="$5" hook="${6:-}" cur new_path
     echo ""
-    local MUSIC_LOCATION
-    MUSIC_LOCATION=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env")
+    cur=$(_env_get "$key" "$SCRIPT_DIR/.env")
 
-    info "Current music location: ${MUSIC_LOCATION:-not set}"
-    info "Used by: Navidrome (music streaming)"
+    info "Current $label location: ${cur:-not set}"
+    info "Used by: $app ($purpose)"
     echo ""
-    read -p "  New music path: " new_path
+    read -p "  New $label path: " new_path
 
     if [[ -z "$new_path" ]]; then
         fail "Path is required."
@@ -1755,6 +1760,8 @@ _storage_change_music() {
     fi
 
     new_path="${new_path/#\~/$HOME}"
+
+    _require_data_mount "$new_path" || return 1
 
     if [[ ! -d "$new_path" ]]; then
         read -p "  '$new_path' doesn't exist. Create it? [Y/n] " -n 1 -r
@@ -1767,59 +1774,23 @@ _storage_change_music() {
         ok "Created $new_path"
     fi
 
-    _set_env "MUSIC_LOCATION" "$new_path" "$SCRIPT_DIR/.env"
-    ok "Updated .env: MUSIC_LOCATION=$new_path"
+    _set_env "$key" "$new_path" "$SCRIPT_DIR/.env"
+    ok "Updated .env: $key=$new_path"
 
-    # Re-install smart playlists into the new folder before Navidrome restarts
-    # (they live inside the music folder, so a moved folder loses them).
-    _install_smart_playlists
+    [[ -z "$hook" ]] || "$hook"
 
     echo ""
-    info "Redeploying Navidrome..."
+    info "Redeploying $app..."
     cd "$SCRIPT_DIR"
-    sg docker -c "docker compose up -d --force-recreate navidrome" 2>&1 | grep -v "^$"
+    sg docker -c "docker compose up -d --force-recreate $service" 2>&1 | grep -v "^$"
 
-    ok "Done. Navidrome now uses: $new_path"
+    ok "Done. $app now uses: $new_path"
 }
 
-_storage_change_files() {
-    echo ""
-    local FILES_LOCATION
-    FILES_LOCATION=$(_env_get FILES_LOCATION "$SCRIPT_DIR/.env")
-
-    info "Current files location: ${FILES_LOCATION:-not set}"
-    info "Used by: FileBrowser (upload/manage)"
-    echo ""
-    read -p "  New files path: " new_path
-
-    if [[ -z "$new_path" ]]; then
-        fail "Path is required."
-        return 1
-    fi
-
-    new_path="${new_path/#\~/$HOME}"
-
-    if [[ ! -d "$new_path" ]]; then
-        read -p "  '$new_path' doesn't exist. Create it? [Y/n] " -n 1 -r
-        echo ""
-        if [[ $REPLY =~ ^[Nn]$ ]]; then
-            return
-        fi
-        sudo mkdir -p "$new_path"
-        sudo chown "$USER:$USER" "$new_path"
-        ok "Created $new_path"
-    fi
-
-    _set_env "FILES_LOCATION" "$new_path" "$SCRIPT_DIR/.env"
-    ok "Updated .env: FILES_LOCATION=$new_path"
-
-    echo ""
-    info "Redeploying FileBrowser..."
-    cd "$SCRIPT_DIR"
-    sg docker -c "docker compose up -d --force-recreate filebrowser" 2>&1 | grep -v "^$"
-
-    ok "Done. FileBrowser now uses: $new_path"
-}
+# Re-installs the smart playlists into the new music folder before Navidrome restarts
+# (they live inside the music folder, so a moved folder loses them).
+_storage_change_music() { _storage_change MUSIC_LOCATION music Navidrome navidrome "music streaming" _install_smart_playlists; }
+_storage_change_files() { _storage_change FILES_LOCATION files FileBrowser filebrowser "upload/manage"; }
 
 _storage_change_immich() {
     echo ""
@@ -1842,6 +1813,8 @@ _storage_change_immich() {
     fi
 
     new_base="${new_base/#\~/$HOME}"
+
+    _require_data_mount "$new_base" || return 1
 
     local new_upload="${new_base}/upload"
     local new_db="${new_base}/postgres"
@@ -2123,7 +2096,7 @@ _picker_data_guard() { # navidrome|filebrowser|all
         filebrowser|all) var=FILES_LOCATION; def=$(_data_defaults FILES_LOCATION) ;;
         *) return 0 ;;
     esac
-    ssh "$SERVER_USER@$SERVER_IP" "$(declare -p GREEN RED YELLOW BOLD DIM NC _DRIVE_ROOTS; declare -f _env_get _drive_verdict _require_data_mount fail info); p=\$(_env_get $var \"\$HOME/privcloud/.env\" 2>/dev/null); _require_data_mount \"\${p:-$def}\""
+    ssh "$SERVER_USER@$SERVER_IP" "$(declare -p GREEN RED YELLOW BOLD DIM NC _DRIVE_ROOTS; declare -f _env_get _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _require_data_mount fail info); p=\$(_env_get $var \"\$HOME/privcloud/.env\" 2>/dev/null); _require_data_mount \"\${p:-$def}\""
 }
 
 # Unified service picker: shows laptop services + server containers in one
@@ -4466,7 +4439,7 @@ step_immich_backup_once() {
         return 1
     fi
 
-    local dv; dv=$(_backup_dest_verdict "$dest")
+    local dv; dv=$(_dest_drive_verdict "$dest")
     if [[ "$dv" != ok ]]; then
         fail "Backup SKIPPED - destination $dest is not on a mounted drive ($dv), nothing written"
         return 1
@@ -4999,22 +4972,6 @@ _immich_backup_conf() {
     printf 'REPO_DIR=%s\nBACKUP_DIR=%s\nRETENTION_DAYS=%s\n' "$(_env_quote "$1")" "$(_env_quote "$2")" "$3"
 }
 
-# _backup_dest_verdict <dir> prints ok when a backup may write to <dir>, else the _drive_verdict
-# word (unmounted, unknown, ...) of the mount it would land on. Under _DRIVE_ROOTS the nearest
-# EXISTING ancestor must be on a real mount (ok, or empty = a fresh drive), so an unplugged
-# drive's folder is refused instead of filling the system disk; a root itself has no mount
-# below it. A destination outside _DRIVE_ROOTS is the user's explicit choice: ok.
-_backup_dest_verdict() {
-    local d=$1 r a v drive=""
-    for r in $_DRIVE_ROOTS; do [[ "$d" == "$r"/* ]] && drive=1; done
-    [[ -n "$drive" ]] || { echo ok; return 0; }
-    a=$d
-    while [[ ! -e "$a" ]]; do a=$(dirname -- "$a"); done
-    for r in $_DRIVE_ROOTS; do [[ "$a" == "$r" ]] && { echo unmounted; return 0; }; done
-    v=$(_drive_verdict "$a")
-    case $v in ok|empty) echo ok ;; *) echo "$v" ;; esac
-}
-
 # Print the backup script (stdout). $1 = config file path, $2 = log file path (both baked with
 # %q; every other value is read at run time). The drive check and the .env reader are the
 # same functions setup.sh uses, shipped with declare -f.
@@ -5022,7 +4979,7 @@ _immich_backup_script() {
     printf '#!/bin/bash\n# Format: 2\nCONF=%q\nLOG=%q\n' "$1" "$2"
     declare -p _DRIVE_ROOTS
     printf 'EXCLUDES=(%s)\n' "$(printf '%q ' "${_IMMICH_EXCLUDES[@]}")"
-    declare -f _drive_verdict _backup_dest_verdict _env_get
+    declare -f _drive_verdict _existing_ancestor _dest_drive_verdict _env_get
     cat <<'BACKUPEOF'
 # Full Immich backup: database (online pg_dump) + photo originals (live rsync).
 # Neither step stops the stack: pg_dumpall is transactionally consistent and
@@ -5070,7 +5027,7 @@ if [ "$once" = 0 ]; then
 fi
 # Never write a photo library onto the system disk because the drive is unplugged.
 if [ -n "$BACKUP_DIR" ]; then
-    v=$(_backup_dest_verdict "$BACKUP_DIR")
+    v=$(_dest_drive_verdict "$BACKUP_DIR")
     if [ "$v" != ok ]; then
         echo "$(date): Backup SKIPPED - destination $BACKUP_DIR is not on a mounted drive ($v), nothing written"
         rc=5; finish
@@ -6057,6 +6014,54 @@ _drive_verdict() {
         [[ "$i" == 3 ]] || sleep 1
     done
     echo "$v"
+}
+
+# _existing_ancestor <path> prints <path>, or its nearest parent that exists. Plain string
+# work (no dirname, so it also runs where only a few tools are on PATH); a relative path
+# ends at ., an absolute one at /.
+_existing_ancestor() {
+    local a=$1
+    while [[ ! -e "$a" ]]; do
+        if [[ "$a" == */* ]]; then a=${a%/*}; [[ -n "$a" ]] || a=/; else a=.; fi
+    done
+    printf '%s\n' "$a"
+}
+
+# _dest_drive_verdict <path> prints ok when something may be written under <path> (a backup
+# destination, a new storage folder, a data path a service mounts), else the _drive_verdict
+# word (unmounted, unknown, ...) of the mount it would land on. Under _DRIVE_ROOTS the nearest
+# EXISTING ancestor must be on a real mount (ok, or empty = a fresh drive), so an unplugged
+# drive's folder is refused instead of filling the system disk; a root itself has no mount
+# below it. A path outside _DRIVE_ROOTS is the user's explicit choice: ok.
+_dest_drive_verdict() {
+    local d=$1 r a v drive=""
+    for r in $_DRIVE_ROOTS; do [[ "$d" == "$r"/* ]] && drive=1; done
+    [[ -n "$drive" ]] || { echo ok; return 0; }
+    a=$(_existing_ancestor "$d")
+    for r in $_DRIVE_ROOTS; do [[ "$a" == "$r" ]] && { echo unmounted; return 0; }; done
+    v=$(_drive_verdict "$a")
+    case $v in ok|empty) echo ok ;; *) echo "$v" ;; esac
+}
+
+# _drive_mount_point <path> prints the mount point <path> belongs to, for messages. A real
+# mount (findmnt: not /, SOURCE a /dev device) at the nearest existing ancestor is named
+# as it is; when nothing is mounted there it names where the drive would mount: /mnt/<name>,
+# or <root>/<user>/<name> under /media and /run/media. A path outside _DRIVE_ROOTS: itself.
+_drive_mount_point() {
+    local p=$1 a r t="" s="" n rest
+    a=$(_existing_ancestor "$p")
+    if command -v findmnt >/dev/null; then
+        t=$(findmnt -n -o TARGET -T "$a" 2>/dev/null) || t=""
+        s=$(findmnt -n -o SOURCE -T "$a" 2>/dev/null) || s=""
+        if [[ -n "$t" && "$t" != / && "$s" == /dev/* ]]; then echo "$t"; return 0; fi
+    fi
+    for r in $_DRIVE_ROOTS; do
+        [[ "$p" == "$r"/* ]] || continue
+        rest=${p#"$r"/}
+        n=2; [[ "$r" == */mnt ]] && n=1
+        echo "$r/$(cut -d/ -f1-$n <<<"$rest")"; return 0
+    done
+    echo "$p"
 }
 
 # Source guard: _mirror_guard <local|localsudo|server|sudo> <path>. rc 0 = safe to mirror.

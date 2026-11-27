@@ -15,7 +15,7 @@ T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin"
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
-for f in ok fail info warn _env_get _mirror_guard _smb_folder_check _smb_folder_reason _require_data_mount _storage_status _pick_backup_default; do
+for f in ok fail info warn _env_get _mirror_guard _smb_folder_check _smb_folder_reason _require_data_mount _existing_ancestor _dest_drive_verdict _drive_mount_point _storage_status _pick_backup_default; do
   extract_fn "$f" "$SRC"; done > "$T/fn.sh"
 extract_fn _drive_verdict "$SRC" >> "$T/fn.sh"; grep -E '^_DRIVE_ROOTS=' "$SRC" >> "$T/fn.sh"
 sed -i "s#/run/media/\*/\* /media/\*/\* /mnt/\*#$T/mnt/*#" "$T/fn.sh"   # candidate glob -> sandbox
@@ -44,13 +44,10 @@ p="${@: -1}"
 case "$p" in "$SRC_DIR"*) echo "Filesystem 1K Used Avail Use% Mounted"; echo "/dev/nvme0n1p2 100 1 100 1% /" ;;
   *) echo "Filesystem 1K Used Avail Use% Mounted"; echo "/dev/sdb1 9000 1 5000 1% /x" ;; esac
 X
-# ls answers for the fake data-drive mount point /mnt/data (which cannot exist in a sandbox):
-# LS_DATA = files | empty | missing; everything else is the real ls.
+# ls: the real one (the poke test below wraps it to log its arguments).
 REAL_LS=$(command -v ls)
 cat > "$T/bin/ls" <<X
 #!/bin/bash
-case "\$*" in *"/mnt/data"*)
-  case "\${LS_DATA:-files}" in files) echo lost+found; exit 0 ;; empty) exit 0 ;; missing) exit 2 ;; esac ;; esac
 exec $REAL_LS "\$@"
 X
 chmod +x "$T/bin/"*
@@ -62,7 +59,10 @@ export PATH="$T/bin:$PATH" FM_ROOT="$T/mnt/usb" SRC_DIR="$T/src"
 mkdir -p "$T/mnt/usb/data" "$T/mnt/usb/empty" "$T/src"; echo f > "$T/mnt/usb/data/f"
 D=$T/mnt/usb/data; E=$T/mnt/usb/empty; M=$T/mnt/usb/nope
 CHECK_DIAG='got=$GOT'
-_DRIVE_ROOTS="$T/mnt /mnt"   # the sandbox stands in for /mnt; the real /mnt is for the fake data-drive mount point (production value: R)
+DROOT=$T/x/mnt; DATA=$DROOT/data   # the fake data drive: a folder under its own drive root, its state set by setdata
+setdata() { rm -rf "$DATA"; case "$1" in files) mkdir -p "$DATA"; echo f > "$DATA/f" ;; empty) mkdir -p "$DATA" ;; esac; }   # files | empty | missing
+setdata files
+_DRIVE_ROOTS="$T/mnt $DROOT"   # the sandbox stands in for /mnt (production value: R)
 
 # ── P  pins: today's answers, per member and per case ───────────────────────
 # mirror (_mirror_guard -> its reason text; it asks _drive_verdict)
@@ -90,33 +90,40 @@ mkdir -p "$T/media/u/USB"; echo f > "$T/media/u/USB/f"
 GOT=$(_DRIVE_ROOTS="$T/mnt $T/media" sv bare "$T/media/u/USB"); check P2h "smb: a /media-style root is now mount-checked: bare folder, drive unplugged -> unmounted (was ok before the merge)" '[ "$GOT" = unmounted ]'
 check P2i "smb: refusal wording for each check result" '[ "$(_smb_folder_reason unmounted)" = "drive not mounted" ] && [ "$(_smb_folder_reason missing)" = "folder missing" ] && [ -z "$(_smb_folder_reason ok)" ] && [[ "$(_smb_folder_reason unknown)" == *"cannot check"* ]]'
 
-# start guard (_require_data_mount: /mnt/* only; exact mount point, no existence check)
-rq() { FM_MODE=$1 FM_ROOT=/mnt/data LS_DATA=${2:-files} _require_data_mount "${3:-/mnt/data/media}" >/dev/null 2>&1; echo $?; }
+# start guard (_require_data_mount: paths under a drive root; the nearest existing ancestor is asked)
+rq() { setdata ${2:-files}; FM_MODE=$1 FM_ROOT=$DATA _require_data_mount "${3:-$DATA/media}" >/dev/null 2>&1; echo $?; }
 GOT=$(rq ok);        check P3a "start guard: real mount -> allowed (rc 0)" '[ "$GOT" = 0 ]'
 GOT=$(rq stub);      check P3b "start guard: autofs stub -> refused" '[ "$GOT" = 1 ]'
 GOT=$(rq none);      check P3c "start guard: nothing mounted -> refused" '[ "$GOT" = 1 ]'
 GOT=$(rq bare);      check P3d "start guard: bare folder -> refused" '[ "$GOT" = 1 ]'
-GOT=$(env PATH="$T/lsonly" "$(command -v bash)" -c "source $T/fn.sh; _require_data_mount /mnt/data >/dev/null 2>&1; echo \$?")
+GOT=$(env PATH="$T/lsonly" "$(command -v bash)" -c "source $T/fn.sh; _DRIVE_ROOTS=\"$T/mnt $DROOT\"; _require_data_mount $DATA >/dev/null 2>&1; echo \$?")
 check P3e "start guard: findmnt absent -> refused" '[ "$GOT" = 1 ]'
 GOT=$(rq none files /home/x/data); check P3f "start guard: a path outside /mnt is not guarded -> allowed" '[ "$GOT" = 0 ]'
 GOT=$(rq ok missing); check P3h "start guard: real mount but the mount point cannot be listed (gone) -> refused (new: the verdict also checks the folder exists)" '[ "$GOT" = 1 ]'
 GOT=$(rq ok empty);   check P3i "start guard: freshly formatted (empty) drive on a real mount -> allowed" '[ "$GOT" = 0 ]'
-OUT=$(env PATH="$T/lsonly" "$(command -v bash)" -c "source $T/fn.sh; BOLD=; NC=; fail() { echo \"\$*\"; }; info() { :; }; _require_data_mount /mnt/data"); check P3j "start guard: findmnt absent says it cannot check (not a wrong 'not mounted')" '[[ "$OUT" == *"Cannot check"*"findmnt is missing"* && "$OUT" != *"not mounted"* ]]'
-OUT=$(FM_MODE=stub _require_data_mount /mnt/data 2>&1); check P3g "start guard: refusal names the mount point and says not mounted" '[[ "$OUT" == *"not mounted at /mnt/data"* ]]'
+OUT=$(env PATH="$T/lsonly" "$(command -v bash)" -c "source $T/fn.sh; BOLD=; NC=; fail() { echo \"\$*\"; }; info() { :; }; _DRIVE_ROOTS=\"$T/mnt $DROOT\"; _require_data_mount $DATA"); check P3j "start guard: findmnt absent says it cannot check (not a wrong 'not mounted')" '[[ "$OUT" == *"Cannot check"*"findmnt is missing"* && "$OUT" != *"not mounted"* ]]'
+setdata files; OUT=$(FM_MODE=stub _require_data_mount $DATA 2>&1); check P3g "start guard: refusal names the mount point and says not mounted" '[[ "$OUT" == *"not mounted at $DATA"* ]]'
 
 # Storage -> Status block (_storage_status warns for each /mnt/* data path not on a real device)
 mkdir -p "$T/sd"; SCRIPT_DIR=$T/sd
-printf 'FILES_LOCATION=/mnt/data\nMUSIC_LOCATION=/mnt/data/media\nUPLOAD_LOCATION=/mnt/data/immich\nDB_DATA_LOCATION=/home/x/db\n' > "$T/sd/.env"
-st() { FM_MODE=$1 FM_ROOT=/mnt/data LS_DATA=${2:-files} _storage_status 2>&1; }
+printf 'FILES_LOCATION=%s\nMUSIC_LOCATION=%s/media\nUPLOAD_LOCATION=%s/immich\nDB_DATA_LOCATION=/home/x/db\n' "$DATA" "$DATA" "$DATA" > "$T/sd/.env"
+st() { setdata ${2:-files}; FM_MODE=$1 FM_ROOT=$DATA _storage_status 2>&1; }
 OUT=$(st ok);   check P4a "status: real mount -> no warning" '[[ "$OUT" != *"NOT mounted"* ]]'
-OUT=$(st stub); check P4b "status: autofs stub -> warns once for /mnt/data" '[[ "$OUT" == *"/mnt/data is NOT mounted"* ]] && [ "$(grep -c "NOT mounted" <<<"$OUT")" = 1 ]'
-OUT=$(st none); check P4c "status: nothing mounted -> warns" '[[ "$OUT" == *"/mnt/data is NOT mounted"* ]]'
-OUT=$(st bare); check P4d "status: bare folder -> warns" '[[ "$OUT" == *"/mnt/data is NOT mounted"* ]]'
-OUT=$(env PATH="$T/lsonly" FM_MODE=ok "$(command -v bash)" -c "source $T/fn.sh; BOLD=; NC=; DIM=; RED=; YELLOW=; _storage_check_fstab_options() { :; }; SCRIPT_DIR=$T/sd; _storage_status" 2>&1)
-check P4e "status: findmnt absent -> a plain 'cannot check' warning (no false NOT mounted claim)" '[[ "$OUT" == *"Cannot check whether /mnt/data is mounted"* && "$OUT" != *"NOT mounted"* ]]'
+OUT=$(st stub); check P4b "status: autofs stub -> warns once for the data mount point" '[[ "$OUT" == *"$DATA is NOT mounted"* ]] && [ "$(grep -c "NOT mounted" <<<"$OUT")" = 1 ]'
+OUT=$(st none); check P4c "status: nothing mounted -> warns" '[[ "$OUT" == *"$DATA is NOT mounted"* ]]'
+OUT=$(st bare); check P4d "status: bare folder -> warns" '[[ "$OUT" == *"$DATA is NOT mounted"* ]]'
+OUT=$(env PATH="$T/lsonly" FM_MODE=ok "$(command -v bash)" -c "source $T/fn.sh; BOLD=; NC=; DIM=; RED=; YELLOW=; _storage_check_fstab_options() { :; }; SCRIPT_DIR=$T/sd; _DRIVE_ROOTS=\"$T/mnt $DROOT\"; _storage_status" 2>&1)
+check P4e "status: findmnt absent -> a plain 'cannot check' warning (no false NOT mounted claim)" '[[ "$OUT" == *"Cannot check whether $DATA is mounted"* && "$OUT" != *"NOT mounted"* ]]'
 
 OUT=$(st ok empty);   check P4f "status: empty drive on a real mount -> no warning" '[[ "$OUT" != *"NOT mounted"* && "$OUT" != *"Cannot check"* ]]'
-OUT=$(st ok missing); check P4g "status: mount point cannot be listed -> NOT mounted" '[[ "$OUT" == *"/mnt/data is NOT mounted"* ]]'
+OUT=$(st ok missing); check P4g "status: mount point cannot be listed -> NOT mounted" '[[ "$OUT" == *"$DATA is NOT mounted"* ]]'
+# a /media/<user>/<drive> path (not only /mnt/<x>): the walk-up finds the drive folder; named once for two paths on it
+mkdir -p "$T/media/u/USB/photos" "$T/media/u/USB/music"; echo f > "$T/media/u/USB/photos/f"
+printf 'FILES_LOCATION=%s/media/u/USB/photos\nMUSIC_LOCATION=%s/media/u/USB/music\nUPLOAD_LOCATION=/home/x/u\nDB_DATA_LOCATION=/home/x/db\n' "$T" "$T" > "$T/sd/.env"
+mst() { FM_MODE=$1 FM_ROOT=$T/media/u/USB _DRIVE_ROOTS="$T/mnt $T/media" _storage_status 2>&1; }
+OUT=$(mst bare); check P4h "status: a /media/<user>/<drive> path on an unplugged drive -> NOT mounted, drive named, warned once for two paths" '[[ "$OUT" == *"$T/media/u/USB is NOT mounted"* ]] && [ "$(grep -c "NOT mounted" <<<"$OUT")" = 1 ]'
+OUT=$(mst ok);   check P4i "status: the same paths with the drive mounted -> no warning" '[[ "$OUT" != *"NOT mounted"* ]]'
+printf 'FILES_LOCATION=%s\nMUSIC_LOCATION=%s/media\nUPLOAD_LOCATION=%s/immich\nDB_DATA_LOCATION=/home/x/db\n' "$DATA" "$DATA" "$DATA" > "$T/sd/.env"
 
 # backup default (_pick_backup_default: candidate must be a dir the verdict calls ok or empty)
 bd() { FM_MODE=$1 _pick_backup_default "$SRC_DIR"; }
@@ -131,27 +138,27 @@ mkdir -p "$T/mnt/usb/data" "$T/mnt/usb/empty"; echo f > "$T/mnt/usb/data/f"   # 
 # ── A  acceptance: one verdict for one fixture, whoever asks ───────────────
 # Mirror, SMB, the start guard, Storage Status and the backup default each get the
 # same fixture (drive state x folder state) and must accept or refuse as the one
-# verdict says. The first four ask about /mnt/data (faked by the ls stub: LS_DATA);
+# verdict says. The first four ask about the data folder $DATA (its state set by setdata);
 # the backup default lists the sandbox drive $T/mnt/usb in the same state.
 cat > "$T/acc.sh" <<X
 source $T/fn.sh
-_DRIVE_ROOTS="$T/mnt /mnt"
+_DRIVE_ROOTS="$T/mnt $DROOT"
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; NC=; SCRIPT_DIR=$T/sd
 _storage_check_fstab_options() { :; }
-printf 'FILES_LOCATION=/mnt/data\nMUSIC_LOCATION=/home/x/m\nUPLOAD_LOCATION=/home/x/u\nDB_DATA_LOCATION=/home/x/db\n' > $T/sd/.env
-v=\$(_drive_verdict /mnt/data)
-m=refuse; _mirror_guard local /mnt/data && m=accept
-c=\$(_smb_folder_check /mnt/data); sm=refuse; [ "\$c" = ok ] && sm=accept
-g=accept; _require_data_mount /mnt/data/media >/dev/null 2>&1 || g=refuse
+printf 'FILES_LOCATION=$DATA\nMUSIC_LOCATION=/home/x/m\nUPLOAD_LOCATION=/home/x/u\nDB_DATA_LOCATION=/home/x/db\n' > $T/sd/.env
+v=\$(_drive_verdict $DATA)
+m=refuse; _mirror_guard local $DATA && m=accept
+c=\$(_smb_folder_check $DATA); sm=refuse; [ "\$c" = ok ] && sm=accept
+g=accept; _require_data_mount $DATA/media >/dev/null 2>&1 || g=refuse
 o=\$(_storage_status 2>&1); st=accept; case "\$o" in *"NOT mounted"*|*"Cannot check"*) st=refuse;; esac
 b=\$(_pick_backup_default $SRC_DIR); bd=refuse; [ -n "\$b" ] && bd=accept
 echo "verdict=\$v mirror=\$m smb=\$sm start=\$g status=\$st backup=\$bd"
 X
 fixture() { # fm-mode ls-state -> the summary line (findmnt-less when mode is "nofm")
-  rm -rf "$T/mnt/usb"
+  rm -rf "$T/mnt/usb"; setdata "$2"
   case "$2" in files) mkdir -p "$T/mnt/usb"; echo f > "$T/mnt/usb/f" ;; empty) mkdir -p "$T/mnt/usb" ;; esac
-  if [ "$1" = nofm ]; then LS_DATA=$2 env PATH="$T/lsonly" "$(command -v bash)" "$T/acc.sh" 2>&1 | tail -1
-  else LS_DATA=$2 FM_MODE=$1 FM_ROOT=/mnt/data bash "$T/acc.sh" 2>&1 | tail -1; fi
+  if [ "$1" = nofm ]; then env PATH="$T/lsonly" "$(command -v bash)" "$T/acc.sh" 2>&1 | tail -1
+  else FM_MODE=$1 FM_ROOT=$DATA bash "$T/acc.sh" 2>&1 | tail -1; fi
 }
 GOT=$(fixture ok files);   check A1 "real mount, files: ok -> everyone accepts" '[ "$GOT" = "verdict=ok mirror=accept smb=accept start=accept status=accept backup=accept" ]'
 GOT=$(fixture ok empty);   check A2 "real mount, empty folder: empty -> only the mirror refuses (it would wipe the destination)" '[ "$GOT" = "verdict=empty mirror=refuse smb=accept start=accept status=accept backup=accept" ]'
@@ -202,8 +209,6 @@ rm -f "$T/bin/findmnt"; stub_findmnt ok '$FM_ROOT' /dev/sdb1
 cat > "$T/bin/ls" <<X
 #!/bin/bash
 echo "\$*" >> "\$LS_LOG"
-case "\$*" in *"/mnt/data"*)
-  case "\${LS_DATA:-files}" in files) echo lost+found; exit 0 ;; empty) exit 0 ;; missing) exit 2 ;; esac ;; esac
 exec $REAL_LS "\$@"
 X
 chmod +x "$T/bin/ls"; export LS_LOG=$T/lslog; : > "$LS_LOG"

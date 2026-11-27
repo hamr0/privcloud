@@ -15,9 +15,11 @@ mkdir -p "$T/bin" "$T/repo" "$T/home" "$T/mnt"
 cd "$T" || exit 1
 export HOME=$T/home
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
-{ for f in ok fail info warn _env_get _env_quote _set_env _install_smart_playlists _storage_change_music _storage_change_files \
-           _storage_change_immich; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
+{ for f in ok fail info warn _env_get _env_quote _set_env _install_smart_playlists _storage_change _storage_change_music \
+           _storage_change_files _storage_change_immich _require_data_mount _drive_verdict _existing_ancestor _dest_drive_verdict \
+           _drive_mount_point; do extract_fn "$f" "$SRC"; done; grep -E '^_DRIVE_ROOTS=' "$SRC"; } > "$T/fn.sh"
 source "$T/fn.sh"
+_DRIVE_ROOTS="$T/mnt $T/media"   # the sandbox stands in for /mnt and /media (the production constant is only read, never changed)
 SCRIPT_DIR=$T/repo
 
 # sudo runs the command (chown is skipped: the sandbox user owns everything); sg logs the docker command.
@@ -113,6 +115,38 @@ printf '#RT=hidden\n' > "$T/rt3.env"; _set_env RT new "$T/rt3.env"
 check E7 "set_env leaves a commented-out line alone and appends the real one" '[ "$(head -1 "$T/rt3.env")" = "#RT=hidden" ] && [ "$(_env_get RT "$T/rt3.env")" = new ]'
 NLV=$'a\nb'; BOTHV="x #'\""
 check E8 "set_env refuses a newline and a value with both quote kinds, file untouched" '! _set_env RT "$NLV" "$T/rt3.env" >/dev/null 2>&1 && ! _set_env RT "$BOTHV" "$T/rt3.env" >/dev/null 2>&1 && [ "$(_env_get RT "$T/rt3.env")" = new ]'
+
+# ── S  storage-path changes refuse an unmounted drive before any mkdir ─────
+printf '#!/bin/bash\nexit 0\n' > "$T/bin/sleep"; chmod +x "$T/bin/sleep"
+stub_findmnt ok '$FM_ROOT' /dev/sdb1 bare / /dev/nvme0n1p2    # ok = a real drive; bare = a folder on the system disk
+export FM_ROOT=$T/mnt/usb
+mkdir -p "$T/mnt/usb/keep" "$T/media/u/DRV/keep"; echo f > "$T/mnt/usb/keep/f"; echo f > "$T/media/u/DRV/keep/f"
+resetenv() { printf 'MUSIC_LOCATION=/old/music\nFILES_LOCATION=/old/files\nUPLOAD_LOCATION=/old/up\nDB_DATA_LOCATION=/old/db\n' > "$T/repo/.env"; }; resetenv
+srun() { : > "$SG_LOG"; OUT=$(FM_MODE=$1 bash -c "source $T/fn.sh; _DRIVE_ROOTS=\"$T/mnt $T/media\"; SCRIPT_DIR=$T/repo; $2" <<<"$3" 2>&1); RC=$?; }
+CHECK_DIAG='rc=$RC out=${OUT:0:300}'
+untouched() { [ "$(_env_get MUSIC_LOCATION "$T/repo/.env")" = /old/music ] && [ "$(_env_get FILES_LOCATION "$T/repo/.env")" = /old/files ] \
+  && [ "$(_env_get UPLOAD_LOCATION "$T/repo/.env")" = /old/up ] && [ ! -s "$SG_LOG" ]; }
+srun bare _storage_change_music "$T/mnt/usb/music"$'\nY'
+check S1 "music: new folder on an unplugged drive -> refused before mkdir, .env and docker untouched" '[ $RC = 1 ] && [ ! -e "$T/mnt/usb/music" ] && [[ "$OUT" == *"not mounted"* ]] && untouched'
+srun bare _storage_change_files "$T/mnt/usb/files"$'\nY'
+check S2 "files: same refusal" '[ $RC = 1 ] && [ ! -e "$T/mnt/usb/files" ] && [[ "$OUT" == *"not mounted"* ]] && untouched'
+srun bare _storage_change_immich "$T/mnt/usb/imm"$'\nY'
+check S3 "immich: same refusal, before the Continue question and any mkdir" '[ $RC = 1 ] && [ ! -e "$T/mnt/usb/imm" ] && [[ "$OUT" == *"not mounted"* ]] && [[ "$OUT" != *"Continue"* ]] && untouched'
+srun ok _storage_change_music "$T/mnt/usb/music"$'\nY'
+check S4 "music: the same folder with the drive mounted -> created and written" '[ $RC = 0 ] && [ -d "$T/mnt/usb/music" ] && [ "$(_env_get MUSIC_LOCATION "$T/repo/.env")" = "$T/mnt/usb/music" ] && grep -q "force-recreate navidrome" "$SG_LOG"'
+rm -rf "$T/mnt/usb/music"; resetenv
+srun bare _storage_change_music "$T/media/u/DRV/keep/music"$'\nY'
+check S5 "a /media/<user>/<drive> path is checked too (drive unplugged -> refused, nothing created)" '[ $RC = 1 ] && [ ! -e "$T/media/u/DRV/keep/music" ] && [[ "$OUT" == *"not mounted at $T/media/u/DRV"* ]] && untouched'
+srun ok _storage_change_music "$T/media/u/DRV/keep/music"$'\nY'
+check S6 "a /media/<user>/<drive> path with the drive mounted -> created and written" '[ $RC = 0 ] && [ -d "$T/media/u/DRV/keep/music" ]'
+rm -rf "$T/media/u/DRV/keep/music"; resetenv
+srun bare _storage_change_music "$T/plain/outside"$'\nY'
+check S7 "a path outside the drive roots is the user's choice -> allowed whatever findmnt says" '[ $RC = 0 ] && [ -d "$T/plain/outside" ]'
+srun ok _storage_change_music "$T/mnt/gone/deep/music"$'\nY'
+check S8 "no drive folder at all under the root (nearest existing parent is the root itself) -> refused, nothing created" '[ $RC = 1 ] && [ ! -e "$T/mnt/gone" ]'
+srun bare '_require_data_mount "'"$T/mnt/usb/keep/x"'"' ''
+check S9 "refusal names the walked-up mount point of a /mnt path (the drive folder, not the file's folder)" '[[ "$OUT" == *"not mounted at $T/mnt/usb"* ]]'
+check S10 "_drive_mount_point: a real mount is named as findmnt reports it" '[ "$(FM_MODE=ok _drive_mount_point "$T/mnt/usb/keep/new")" = "$T/mnt/usb" ]'
 
 # ── D  data defaults: one table, equal to what step_deploy writes and .env.example holds ──
 DKEYS="FILES_LOCATION MEDIA_LOCATION MUSIC_LOCATION UPLOAD_LOCATION DB_DATA_LOCATION"

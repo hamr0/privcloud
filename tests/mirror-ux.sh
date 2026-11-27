@@ -125,5 +125,22 @@ RAW=$({ printf 'y\n'; sleep 3; } | timeout 10 script -qec "bash $T/ahead.sh prev
 check 7b "tty: 'y' typed ahead does not answer the y/N" '[[ "$RAW" == *"RC=1"* ]]'
 check 7c "pipe on stdin still answers (not flushed)" 'OUT=$(printf "y\n" | _mirror_preview local /s /d "$LIST" copy 2>&1); [ $? = 0 ]'
 
+# 8 Ctrl-C during the preview: dry run killed, no list file, nothing asked, rc 1, trap restored
+cat > "$T/intr.sh" <<X
+source "$T/fn.sh"
+_mirror_guard() { return 0; }
+_mirror_refuse() { :; }
+export XDG_STATE_HOME="$T/state"
+trap 'echo OLDTRAP' INT
+_mirror_preview local /s /d "echo 'del.|a'; sleep 31.7" copy
+echo "RC=\$?"
+trap -p INT
+X
+rm -rf "$T/state"
+RAW=$({ sleep 2; printf '\003'; sleep 2; } | timeout 15 script -qec "bash $T/intr.sh" /dev/null 2>&1; true)
+check 8a "Ctrl-C: 'Cancelled - nothing changed.' and rc 1" '[[ "$RAW" == *"Cancelled - nothing changed."* && "$RAW" == *"RC=1"* && "$RAW" != *"[y/N]"* ]]'
+check 8b "Ctrl-C: the dry run is killed and no list file is left" '! pgrep -f "sleep 31.7" >/dev/null && [ -z "$(ls "$T/state/federver"/*.txt 2>/dev/null)" ]'
+check 8c "Ctrl-C: the caller's own INT trap is restored" '[[ "$RAW" == *"trap -- '"'"'echo OLDTRAP'"'"' SIGINT"* ]]'
+
 echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
 [ "$FAILN" = 0 ]

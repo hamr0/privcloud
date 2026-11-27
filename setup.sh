@@ -5158,6 +5158,11 @@ _mirror_preview() {
         bash -c "$dry" > "$list" 2>&1 &
     fi
     pid=$!
+    # Ctrl-C: stop the dry run (it ignores SIGINT as a background job), drop the
+    # partial list, copy / save nothing. Trap is scoped to this wait.
+    local intr=0 oldtrap
+    oldtrap=$(trap -p INT)
+    trap 'intr=1; pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null' INT
     if [[ -t 1 ]]; then
         while kill -0 "$pid" 2>/dev/null; do
             sleep 1; t=$((t + 1))
@@ -5165,7 +5170,14 @@ _mirror_preview() {
         done
     fi
     wait "$pid" || rc=$?
+    (( intr )) && { wait "$pid" 2>/dev/null || true; }
+    if [[ -n "$oldtrap" ]]; then eval "$oldtrap"; else trap - INT; fi
     [[ -t 1 ]] && printf '\r\033[K'
+    if (( intr )); then
+        rm -f "$list"
+        echo ""; info "Cancelled - nothing changed."
+        return 1
+    fi
     if (( rc != 0 )); then
         rm -f "$list"
         fail "Could not preview the deletions (rsync exit $rc) - nothing changed."

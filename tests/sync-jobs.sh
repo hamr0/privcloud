@@ -204,4 +204,19 @@ run "2\ndelete\ny\ny" _sync_one_time_backup
 TR=$(grep 'rsync --server' "$SSH_LOG")
 check 5j "mirror preview (dry run) and the copy both use those ssh options" '[ "$(grep -c "rsync --server" "$SSH_LOG")" -ge 2 ] && ! grep "rsync --server" "$SSH_LOG" | grep -vq ConnectTimeout=8 && [ ! -e "$T/d/gone" ]'
 
+# ── 6  the deletion count shared by the preview and the unattended cap ────
+scan() { printf '%s\n' "$@" > "$T/list"; _mirror_scan "$T/list"; }
+scan "del.|a" "del.|sub/b" "del.|e/"
+check 6a "scan counts files and empty folders (not folders that hold deleted files)" '[ "$_mirror_nf" = 2 ] && [ "$_mirror_nd" = 1 ] && [ "$_mirror_nwhole" = 0 ] && ! _mirror_wipe_sized'
+scan "del.|d/x" "del.|d/y" "del.|d/"
+check 6b "a whole top-level folder is wipe-sized" '[ "$_mirror_nwhole" = 1 ] && _mirror_wipe_sized'
+MIRROR_WIPE_MIN=3
+scan "del.|a" "del.|b" "del.|c" "del.|d"
+check 6c "more than MIRROR_WIPE_MIN files is wipe-sized" '_mirror_wipe_sized'
+scan "del.|a" "del.|b" "del.|c"
+check 6d "exactly MIRROR_WIPE_MIN files is not" '! _mirror_wipe_sized'
+scan
+check 6e "an empty list counts nothing" '[ "$_mirror_nf" = 0 ] && [ "$_mirror_nd" = 0 ] && ! _mirror_wipe_sized'
+MIRROR_WIPE_MIN=1000
+
 check_total

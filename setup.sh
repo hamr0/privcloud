@@ -5187,6 +5187,39 @@ _mirror_dry_cmd() { _rsync_with "$1" "-n --delete --out-format='%o|%n'"; }
 # Same command with a flag after "rsync" (--delete, or the literal $DELFLAG).
 _rsync_with() { printf 'rsync %s %s' "$2" "${1#rsync }"; }
 
+# What a dry-run list (rsync --out-format='%o|%n') would delete, counted. Files are
+# listed by name; a directory counts only when no deleted file sits under it (those go
+# with their files) = an empty folder. One awk pass: totals, then one G line per
+# top-level folder (count, files, empty folders, whole-folder flag, name). A folder is
+# "whole" when its own "name/" entry is in the list (rsync prints it when the
+# directory goes entirely). Sets _mirror_nf (files), _mirror_nd (empty folders),
+# _mirror_nwhole (whole top-level folders) and _mirror_groups (the G lines).
+# The interactive preview and the unattended wipe cap both count with this.
+_mirror_scan() {  # list_file
+    local sum
+    sum=$(awk 'function top(x,   j) { j = index(x, "/"); return j ? substr(x, 1, j) : "(top level)" }
+        /^del\.\|/ { p = substr($0, 6)
+            if (p ~ /\/$/) { d[++nd] = p; next }
+            nf++; t = top(p); cnt[t]++; seen[t] = 1
+            while ((i = match(p, /\/[^\/]*$/)) > 0) { p = substr(p, 1, i - 1); if ((p "/") in has) break; has[p "/"] = 1 } }
+        END { for (i = 1; i <= nd; i++) { t = top(d[i]); seen[t] = 1
+                if (!(d[i] in has)) { ne++; em[t]++ }
+                if ((d[i] in has) && index(d[i], "/") == length(d[i])) whole[t] = 1 }
+              print "T", nf + 0, ne + 0
+              for (t in seen) { if (t in whole) nw++; printf "G %d %d %d %d %s\n", cnt[t] + em[t], cnt[t] + 0, em[t] + 0, (t in whole), t }
+              print "W", nw + 0 }' "$1")
+    read -r _ _mirror_nf _mirror_nd <<<"$(grep '^T ' <<<"$sum")"
+    read -r _ _mirror_nwhole <<<"$(grep '^W ' <<<"$sum")"
+    _mirror_groups=$(grep '^G ' <<<"$sum") || _mirror_groups=""
+}
+
+# After _mirror_scan: is the deletion wipe-sized (a whole top-level folder, or more
+# than MIRROR_WIPE_MIN files)? Interactive: the exact count must be typed. Unattended
+# job: skipped. rc 0 = wipe-sized.
+_mirror_wipe_sized() {
+    (( _mirror_nf + _mirror_nd > 0 && (_mirror_nwhole > 0 || _mirror_nf > MIRROR_WIPE_MIN) ))
+}
+
 # Guard + dry run + typed y/N. _mirror_preview <loc> <src> <dest-label> <dry-cmd> <copy|save>
 #   copy: prints the summary only; the caller asks later with _mirror_confirm
 #   save: scheduled job, asks "Save this job as mirror?" itself
@@ -5247,26 +5280,8 @@ _mirror_preview() {
         fail "Could not preview the deletions (rsync exit $rc) - nothing changed."
         return 1
     fi
-    # Files are listed by name; a directory counts only when no deleted file
-    # sits under it (those go with their files) = an empty folder.
-    # One awk pass over the list file: totals, then one G line per top-level
-    # folder (count, files, empty folders, whole-folder flag, name). A folder is
-    # "whole" when its own "name/" entry is in the list (rsync prints it when
-    # the directory goes entirely).
-    local sum nwhole
-    sum=$(awk 'function top(x,   j) { j = index(x, "/"); return j ? substr(x, 1, j) : "(top level)" }
-        /^del\.\|/ { p = substr($0, 6)
-            if (p ~ /\/$/) { d[++nd] = p; next }
-            nf++; t = top(p); cnt[t]++; seen[t] = 1
-            while ((i = match(p, /\/[^\/]*$/)) > 0) { p = substr(p, 1, i - 1); if ((p "/") in has) break; has[p "/"] = 1 } }
-        END { for (i = 1; i <= nd; i++) { t = top(d[i]); seen[t] = 1
-                if (!(d[i] in has)) { ne++; em[t]++ }
-                if ((d[i] in has) && index(d[i], "/") == length(d[i])) whole[t] = 1 }
-              print "T", nf + 0, ne + 0
-              for (t in seen) { if (t in whole) nw++; printf "G %d %d %d %d %s\n", cnt[t] + em[t], cnt[t] + 0, em[t] + 0, (t in whole), t }
-              print "W", nw + 0 }' "$list")
-    read -r _ nf nd <<<"$(grep '^T ' <<<"$sum")"
-    read -r _ nwhole <<<"$(grep '^W ' <<<"$sum")"
+    _mirror_scan "$list"
+    nf=$_mirror_nf; nd=$_mirror_nd
     _mirror_n=$((nf + nd))
     if (( _mirror_n == 0 )); then rm -f "$list"; else
         local old=()   # keep only the newest 5 lists
@@ -5295,7 +5310,7 @@ _mirror_preview() {
             (( _f > 0 && _e > 0 )) && line+=" (+ $_e empty folder$([[ $_e == 1 ]] || echo s))"
             (( _w )) && line+="  ← whole folder deleted"
             printf '    %s  %s\n' "$(sed 's/[[:cntrl:]]//g' <<<"$_name")" "$line"
-        done < <(grep '^G ' <<<"$sum" | sort -k2,2nr -k6)
+        done < <(sort -k2,2nr -k6 <<<"$_mirror_groups")
         (( ng > 5 )) && echo "    ... and $((ng - 5)) more folders"
         echo "  Full list: $list"
     fi
@@ -5303,7 +5318,7 @@ _mirror_preview() {
     # deletion needs the exact count typed instead of a y/N.
     _mirror_what=$what
     _mirror_want=""
-    (( _mirror_n > 0 && (nwhole > 0 || nf > MIRROR_WIPE_MIN) )) && _mirror_want=$(( nf > 0 ? nf : nd ))
+    _mirror_wipe_sized && _mirror_want=$(( nf > 0 ? nf : nd ))
     # A one-time copy asks after its summary box (_mirror_confirm); a scheduled
     # job asks here, once, at creation.
     [[ "$ask" == save ]] && { _mirror_delete_q save; return; }

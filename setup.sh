@@ -5127,11 +5127,27 @@ _mirror_preview() {
     local loc=$1 src=$2 dest=$3 dry=$4 ask=$5 out rc=0 all dels dirs nf nd what="" reply=""
     _mirror_n=0
     if ! _mirror_guard "$loc" "$src"; then _mirror_refuse "$src"; return 1; fi
+    # The dry run reads both trees and can take minutes, so say what is going on
+    # and (on a terminal) tick the elapsed seconds on that line. Same command,
+    # same rc and same output as before, just run in the background into a temp file.
+    local tmp pid t=0 msg="Checking what a mirror would delete (nothing is copied)"
+    tmp=$(mktemp) || { fail "Could not create a temp file for the preview - nothing changed."; return 1; }
+    if [[ -t 1 ]]; then printf '  %s...' "$msg"; else echo "  $msg..."; fi
     if [[ "$loc" == sudo ]]; then
-        out=$(_server_sudo_run "exec 2>&1; $dry") || rc=$?
+        _server_sudo_run "exec 2>&1; $dry" > "$tmp" &
     else
-        out=$(bash -c "$dry" 2>&1) || rc=$?
+        bash -c "$dry" > "$tmp" 2>&1 &
     fi
+    pid=$!
+    if [[ -t 1 ]]; then
+        while kill -0 "$pid" 2>/dev/null; do
+            sleep 1; t=$((t + 1))
+            printf '\r\033[K  %s... %ds' "$msg" "$t"
+        done
+    fi
+    wait "$pid" || rc=$?
+    [[ -t 1 ]] && printf '\r\033[K'
+    out=$(cat "$tmp"); rm -f "$tmp"
     if (( rc != 0 )); then
         fail "Could not preview the deletions (rsync exit $rc) - nothing changed."
         return 1

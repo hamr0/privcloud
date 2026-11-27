@@ -6353,8 +6353,8 @@ _sync_show_status() {
 
     # ── Last runs ──
     # Server jobs: one SSH call (sudo cached above) reads mtime + last line of
-    # each known log. Laptop jobs: parse the "Sync finished" marker the script
-    # emits at exit (see _sync_show_paths/sync script template).
+    # each known log. Laptop jobs: parse the "Sync finished" / SKIPPED lines a job's
+    # run writes (see _sync_job_go, _sync_last_result).
     local server_runs=""
     if [[ "$has_server" == "true" ]]; then
         # Logs are root-owned but mode 644 (default cron-redirect umask), so

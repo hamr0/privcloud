@@ -5058,7 +5058,8 @@ _DRIVE_ROOTS="/mnt /media /run/media"   # paths under these are drive-backed (a 
 
 # _drive_verdict <path> prints exactly one of
 #   ok        the path is there (and, under _DRIVE_ROOTS, on a real mount)
-#   missing   the path is not there (or cannot be listed)
+#   missing   the path is not there (an existing folder we cannot list is not missing:
+#             its emptiness is unknown, so it counts as not empty)
 #   empty     there, but nothing in it (under _DRIVE_ROOTS: on a real mount)
 #   unmounted under _DRIVE_ROOTS but a bare folder on the system disk, or an
 #             autofs/stub mount: findmnt must find a mount that is not / and
@@ -5071,21 +5072,23 @@ _DRIVE_ROOTS="/mnt /media /run/media"   # paths under these are drive-backed (a 
 # that is not ok is looked at up to 3 times, 1 s apart (a slow spin-up must not
 # read as unplugged); a healthy drive never waits.
 _drive_verdict() {
-    local p=$1 r t s i v list drive=""
+    local p=$1 r t s i v list known drive=""
     for r in $_DRIVE_ROOTS; do
         if [[ "$p" == "$r"/* ]]; then drive=1; fi
     done
     for i in 1 2 3; do
-        if ! list=$(ls -A -- "$p" 2>/dev/null); then
+        known=1
+        list=$(ls -A -- "$p" 2>/dev/null) || known=""
+        if [[ -z "$known" && ! -e "$p" ]]; then
             v=missing
         elif [[ -n "$drive" ]]; then
             command -v findmnt >/dev/null || { echo unknown; return 0; }
             t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null) || t=""
             s=$(findmnt -n -o SOURCE -T "$p" 2>/dev/null) || s=""
             if [[ -z "$t" || "$t" == / || "$s" != /dev/* ]]; then v=unmounted
-            elif [[ -z "$list" ]]; then v=empty
+            elif [[ -n "$known" && -z "$list" ]]; then v=empty
             else v=ok; fi
-        elif [[ -z "$list" ]]; then v=empty
+        elif [[ -n "$known" && -z "$list" ]]; then v=empty
         else v=ok; fi
         if [[ "$v" == ok || -z "$drive" ]]; then break; fi
         [[ "$i" == 3 ]] || sleep 1

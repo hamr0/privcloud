@@ -209,6 +209,17 @@ X
 chmod +x "$T/bin/ls"; export LS_LOG=$T/lslog; : > "$LS_LOG"
 GOT=$(vv ok "$D"); check V4a "poke: the path is listed with ls -A" 'grep -q -- "-A -- $D" "$LS_LOG"'
 
+# unreadable-but-present folder (live: a root/service-owned dir, ls -> Permission denied) is present, not missing
+if [[ $EUID == 0 ]]; then echo "SKIP  V5  unreadable-folder checks: running as root, chmod 000 would not block reading"
+else
+  mkdir -p "$T/plain-locked" "$T/mnt/usb/locked"; chmod 000 "$T/plain-locked" "$T/mnt/usb/locked"
+  GOT=$(vv ok "$T/plain-locked"); check V5a "verdict: unreadable folder outside the roots -> ok (exists; not missing)" '[ "$GOT" = ok ]'
+  GOT=$(vv ok "$T/mnt/usb/locked"; nsleep); check V5b "verdict: unreadable folder on a real mount -> ok, no retry sleep" '[ "$(head -1 <<<"$GOT")" = ok ] && [ "$(tail -1 <<<"$GOT")" = 0 ]'
+  S=$(date +%s%N); vv ok "$T/mnt/usb/locked" >/dev/null; check V5c "verdict: ... and answers in under 1 s" '[ $(( ($(date +%s%N) - S) / 1000000 )) -lt 1000 ]'
+  GOT=$(vv bare "$T/mnt/usb/locked"); check V5d "verdict: unreadable folder on an unmounted bare folder -> unmounted" '[ "$GOT" = unmounted ]'
+  chmod 755 "$T/plain-locked" "$T/mnt/usb/locked"
+fi
+
 # R  the constant
 check R1 "roots list is one plain constant: /mnt /media /run/media" '[ "$(grep -cE "^_DRIVE_ROOTS=\"/mnt /media /run/media\"" "$SRC")" = 1 ]'
 roots_under_env() { printf '%s\necho "$_DRIVE_ROOTS"\n' "$(grep -E '^_DRIVE_ROOTS=' "$SRC")" | env _DRIVE_ROOTS=/evil bash; }

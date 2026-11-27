@@ -51,7 +51,7 @@ fixes" column folds in the open review-ledger items, so nothing is fixed twice.
 
 | Step | Module | Also fixes (review ledger) | Size / risk | Gate before the next step | Status |
 |---|---|---|---|---|---|
-| 1 | QW quick wins | – | S / low | each fix has a fail-first test | ☐ |
+| 1 | QW quick wins | copy-mode question (`_mirror_ask`) not colour-coded: question in yellow, `delete` in red per the colour rules; `federver -> 14 -> 2` (Sync - New) reported stuck around that question (root-cause first) | S / low | each fix has a fail-first test | ☐ |
 | 2 | 0 test harness `tests/lib.sh` | disk-check flake: capture `tmpd` when it fails | S / low | check counts per suite unchanged | ☐ |
 | 3 | 1 drive-mount verdict | `_MIRROR_DRIVE_ROOTS` test override in the production guard | M / medium | **design review**, then live check on the USB drive | ☐ |
 | 4 | 2 sync-job generator | legacy finish-line patch gap (CRLF), `mktemp` leak in Change copy mode, untested `_mirror_banner` in step_sync, mirror preview not listing empty folders, duplicated `last:` label mapping, exit 24 (decision 1) | L / high | **design review**; atomic write + `.bak`; live mirror run, home and away | ☐ |

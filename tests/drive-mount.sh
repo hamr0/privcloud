@@ -15,7 +15,7 @@ T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin"
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
-for f in ok fail info warn _env_get _mirror_check_here _smb_folder_check _smb_folder_reason _require_data_mount _storage_status _pick_backup_default; do
+for f in ok fail info warn _env_get _mirror_guard _smb_folder_check _smb_folder_reason _require_data_mount _storage_status _pick_backup_default; do
   extract_fn "$f" "$SRC"; done > "$T/fn.sh"
 extract_fn _drive_verdict "$SRC" >> "$T/fn.sh"; grep -E '^_DRIVE_ROOTS=' "$SRC" >> "$T/fn.sh"
 sed -i "s#/run/media/\*/\* /media/\*/\* /mnt/\*#$T/mnt/*#" "$T/fn.sh"   # candidate glob -> sandbox
@@ -64,20 +64,19 @@ export PATH="$T/bin:$PATH" FM_ROOT="$T/mnt/usb" SRC_DIR="$T/src"
 mkdir -p "$T/mnt/usb/data" "$T/mnt/usb/empty" "$T/src"; echo f > "$T/mnt/usb/data/f"
 D=$T/mnt/usb/data; E=$T/mnt/usb/empty; M=$T/mnt/usb/nope
 CHECK_DIAG='got=$GOT'
+_DRIVE_ROOTS="$T/mnt"   # the sandbox stands in for /mnt (the production value is checked in R)
 
 # ── P  pins: today's answers, per member and per case ───────────────────────
-# mirror (_mirror_check_here; test-only roots override still read from the env today)
-export _MIRROR_DRIVE_ROOTS="$T/mnt"
-mv_() { FM_MODE=$1 _mirror_check_here "$2"; }
-mnofm() { env PATH="$T/lsonly" "$(command -v bash)" -c "source $T/fn.sh; _MIRROR_DRIVE_ROOTS=$T/mnt _mirror_check_here $1"; }
-GOT=$(mv_ ok "$D");   check P1a "mirror: real mount, files -> ok" '[ "$GOT" = ok ]'
-GOT=$(mv_ ok "$M");   check P1b "mirror: missing path -> missing" '[ "$GOT" = missing ]'
-GOT=$(mv_ ok "$E");   check P1c "mirror: empty dir -> empty" '[ "$GOT" = empty ]'
-GOT=$(mv_ bare "$D"); check P1d "mirror: bare folder on the system disk -> unmounted" '[ "$GOT" = unmounted ]'
-GOT=$(mv_ stub "$D"); check P1e "mirror: autofs stub (SOURCE systemd-1) -> unmounted" '[ "$GOT" = unmounted ]'
-GOT=$(mnofm "$D");    check P1f "mirror: findmnt absent -> unknown" '[ "$GOT" = unknown ]'
-GOT=$(mv_ bare "$E"); check P1g "mirror: empty bare folder -> empty (empty is decided before the mount)" '[ "$GOT" = empty ]'
-unset _MIRROR_DRIVE_ROOTS
+# mirror (_mirror_guard -> its reason text; it asks _drive_verdict)
+mg() { ( export FM_MODE=$1; _mirror_guard local "$2" && echo ok || echo "$_mirror_why" ); }
+mnofm() { env PATH="$T/lsonly" "$(command -v bash)" -c "source $T/fn.sh; _DRIVE_ROOTS=$T/mnt; _mirror_guard local $1 && echo ok || echo \"\$_mirror_why\""; }
+GOT=$(mg ok "$D");   check P1a "mirror: real mount, files -> allowed" '[ "$GOT" = ok ]'
+GOT=$(mg ok "$M");   check P1b "mirror: missing path -> source missing" '[ "$GOT" = "source missing" ]'
+GOT=$(mg ok "$E");   check P1c "mirror: empty dir -> source empty" '[ "$GOT" = "source empty" ]'
+GOT=$(mg bare "$D"); check P1d "mirror: bare folder on the system disk -> drive not mounted" '[ "$GOT" = "drive not mounted" ]'
+GOT=$(mg stub "$D"); check P1e "mirror: autofs stub (SOURCE systemd-1) -> drive not mounted" '[ "$GOT" = "drive not mounted" ]'
+GOT=$(mnofm "$D");   check P1f "mirror: findmnt absent -> refused (could not check source)" '[ "$GOT" = "could not check source" ]'
+GOT=$(mg bare "$E"); check P1g "mirror: empty bare folder (an unplugged drive's leftover) -> refused" '[ "$GOT" != ok ]'
 
 # SMB (_smb_folder_check; roots variable set by the suite)
 _SMB_DRIVE_ROOTS="$T/mnt"
@@ -122,7 +121,6 @@ GOT=$(bd bare); check P5b "backup default: bare folder (not a mountpoint) not of
 GOT=$(bd stub); check P5c "backup default: autofs stub IS offered today (mountpoint -q is fooled; the drift)" '[ -n "$GOT" ]'
 
 # ── V  _drive_verdict: one answer per case ──────────────────────────────────
-_DRIVE_ROOTS="$T/mnt"            # the sandbox stands in for /mnt (the production value is checked in R)
 vv() { : > "$SLEEP_LOG"; FM_MODE=$1 _drive_verdict "$2"; }
 nsleep() { wc -l < "$SLEEP_LOG"; }
 GOT=$(vv ok "$D");   check V1a "verdict: real mount, files -> ok" '[ "$GOT" = ok ]'

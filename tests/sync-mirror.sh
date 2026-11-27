@@ -17,8 +17,8 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 CR=$'\033[R]'; CY=$'\033[Y]'   # status() swaps these in for RED/YELLOW
 
 { for f in ok fail info warn ssh _shq; do extract_fn "$f" "$SRC"; done   # ssh may be missing in an old copy: skipped
-  grep -E '^MIRROR_WIPE_MIN=' "$SRC"
-  for f in _mirror_check_here _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
+  grep -E '^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=' "$SRC"
+  for f in _drive_verdict _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
            _mirror_preview _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
            _sync_mode_cell _sync_last_note _sync_last_result _sync_change_mode \
            _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
@@ -49,7 +49,8 @@ X
 chmod +x "$T/bin/"*
 export T P_SRC P_DST
 export PATH="$T/bin:$PATH" HOME="$T/home" CRON_FILE="$T/crontab" SERVER_USER=u SERVER_IP=h
-export _MIRROR_DRIVE_ROOTS="$T/mnt" FM_ROOT="$T/mnt/usb"
+export FM_ROOT="$T/mnt/usb"
+_DRIVE_ROOTS="$T/mnt"   # the sandbox stands in for /mnt; shipped into job scripts and to the "server" with declare -p
 
 # Stubs for what needs a terminal, cron, or the server's sudo.
 _pick_local_path()  { if [ -z "$_pl" ]; then _pl=1; local_path=$P_SRC; else local_path=$P_DST; fi; }
@@ -137,7 +138,7 @@ check 4i "server-side guard accepts a populated path" '[ "$RC" = 0 ]'
 mk; run "" bash -c 'source "$T/fn.sh"; ssh() { return 255; }; _mirror_guard server "$P_SRC"'
 check 4j "unreachable server = guard fails closed" '[ "$RC" != 0 ]'
 mk; mkdir -p "$T/mnt/usb/data" "$T/lsonly"; echo q > "$T/mnt/usb/data/f"; ln -sf "$(command -v ls)" "$T/lsonly/ls"
-run "" env PATH="$T/lsonly" "$(command -v bash)" -c 'source "$T/fn.sh"; _mirror_check_here "$T/mnt/usb/data"'
+run "" env PATH="$T/lsonly" "$(command -v bash)" -c 'source "$T/fn.sh"; _DRIVE_ROOTS=$T/mnt; _drive_verdict "$T/mnt/usb/data"'
 check 4k "no findmnt on a drive path: verdict is unknown (not unmounted), still refused" '[ "$OUT" = unknown ]'
 
 # ── 5  zero deletions ─────────────────────────────────────────────────────
@@ -367,6 +368,7 @@ EDIT() { _sync_edit_job; }
 run "1\n6\ndelete\ny\n" EDIT
 check 10a "menu offers 'Change copy mode' as 6 and keeps 0) Back" '[[ "$OUT" == *"6)"*"Change copy mode"* && "$OUT" == *"0)"*"Back"* ]]'
 check 10b "append -> mirror stores MODE=mirror with the guard" '[ "$(sed -n "s/^MODE=//p" "$JOB")" = mirror ] && grep -q "^_mirror_guard local" "$JOB" && bash -n "$JOB"'
+check 10b2 "the mirror job script carries its own verdict (_drive_verdict + _DRIVE_ROOTS, no function from the menu)" 'grep -q "^declare -- _DRIVE_ROOTS=" "$JOB" && grep -q "^_drive_verdict ()" "$JOB" && ! grep -q "_mirror_check_here" "$JOB" && bash -n "$JOB"'
 check 10c "same preview + Save prompt as at creation" '[[ "$OUT" == *"⚠ 3 files would be deleted at $T/d:"* && "$OUT" == *"Save this job as mirror? [y/N]: "* ]]'
 check 10d "the rewritten job now deletes on its cron run" 'echo q > "$T/d/stray"; bash "$JOB" >/dev/null 2>&1; [ ! -e "$T/d/stray" ]'
 mk; mkjob mirror "y\n" >/dev/null

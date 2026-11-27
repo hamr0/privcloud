@@ -5036,8 +5036,8 @@ LOGJSON
 # first passes a source guard (an empty/unmounted source would wipe the
 # destination), then a dry run that lists what would be deleted, then a typed
 # y/N. Scheduled jobs store their mode in the script (MODE=) and repeat the
-# guard on every run, so _mirror_check_here/_mirror_guard (+ ssh, _shq) are
-# copied into the job script with `declare -f` - cron has no federver functions.
+# guard on every run, so _drive_verdict/_mirror_guard (+ ssh, _shq, _DRIVE_ROOTS)
+# are copied into the job script with `declare -f` - cron has no federver functions.
 
 # ── One drive-mount verdict ──────────────────────────────────────────────────
 # Every "is this path really on a mounted drive?" question asks _drive_verdict;
@@ -5082,38 +5082,19 @@ _drive_verdict() {
     echo "$v"
 }
 
-# Prints ok | missing | empty | unmounted | unknown (no findmnt to ask) for a
-# path on THIS machine. Always returns 0 - callers read the verdict, so a failed ssh/sudo (no output) is never
-# mistaken for "ok". Under /mnt, /media and /run/media the path must sit on a
-# real mount whose source is a /dev/* device: an autofs/stub mountpoint
-# (source systemd-1) or a bare folder on the system disk is "unmounted".
-_mirror_check_here() {
-    local p=$1 t s r
-    [[ -e "$p" ]] || { echo missing; return 0; }
-    # Listing first also triggers an idle automount before findmnt looks.
-    if [[ -d "$p" && -z "$(ls -A "$p" 2>/dev/null)" ]]; then echo empty; return 0; fi
-    for r in ${_MIRROR_DRIVE_ROOTS:-/mnt /media /run/media}; do
-        [[ "$p" == "$r"/* ]] || continue
-        command -v findmnt >/dev/null || { echo unknown; return 0; }
-        t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null)
-        s=$(findmnt -n -o SOURCE -T "$p" 2>/dev/null)
-        if [[ -z "$t" || "$t" == / || "$s" != /dev/* ]]; then echo unmounted; return 0; fi
-    done
-    echo ok
-}
-
 # Source guard: _mirror_guard <local|server|sudo> <path>. rc 0 = safe to mirror.
 #   Otherwise sets _mirror_why (source missing | source empty | drive not mounted |
-#   could not check source: no verdict came back, e.g. server unreachable).
-#   server = the path is on the federver box (checked over ssh, same function);
-#   sudo   = same, as root, through _server_sudo_run (needs _SRV_PW).
+#   could not check source: no verdict came back, e.g. server unreachable, or
+#   findmnt missing - fail closed).
+#   Asks _drive_verdict; server = the path is on the federver box (checked over
+#   ssh, same function); sudo = same, as root, through _server_sudo_run (needs _SRV_PW).
 _mirror_guard() {
     local loc=$1 p=$2 v=""
     case $loc in
-        local)  v=$(_mirror_check_here "$p") ;;
-        server) v=$({ declare -f _mirror_check_here; echo "_mirror_check_here $(_shq "$p")"; } \
+        local)  v=$(_drive_verdict "$p") ;;
+        server) v=$({ declare -p _DRIVE_ROOTS; declare -f _drive_verdict; echo "_drive_verdict $(_shq "$p")"; } \
                     | ssh "$SERVER_USER@$SERVER_IP" 'bash -s' 2>/dev/null) || v="" ;;
-        sudo)   v=$(_server_sudo_run "$(declare -f _mirror_check_here); _mirror_check_here $(_shq "$p")") || v="" ;;
+        sudo)   v=$(_server_sudo_run "$(declare -p _DRIVE_ROOTS; declare -f _drive_verdict); _drive_verdict $(_shq "$p")") || v="" ;;
     esac
     v=$(printf '%s' "$v" | tr -d '\r' | tail -n 1)
     case $v in
@@ -5352,7 +5333,8 @@ _sync_mirror_block() {  # mode loc src_path job_name
     echo "# >>> copy mode (federver 14 → 3 'Change copy mode' rewrites this block)"
     echo "MODE=$1"
     if [[ "$1" == mirror ]]; then
-        declare -f ssh _shq _mirror_check_here _mirror_guard
+        declare -p _DRIVE_ROOTS
+        declare -f ssh _shq _drive_verdict _mirror_guard
         echo "DELFLAG=--delete"
         echo "_mirror_guard $2 $(_shq "$3") || {"
         echo "    printf '%s: SKIPPED %s - %s (mirror refused, nothing deleted)\\n' \"\$(date '+%Y-%m-%d %H:%M:%S')\" $(_shq "$4") \"\$_mirror_why\""

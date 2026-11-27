@@ -5063,9 +5063,8 @@ LOGJSON
 # Copies are append-only unless the user types "delete" at _mirror_ask. A mirror
 # first passes a source guard (an empty/unmounted source would wipe the
 # destination), then a dry run that lists what would be deleted, then a typed
-# y/N. Scheduled jobs store their mode in the script (MODE=) and repeat the
-# guard on every run, so _drive_verdict/_mirror_guard (+ ssh, _shq, _DRIVE_ROOTS)
-# are copied into the job script with `declare -f` - cron has no federver functions.
+# y/N. A scheduled job keeps its mode in its record (see "Sync jobs" below) and every
+# run repeats the guard (_mirror_guard) and an unattended wipe cap.
 
 # ── One drive-mount verdict ──────────────────────────────────────────────────
 # Every "is this path really on a mounted drive?" question asks _drive_verdict;
@@ -5373,68 +5372,6 @@ _src_size() {
     du -sh "$p" 2>/dev/null | awk '{print $1}'
 }
 
-# MODE=/DELFLAG/guard block of a sync-job script, between markers so
-# _sync_job_set_mode (14 → 3) can swap it. Append: just the two assignments.
-_sync_mirror_block() {  # mode loc src_path job_name
-    echo "# >>> copy mode (federver 14 → 3 'Change copy mode' rewrites this block)"
-    echo "MODE=$1"
-    if [[ "$1" == mirror ]]; then
-        declare -p _DRIVE_ROOTS
-        declare -f ssh _shq _drive_verdict _mirror_guard
-        echo "DELFLAG=--delete"
-        echo "_mirror_guard $2 $(_shq "$3") || {"
-        echo "    printf '%s: SKIPPED %s - %s (mirror refused, nothing deleted)\\n' \"\$(date '+%Y-%m-%d %H:%M:%S')\" $(_shq "$4") \"\$_mirror_why\""
-        echo "    exit 0"
-        echo "}"
-    else
-        echo "DELFLAG="
-    fi
-    echo "# <<< copy mode"
-}
-
-_sync_job_mode() {  # script_path -> mirror | append (no MODE= line = legacy = append)
-    local m
-    m=$(sed -n 's/^MODE=//p' "$1" 2>/dev/null | head -n 1)
-    [[ "$m" == mirror ]] && echo mirror || echo append
-}
-
-# One "# Key: value" header line of a job script (first match; empty if none).
-_sync_job_field() {  # script_path key
-    sed -n "s/^# $2: //p" "$1" 2>/dev/null | head -n 1
-}
-
-# Rewrite a job script's mode in place (also upgrades pre-mirror scripts).
-_sync_job_set_mode() {  # script_path mode
-    local sp=$1 mode=$2 dir src name loc blk tmp
-    dir=$(_sync_job_field "$sp" Direction)
-    src=$(_sync_job_field "$sp" Source)
-    name=$(_sync_job_field "$sp" "Sync job")
-    if [[ -z "$src" || -z "$name" ]]; then fail "Job script has no Source/name header - mode not changed."; return 1; fi
-    [[ "$dir" == download ]] && loc=server || loc=local
-    blk=$(mktemp) && tmp=$(mktemp "$sp.XXXXXX") || return 1
-    _sync_mirror_block "$mode" "$loc" "$src" "$name" > "$blk"
-    awk -v blk="$blk" '
-        function emit(   l) { while ((getline l < blk) > 0) print l; close(blk); done = 1 }
-        /^# >>> copy mode/ { skip = 1; if (!done) emit(); next }
-        skip && /^# <<< copy mode/ { skip = 0; next }
-        skip { next }
-        !done && /^echo "\[\$\(date/ { emit() }
-        /^rsync / && $0 !~ /\$DELFLAG/ { sub(/^rsync /, "rsync $DELFLAG ") }
-        # Old finish line logged "(exit $?)" = the date substitution (always 0):
-        # capture the rsync code first, log it, and exit with it.
-        /^echo ".*Sync finished: .*\(exit \$\?\)"$/ {
-            sub(/\(exit \$\?\)/, "(exit $rc)"); print "rc=$?"; print; print "exit $rc"; next }
-        { print }' "$sp" > "$tmp"
-    chmod --reference="$sp" "$tmp"
-    if bash -n "$tmp" 2>/dev/null && mv "$tmp" "$sp" && [[ "$(_sync_job_mode "$sp")" == "$mode" ]]; then
-        rm -f "$blk"
-        return 0
-    fi
-    rm -f "$blk" "$tmp"
-    fail "Could not rewrite $sp - mode not changed."
-    return 1
-}
-
 # One-time copies: ask the mode and, for a mirror, guard + preview + confirm.
 # rc 0 = go on (sync_mode set; also fills the caller's mirror_flag array with
 # --delete for a mirror), 2 = refused / cancelled (nothing changed).
@@ -5601,6 +5538,176 @@ _sync_job_run() {  # name [nocap]
     _sync_job_go "${2:-}"
 }
 
+# A job's copy mode from its record: mirror | append | "-" (no usable record).
+_sync_rec_mode() {  # name
+    if _sync_rec_load "$1"; then echo "$J_mode"; else echo "-"; fi
+}
+
+# ── Converting an old job script (the only code that reads one) ──────────────
+# Before the launcher design each job was a generated script holding its own rsync
+# line. _sync_job_import_legacy reads only the fields that generator ever wrote
+# (header comments, MODE=, one rsync line) and converts a job when EVERYTHING maps;
+# anything ambiguous leaves the script untouched, with the reason in _import_why.
+# It never edits script text: the old script is copied to <script>.bak, then the
+# launcher replaces it (one atomic mv, so cron never sees a missing file).
+
+# Split one shell line into words, honouring only the quoting printf %q / a plain
+# hand-written line can hold: backslash escapes, 'single', "double without $ ` or \".
+# The literal word $DELFLAG is kept as a word. Anything else with meaning to the
+# shell ($ ; | & < > ( ) ` #, $'...') refuses. Never evaluates anything. -> _tok[]
+_sync_tokenize() {  # line ; rc 1 = unusual, _tok_why says what
+    local s=$1 i=0 n=${#1} c cur="" have=0 mode=n
+    _tok=(); _tok_why=""
+    while (( i < n )); do
+        c=${s:i:1}; i=$((i + 1))
+        case $mode in
+            n)
+                case $c in
+                    ' '|$'\t') if (( have )); then _tok+=("$cur"); cur=""; have=0; fi ;;
+                    "'") mode=s; have=1 ;;
+                    '"') mode=d; have=1 ;;
+                    '\') (( i < n )) || { _tok_why="a line ending in a backslash"; return 1; }
+                         cur+=${s:i:1}; i=$((i + 1)); have=1 ;;
+                    '$') if (( ! have )) && [[ "${s:i-1:8}" == '$DELFLAG' && ( $((i + 7)) -ge $n || "${s:i+7:1}" == ' ' ) ]]; then
+                             _tok+=('$DELFLAG'); i=$((i + 7))
+                         else _tok_why="a \$ in the rsync line"; return 1; fi ;;
+                    ';'|'|'|'&'|'<'|'>'|'('|')'|'`') _tok_why="'$c' in the rsync line"; return 1 ;;
+                    '#') if (( have )); then cur+=$c; else _tok_why="a # in the rsync line"; return 1; fi ;;
+                    *) cur+=$c; have=1 ;;
+                esac ;;
+            s) if [[ "$c" == "'" ]]; then mode=n; else cur+=$c; fi ;;
+            d) case $c in
+                   '"') mode=n ;;
+                   '$'|'`'|'\') _tok_why="'$c' inside double quotes"; return 1 ;;
+                   *) cur+=$c ;;
+               esac ;;
+        esac
+    done
+    if [[ "$mode" != n ]]; then _tok_why="an unclosed quote"; return 1; fi
+    if (( have )); then _tok+=("$cur"); fi
+    return 0
+}
+
+# Convert <name>'s old script (cron line / timer already known: kind + schedule).
+# rc 0 = converted (record + launcher written, old script kept as .bak, one notice
+# line printed); 1 = refused, _import_why holds the reason and the script is untouched.
+_sync_job_import_legacy() {  # name sched_kind sched
+    local name=$1 kind=$2 sched=$3 sp="$HOME/.local/bin/sync-$1.sh"
+    local line inblock=0 h_name="" h_dir="" h_src="" h_dest="" created="" mode=append delflag="" guard=""
+    local f_user="" f_ip="" nrsync=0 rline="" first
+    _import_why=""
+    [[ -f "$sp" ]] || { _import_why="script not found"; return 1; }
+    while IFS= read -r line; do
+        if (( inblock )); then
+            case $line in
+                '# <<< copy mode'*) inblock=0 ;;
+                MODE=*)    mode=${line#MODE=} ;;
+                DELFLAG=*) delflag=${line#DELFLAG=} ;;
+                '_mirror_guard '*' || {')
+                    _sync_tokenize "${line% || \{}" || { _import_why="unusual guard line ($_tok_why)"; return 1; }
+                    guard="${_tok[1]} ${_tok[2]}" ;;
+            esac
+            continue
+        fi
+        case $line in
+            '')                    ;;
+            '#!'*)                 ;;
+            '# >>> copy mode'*)    inblock=1 ;;
+            '# Sync job: '*)       h_name=${line#'# Sync job: '} ;;
+            '# Direction: '*)      h_dir=${line#'# Direction: '} ;;
+            '# Source: '*)         h_src=${line#'# Source: '} ;;
+            '# Destination: '*)    h_dest=${line#'# Destination: '} ;;
+            '# Created: '*)        created=${line#'# Created: '} ;;
+            '#'*)                  ;;
+            'exec >>"'*)
+                [[ "$line" == "exec >>\"$HOME/.local/share/sync-jobs/$name.log\" 2>&1" ]] \
+                    || { _import_why="a log path other than the standard one"; return 1; } ;;
+            'SERVER_USER="'*)      f_user=${line#'SERVER_USER="'}; f_user=${f_user%'"'} ;;
+            'SERVER_IP="'*)        f_ip=${line#'SERVER_IP="'}; f_ip=${f_ip%'"'} ;;
+            'echo "[$(date '*'] Starting sync: '*) ;;
+            'echo "[$(date '*'] Sync finished: '*) ;;
+            'rc=$?'|'exit $rc'|'exit $?') ;;
+            'rsync '*)             nrsync=$((nrsync + 1)); rline=$line ;;
+            'ssh -t '*'sudo mkdir -p '*|'sudo mkdir -p '*) ;;   # the old sudo prep of the destination
+            *rsync*)               first=${line%% *}; _import_why="rsync is run through another command ($first)"; return 1 ;;
+            *)                     _import_why="a line this tool did not write: ${line:0:40}"; return 1 ;;
+        esac
+    done < <(tr -d '\r' < "$sp")
+    (( inblock )) && { _import_why="an unclosed copy-mode block"; return 1; }
+    (( nrsync == 1 )) || { _import_why="$([[ $nrsync == 0 ]] && echo 'no rsync line' || echo 'more than one rsync line')"; return 1; }
+    [[ -n "$h_name" ]] || { _import_why="missing header: Sync job"; return 1; }
+    [[ -n "$h_dir" ]]  || { _import_why="missing header: Direction"; return 1; }
+    [[ -n "$h_src" ]]  || { _import_why="missing header: Source"; return 1; }
+    [[ -n "$h_dest" ]] || { _import_why="missing header: Destination"; return 1; }
+    [[ "$h_name" == "$name" ]] || { _import_why="the header names a different job ($h_name)"; return 1; }
+    [[ "$h_dir" == upload || "$h_dir" == download ]] || { _import_why="unknown direction '$h_dir'"; return 1; }
+    [[ "$mode" == append || "$mode" == mirror ]] || { _import_why="unknown MODE '$mode'"; return 1; }
+
+    _sync_tokenize "$rline" || { _import_why="unusual rsync line ($_tok_why)"; return 1; }
+    local -a ops=(); local t has_del=""
+    for t in "${_tok[@]:1}"; do
+        case $t in
+            '$DELFLAG') has_del=1 ;;
+            -avh|--progress|-s) ;;
+            -*) _import_why="unknown rsync flag $t"; return 1 ;;
+            *)  ops+=("$t") ;;
+        esac
+    done
+    (( ${#ops[@]} == 2 )) || { _import_why="the rsync line does not have exactly one source and one destination"; return 1; }
+    if [[ "$mode" == mirror ]]; then
+        [[ -n "$has_del" && "$delflag" == --delete ]] || { _import_why="the mode says mirror but the rsync line does not delete"; return 1; }
+    else
+        [[ -z "$delflag" ]] || { _import_why="the mode says append but DELFLAG deletes"; return 1; }
+    fi
+    # operands -> source, destination, copy mode; the remote side must be user@host:path
+    local o_src=${ops[0]} o_dst=${ops[1]} src dest cm host
+    if [[ "$h_dir" == upload ]]; then
+        host=${o_dst%%:*}; [[ "$o_dst" == *:* && "$host" == *@* ]] || { _import_why="the destination is not user@host:path"; return 1; }
+        dest=${o_dst#*:}; src=$o_src
+        [[ "$o_src" == */ ]] && cm=contents || cm=folder
+    else
+        host=${o_src%%:*}; [[ "$o_src" == *:* && "$host" == *@* ]] || { _import_why="the source is not user@host:path"; return 1; }
+        src=${o_src#*:}; dest=$o_dst
+        [[ "$src" == */ ]] && cm=contents || cm=folder
+    fi
+    if [[ -n "$f_user$f_ip" && "$host" != "$f_user@$f_ip" ]]; then _import_why="the rsync host ($host) differs from SERVER_USER@SERVER_IP in the script"; return 1; fi
+    src=${src%/}; dest=${dest%/}
+    [[ -n "$src" && -n "$dest" ]] || { _import_why="an empty source or destination"; return 1; }
+    [[ "${h_src%/}" == "$src" ]] || { _import_why="the header Source ($h_src) and the rsync line ($src) disagree"; return 1; }
+    local shown=$dest; [[ "$cm" == folder ]] && shown=$dest/${src##*/}
+    [[ "${h_dest%/}" == "$shown" ]] || { _import_why="the header Destination ($h_dest) and the rsync line ($shown) disagree"; return 1; }
+    if [[ "$mode" == mirror ]]; then
+        local want="local"; [[ "$h_dir" == download ]] && want=server
+        [[ "$guard" == "$want $src" ]] || { _import_why="the mirror guard does not match the source"; return 1; }
+    fi
+    # everything maps: write the record, keep the old script, then swap in the launcher
+    J_name=$name; J_direction=$h_dir; J_src=$src; J_dest=$dest; J_copy_mode=$cm; J_mode=$mode
+    if [[ "$h_dir" == upload ]]; then J_src_loc=local; J_dest_loc=server; else J_src_loc=server; J_dest_loc=local; fi
+    J_sched_kind=$kind; J_sched=$sched; J_created=${created:-converted}
+    local bak="$sp.bak" n=1
+    while [[ -e "$bak" ]]; do n=$((n + 1)); bak="$sp.bak$n"; done
+    _sync_rec_write || { _import_why="could not write the job record"; return 1; }
+    if ! cp -p "$sp" "$bak" || ! _sync_write_launcher "$name"; then
+        rm -f "$HOME/.local/share/sync-jobs/$name.job"
+        _import_why="could not write the launcher (old script untouched)"; return 1
+    fi
+    info "Converted '$name' to a launcher (old script kept as $bak)."
+}
+
+# Convert every scheduled job that still has an old script and no record. Called when
+# Status opens. Jobs that cannot be converted are left as they are; _sync_cannot[name]
+# holds why, for the Status row.
+_sync_import_all_legacy() {
+    declare -gA _sync_cannot=()
+    local i name
+    _sync_registry_load
+    for i in "${!_sync_jobs[@]}"; do
+        name=${_sync_jobs[i]}
+        [[ -f "$HOME/.local/share/sync-jobs/$name.job" || ! -f "$HOME/.local/bin/sync-$name.sh" ]] && continue
+        _sync_job_import_legacy "$name" "${_sync_job_types[i]}" "${_sync_job_scheds[i]}" || _sync_cannot[$name]=$_import_why
+    done
+}
+
 # Status cell for a copy mode, padded to 8: mirror = red (it deletes), append
 # plain, anything else (a monitor) "-".
 _sync_mode_cell() {
@@ -5617,15 +5724,16 @@ _sync_result_text() {  # job_name -> the coloured "last: ..." text of its last r
     IFS='|' read -r kind when exitc <<<"$(_sync_last_result "$HOME/.local/share/sync-jobs/$1.log")"
     case "$kind" in
         ok)      echo -e "${GREEN}last: ok${NC}" ;;
+        vanished) echo -e "${GREEN}last: ok (some files vanished)${NC}" ;;
         skipped) echo -e "${YELLOW}last: skipped${exitc:+ ($exitc)}${NC}" ;;
         fail)    echo -e "${RED}last: failed (exit ${exitc})${NC}" ;;
         running) echo -e "${YELLOW}last: running?${NC}" ;;
         *)       echo -e "${DIM}last: never${NC}" ;;
     esac
 }
-# Last result of a sync job from its log: "kind|when|exit", kind = ok | fail |
-# skipped (the mirror guard refused; the third field is its reason) | running
-# (started, no finish line) | never.
+# Last result of a sync job from its log: "kind|when|exit", kind = ok | vanished (ok,
+# rsync 24) | fail | skipped (the mirror guard or the wipe cap refused; the third field
+# is its reason) | running (started, no finish line) | never.
 _sync_last_result() {  # log_path
     local l when exitc
     [[ -f "$1" ]] || { echo "never||"; return 0; }
@@ -5635,47 +5743,58 @@ _sync_last_result() {  # log_path
         echo "running|${when}|"; return 0
     fi
     if [[ "$l" == *": SKIPPED "* ]]; then
-        exitc=$(sed -n 's/.*: SKIPPED [^ ]* - \(.*\) (mirror refused.*/\1/p' <<<"$l")
+        exitc=${l#*: SKIPPED }; exitc=${exitc#* - }            # the reason, without the job name
+        exitc=${exitc% (mirror refused, nothing deleted)}; exitc=${exitc%, nothing deleted}
         echo "skipped|${l:0:16}|${exitc}"; return 0
     fi
     when=$(grep -oP '\[\K[^\]]+' <<<"$l" | cut -c1-16) || when="?"
     exitc=$(grep -oP 'exit \K[0-9]+' <<<"$l") || exitc=""
-    if [[ "$exitc" == 0 ]]; then echo "ok|${when}|0"; else echo "fail|${when}|${exitc}"; fi
+    if [[ "$exitc" == 0 && "$l" == *"some files vanished"* ]]; then echo "vanished|${when}|0"
+    elif [[ "$exitc" == 0 ]]; then echo "ok|${when}|0"
+    else echo "fail|${when}|${exitc}"; fi
 }
 
 # 14 → 3 → Change copy mode.
 _sync_change_mode() {  # job_name
-    local job=$1 sp="$HOME/.local/bin/sync-$1.sh" dir loc src dest rline
-    if [[ ! -f "$sp" ]]; then fail "Script not found: $sp"; return 1; fi
+    local job=$1
+    if ! _sync_rec_load "$job"; then
+        fail "'$job' has no job record (an old script that could not be converted - see Status). Copy mode not changed."
+        return 1
+    fi
     echo ""
-    info "Current copy mode: $(_sync_job_mode "$sp")"
+    info "Current copy mode: $J_mode"
     _mirror_ask
     if [[ "$sync_mode" == mirror ]]; then
-        dir=$(_sync_job_field "$sp" Direction)
-        src=$(_sync_job_field "$sp" Source)
-        dest=$(_sync_job_field "$sp" Destination)
-        [[ "$dir" == download ]] && loc=server || loc=local
-        rline=$(grep -m1 '^rsync ' "$sp") || rline=""
-        if [[ -z "$rline" ]]; then fail "No rsync line in $sp - mode not changed."; return 1; fi
-        _mirror_preview "$loc" "$src" "$dest" "$(_mirror_dry_cmd "${rline/ \$DELFLAG/}")" save || return 2
+        _sync_job_operands
+        _mirror_preview "$J_src_loc" "$J_src" "$_sj_shown" "$(_mirror_dry_cmd "$_sj_cmd")" save || return 2
     fi
-    _sync_job_set_mode "$sp" "$sync_mode" || return 1
+    J_mode=$sync_mode
+    _sync_rec_write || return 1
     ok "'${job}' is now ${sync_mode}."
 }
-
-_sync_execute_or_schedule() {
-    local sync_direction="$1"
-    local src_path="$2"
-    local dest_path="$3"
-    local rsync_cmd="$4"        # append-form: "rsync -avh --progress ..."
-    local pre_cmd="$5"
-    local mode="${6:-append}"   # append | mirror (from _mirror_ask)
-    local src_loc="${7:-local}" # where src_path lives: local | server
-    local dry_cmd="" run_cmd="$rsync_cmd"
-    if [[ "$mode" == mirror ]]; then
-        dry_cmd=$(_mirror_dry_cmd "$rsync_cmd")
-        run_cmd=$(_rsync_with "$rsync_cmd" --delete)
+# Make the destination folder before a job's first run, as the user at the keyboard:
+# sudo is fine here (it asks), unlike in the unattended run, which only does mkdir -p.
+# A failure is only a warning: the run reports what is really wrong.
+_sync_prepare_dest() {  # uses the loaded J_* record and _sj_shown
+    if [[ "$J_direction" == upload ]]; then
+        ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p $(_shq "$_sj_shown") && sudo chown $(_shq "$SERVER_USER:$SERVER_USER") $(_shq "$_sj_shown")" \
+            || warn "Could not prepare $_sj_shown on the server as root."
+    else
+        sudo mkdir -p "$_sj_shown" || warn "Could not prepare $_sj_shown."
     fi
+}
+
+# Run a sync once now, or schedule it as a recurring job.
+#   direction upload|download, src = the picked source path, dest = the picked
+#   destination folder, copy_mode folder|contents, mode append|mirror (from _mirror_ask).
+_sync_execute_or_schedule() {
+    local direction="$1" src="$2" dest="$3" copy_mode="$4" mode="${5:-append}"
+    J_name=""; J_direction=$direction; J_src=$src; J_dest=$dest; J_copy_mode=$copy_mode; J_mode=$mode
+    J_sched_kind=""; J_sched=""; J_created=$(date '+%Y-%m-%d %H:%M')
+    if [[ "$direction" == upload ]]; then J_src_loc=local; J_dest_loc=server; else J_src_loc=server; J_dest_loc=local; fi
+    _sync_job_operands
+    local dry_cmd=""
+    [[ "$mode" == mirror ]] && dry_cmd=$(_mirror_dry_cmd "$_sj_cmd")
 
     echo ""
     echo -e "  ${BOLD}1)${NC} Run now"
@@ -5687,12 +5806,13 @@ _sync_execute_or_schedule() {
         0) return 2 ;;
         1)
             if [[ "$mode" == mirror ]]; then
-                _mirror_preview "$src_loc" "$src_path" "$dest_path" "$dry_cmd" copy || return 2
+                _mirror_preview "$J_src_loc" "$src" "$_sj_shown" "$dry_cmd" copy || return 2
                 # Run now has no summary box: the deletion question is the one question.
                 (( _mirror_n > 0 )) && { _mirror_delete_q copy || return 2; }
             fi
-            [[ -n "$pre_cmd" ]] && bash -c "$pre_cmd"
-            bash -c "$run_cmd" || { fail "Sync failed."; return 1; }
+            _sync_prepare_dest
+            J_name=${src%/}; J_name=${J_name##*/}
+            _sync_job_go nocap || { fail "Sync failed."; return 1; }
             echo ""
             if [[ "$mode" == mirror ]]; then
                 ok "Mirror complete - ${_mirror_n} deleted, destination matches source."
@@ -5701,50 +5821,34 @@ _sync_execute_or_schedule() {
             fi
             ;;
         2)
-            local sched_out sched_kind sched_spec
+            local sched_out sched_kind sched_spec job_name reason
             sched_out=$(_sync_pick_schedule) || return 1
             sched_kind="${sched_out%% *}"
             sched_spec="${sched_out#* }"
 
             local default_name
-            default_name=$(basename "$src_path" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
-            read -p "  Name for this job [${default_name}, q=back]: " job_name
-            [[ "$job_name" == "q" ]] && return
-            job_name="${job_name:-$default_name}"
-            job_name=$(echo "$job_name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
+            default_name=$(_sync_default_name "$src")
+            while :; do
+                read -p "  Name for this job [${default_name}, q=back]: " job_name || return 1
+                [[ "$job_name" == "q" ]] && return
+                job_name="${job_name:-$default_name}"
+                job_name=${job_name,,}; job_name=${job_name// /-}
+                if ! reason=$(_sync_valid_name "$job_name"); then fail "$reason"; continue; fi
+                if [[ -e "$HOME/.local/bin/sync-${job_name}.sh" || -e "$HOME/.local/share/sync-jobs/${job_name}.job" ]]; then
+                    fail "A job named '${job_name}' already exists - pick another name (or delete it first)."; continue
+                fi
+                break
+            done
 
             if [[ "$mode" == mirror ]]; then
-                _mirror_preview "$src_loc" "$src_path" "$dest_path" "$dry_cmd" save || return 2
+                _mirror_preview "$J_src_loc" "$src" "$_sj_shown" "$dry_cmd" save || return 2
             fi
 
-            local script_dir="$HOME/.local/bin"
-            local log_dir="$HOME/.local/share/sync-jobs"
-            mkdir -p "$script_dir" "$log_dir"
-
-            local script_path="$script_dir/sync-${job_name}.sh"
-            local log_path="$log_dir/${job_name}.log"
-            cat > "$script_path" <<SYNCSCRIPT
-#!/bin/bash
-# Sync job: ${job_name}
-# Direction: ${sync_direction}
-# Source: ${src_path}
-# Destination: ${dest_path}
-# Created: $(date '+%Y-%m-%d %H:%M')
-exec >>"${log_path}" 2>&1
-
-SERVER_USER="$SERVER_USER"
-SERVER_IP="$SERVER_IP"
-
-$(_sync_mirror_block "$mode" "$src_loc" "$src_path" "$job_name")
-
-echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: ${job_name}"
-${pre_cmd:+$pre_cmd}
-$(_rsync_with "$rsync_cmd" '$DELFLAG')
-rc=\$?
-echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: ${job_name} (exit \$rc)"
-exit \$rc
-SYNCSCRIPT
-            chmod +x "$script_path"
+            local script_path="$HOME/.local/bin/sync-${job_name}.sh"
+            local log_path="$HOME/.local/share/sync-jobs/${job_name}.log"
+            J_name=$job_name; J_sched_kind=$sched_kind; J_sched=$sched_spec
+            _sync_rec_write || return 1
+            _sync_write_launcher "$job_name" || { fail "Could not write the launcher $script_path."; return 1; }
 
             if [[ "$sched_kind" == "timer" ]]; then
                 _sync_install_timer "$job_name" "$script_path" "$sched_spec"
@@ -5762,8 +5866,10 @@ SYNCSCRIPT
             fi
             echo ""
             info "Running once now to verify..."
-            [[ -n "$pre_cmd" ]] && bash -c "$pre_cmd"
-            bash -c "$run_cmd" || { fail "Sync failed on initial run."; return 1; }
+            _sync_prepare_dest
+            local run_rc=0
+            _sync_job_run "$job_name" nocap 2>&1 | tee -a "$log_path"; run_rc=${PIPESTATUS[0]}
+            (( run_rc == 0 )) || { fail "Sync failed on initial run."; return 1; }
             echo ""
             ok "Initial sync complete. Job scheduled."
             ;;
@@ -6008,7 +6114,7 @@ _sync_edit_job() {
     fi
 
     echo ""
-    echo -e "  ${BOLD}${job_name}${NC}  [${sched}] — ${human}  ${DIM}(${job_type})${NC}$($is_paused && echo " ${YELLOW}(paused)${NC}")  $(_sync_mode_cell "$(_sync_job_mode "$HOME/.local/bin/sync-${job_name}.sh")")"
+    echo -e "  ${BOLD}${job_name}${NC}  [${sched}] — ${human}  ${DIM}(${job_type})${NC}$($is_paused && echo " ${YELLOW}(paused)${NC}")  $(_sync_mode_cell "$(_sync_rec_mode "$job_name")")"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "    ${BOLD}1)${NC} Change schedule"
     if $is_paused; then
@@ -6061,6 +6167,7 @@ _sync_edit_job() {
                 bash "$script_path" || { fail "Sync job failed."; return; }
             fi
             ok "'${job_name}' completed."
+            echo -e "  $(_sync_result_text "$job_name")"
             ;;
         4)
             local log_path="$HOME/.local/share/sync-jobs/${job_name}.log"
@@ -6087,53 +6194,42 @@ _sync_edit_job() {
     esac
 }
 
+# Keep the job's record in step with a schedule change (an unconverted old job has none).
+_sync_rec_set_schedule() {  # name kind spec
+    _sync_rec_load "$1" || return 0
+    J_sched_kind=$2; J_sched=$3
+    _sync_rec_write
+}
+
 _sync_change_schedule() {
-    local job_name="$1"
-    local old_line="$2"
-    local old_type="$3"
-    local sched_out sched_kind sched_spec
+    local job_name="$1" old_line="$2" old_type="$3"
+    local sched_out sched_kind sched_spec msg
     sched_out=$(_sync_pick_schedule) || return 1
     sched_kind="${sched_out%% *}"
     sched_spec="${sched_out#* }"
 
     local script_path="$HOME/.local/bin/sync-${job_name}.sh"
 
-    # If the job type is changing (cron ↔ timer), tear down the old side
-    # before installing the new one.
-    if [[ "$old_type" == "cron" && "$sched_kind" == "timer" ]]; then
-        _cron_remove_line "$old_line" || return 1
+    if [[ "$sched_kind" == "timer" ]]; then
+        # cron → timer tears the cron line down first; timer → timer just reinstalls.
+        if [[ "$old_type" == "cron" ]]; then _cron_remove_line "$old_line" || return 1; fi
         _sync_install_timer "$job_name" "$script_path" "$sched_spec"
-        ok "Schedule updated for '${job_name}' → timer (${sched_spec})"
-        return
-    fi
-    if [[ "$old_type" == "timer" && "$sched_kind" == "cron" ]]; then
+        msg="timer (${sched_spec})"
+    elif [[ "$old_type" == "timer" ]]; then
         _sync_remove_timer "$job_name"
         _cron_add_sync "$job_name" "$sched_spec" "$script_path" || return 1
-        local human; human=$(_cron_to_english "$sched_spec")
-        ok "Schedule updated for '${job_name}' → ${human}"
-        return
+        msg=$(_cron_to_english "$sched_spec")
+    else
+        # Cron → cron: preserve the #PAUSED# prefix and the command field.
+        _sync_cron_split "$old_line"
+        local prefix="" rest=$_cs_cmd
+        [[ -n "$_cs_paused" ]] && prefix="#PAUSED#"
+        _cron_replace_line "$old_line" "${prefix}${sched_spec} ${rest}" || return 1
+        msg=$(_cron_to_english "$sched_spec")
     fi
-
-    if [[ "$sched_kind" == "timer" ]]; then
-        # Same-type rewrite: just reinstall the timer with the new OnCalendar.
-        _sync_install_timer "$job_name" "$script_path" "$sched_spec"
-        ok "Schedule updated for '${job_name}' → timer (${sched_spec})"
-        return
-    fi
-
-    # Cron → cron: preserve the #PAUSED# prefix and the command field.
-    _sync_cron_split "$old_line"
-    local prefix="" rest=$_cs_cmd
-    [[ -n "$_cs_paused" ]] && prefix="#PAUSED#"
-
-    local new_line="${prefix}${sched_spec} ${rest}"
-    _cron_replace_line "$old_line" "$new_line" || return 1
-
-    local human
-    human=$(_cron_to_english "$sched_spec")
-    ok "Schedule updated for '${job_name}' → ${human}"
+    _sync_rec_set_schedule "$job_name" "$sched_kind" "$sched_spec" || return 1
+    ok "Schedule updated for '${job_name}' → ${msg}"
 }
-
 _sync_show_status() {
     # Fetch server-side crons FIRST (may prompt for sudo password) so the
     # password prompt appears before any table rendering.
@@ -6175,6 +6271,7 @@ _sync_show_status() {
     # always empty (it isn't a show property), which is why this used to blank.
     server_timer_oncal=$(ssh "$SERVER_USER@$SERVER_IP" 'systemctl cat immich-backup.timer 2>/dev/null | sed -n "s/^OnCalendar=//p" | head -1') || server_timer_oncal=""
 
+    _sync_import_all_legacy
     echo ""
     echo -e "  ${BOLD}Scheduled tasks${NC}"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -6221,13 +6318,12 @@ _sync_show_status() {
     done
 
     # Laptop-side sync jobs: cron lines and systemd --user timers, one registry
+    local i name sched when direction mode tag script_path
     _sync_registry_load
-    local i name sched when direction tag script_path
     for i in "${!_sync_jobs[@]}"; do
         name=${_sync_jobs[i]}; sched=${_sync_job_scheds[i]}
         script_path="$HOME/.local/bin/sync-${name}.sh"
-        direction=$(_sync_job_field "$script_path" Direction)
-        [[ -z "$direction" ]] && direction="sync"
+        if _sync_rec_load "$name"; then direction=$J_direction; mode=$J_mode; else direction=sync; mode=-; fi
         if [[ "${_sync_job_types[i]}" == cron ]]; then
             when=$(_cron_to_english "$sched"); tag=""
             [[ -n "${_sync_job_paused[i]}" ]] && tag="${YELLOW}(paused)${NC}"
@@ -6236,7 +6332,10 @@ _sync_show_status() {
             [[ -n "${_sync_job_paused[i]}" ]] && tag="${YELLOW}(paused)${NC}"
         fi
         printf "  %-20s %-18s %-16s %-10s " "$name" "$sched" "$when" "$direction"
-        echo -e "$(_sync_mode_cell "$(_sync_job_mode "$script_path")") $(_sync_result_text "$name") $tag"
+        echo -e "$(_sync_mode_cell "$mode") $(_sync_result_text "$name") $tag"
+        if [[ -n "${_sync_cannot[$name]+x}" ]]; then
+            echo -e "  ${YELLOW}  cannot convert: ${_sync_cannot[$name]}${NC} ${DIM}($script_path)${NC}"
+        fi
     done
 
     # Check outside subshells (pipe subshells can't propagate state)
@@ -6413,7 +6512,7 @@ _sync_job_delete() {  # name type line
     else
         _sync_remove_timer "$name"
     fi
-    rm -f "$HOME/.local/bin/sync-${name}.sh" "$HOME/.local/share/sync-jobs/${name}.log"
+    rm -f "$HOME/.local/bin/sync-${name}.sh" "$HOME/.local/share/sync-jobs/${name}.log" "$HOME/.local/share/sync-jobs/${name}.job"
     ok "Deleted sync job '${name}'"
 }
 
@@ -7059,17 +7158,7 @@ step_sync() {
             _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-            # Shell-quote every interpolated path with _shq (printf %q): these
-            # strings are run via `bash -c` AND written verbatim into a scheduled
-            # job script, so an unquoted path with a space/quote/$/backtick would
-            # word-split or inject. The mkdir runs on the SERVER, so quote it once
-            # for the remote shell, then quote the whole ssh command for the local
-            # one. rsync's -s (--protect-args) stops the remote shell from
-            # re-splitting the path, so _shq only has to satisfy the local shell.
-            local remote_mkdir="sudo mkdir -p $(_shq "$dest_display") && sudo chown $(_shq "$SERVER_USER:$SERVER_USER") $(_shq "$dest_display")"
-            local pre_cmd="ssh -t $(_shq "$SERVER_USER@$SERVER_IP") $(_shq "$remote_mkdir")"
-            local rsync_cmd="rsync -avh --progress -s $(_shq "$rsync_src") $(_shq "$SERVER_USER@$SERVER_IP:$server_path/")"
-            _sync_execute_or_schedule "upload" "$local_path" "$dest_display" "$rsync_cmd" "$pre_cmd" "$sync_mode" local
+            _sync_execute_or_schedule upload "$local_path" "$server_path" "$copy_mode" "$sync_mode"
             ;;
 
         2)
@@ -7099,12 +7188,7 @@ step_sync() {
             _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-            # Shell-quote every path with _shq (see the upload branch): the dest
-            # mkdir runs locally here; rsync -s (--protect-args) keeps the remote
-            # source path from being re-split by the server's shell.
-            local pre_cmd="sudo mkdir -p $(_shq "$dest_display")"
-            local rsync_cmd="rsync -avh --progress -s $(_shq "$SERVER_USER@$SERVER_IP:$rsync_src") $(_shq "$local_path/")"
-            _sync_execute_or_schedule "download" "$server_path" "$dest_display" "$rsync_cmd" "$pre_cmd" "$sync_mode" server
+            _sync_execute_or_schedule download "$server_path" "$local_path" "$copy_mode" "$sync_mode"
             ;;
 
         3)

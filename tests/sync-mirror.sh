@@ -17,11 +17,10 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 CR=$'\033[R]'; CY=$'\033[Y]'   # status() swaps these in for RED/YELLOW
 
 { for f in ok fail info warn ssh _shq; do extract_fn "$f" "$SRC"; done   # ssh may be missing in an old copy: skipped
-  grep -E "^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_RSYNC_FLAGS=" "$SRC"
+  grep -E "^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_RSYNC_FLAGS=|^_SSH_OPTS=|^export RSYNC_RSH=|^_SYNC_REC_KEYS=" "$SRC"
   for f in _drive_verdict _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
-           _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
-           _sync_mode_cell _sync_result_text _sync_last_result _sync_change_mode \
-           _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs _sync_cron_split _sync_registry_load _sync_job_delete _sync_delete_job _sync_change_schedule _sync_remove_timer _confirm_delete _cron_cmd _cron_get _cron_drop _cron_set _cron_remove_line _cron_replace_line \
+           _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mode_cell _sync_result_text _sync_last_result _sync_change_mode \
+           _sync_execute_or_schedule _sync_show_status _sync_rec_write _sync_rec_load _sync_write_launcher _sync_default_name _sync_valid_name _sync_job_operands _sync_job_steps _sync_job_go _sync_job_run _sync_prepare_dest _sync_rec_set_schedule _sync_rec_mode _sync_job_import_legacy _sync_import_all_legacy _sync_tokenize _pick_server_endpoint _tcp_open _is_server _sync_edit_job _sync_list_jobs _sync_cron_split _sync_registry_load _sync_job_delete _sync_delete_job _sync_change_schedule _sync_remove_timer _confirm_delete _cron_cmd _cron_get _cron_drop _cron_set _cron_remove_line _cron_replace_line \
            _cron_to_english _sync_one_time_backup; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 source "$T/fn.sh"
 type _sync_one_time_backup >/dev/null 2>&1 || echo "FAIL  setup: mirror functions not found in $SRC (older setup.sh?)"
@@ -46,8 +45,11 @@ cat > "$T/bin/systemctl" <<'X'
 case "$*" in *is-enabled*) echo enabled ;; esac
 exit 0
 X
+printf '#!/bin/bash\n[ "$1" = chown ] && exit 0\nexec "$@"\n' > "$T/bin/sudo"
 chmod +x "$T/bin/"*
 export T P_SRC P_DST
+mkdir -p "$T/tmpd"; export TMPDIR=$T/tmpd
+_FV_SELF=$(readlink -f "$SRC")
 export PATH="$T/bin:$PATH" HOME="$T/home" CRON_FILE="$T/crontab" SERVER_USER=u SERVER_IP=h
 export FM_ROOT="$T/mnt/usb"
 _DRIVE_ROOTS="$T/mnt"   # the sandbox stands in for /mnt; shipped into job scripts and to the "server" with declare -p
@@ -194,7 +196,7 @@ mk; run "4\ndelete\ny\n" LOCALCMD
 check 5jk "server -> server: one question" 'copied && extras_gone && [ "$(nq)" = 1 ] && [[ "$OUT" != *"Proceed?"* ]]'
 mk; run "4\n\ny\n" LOCALCMD
 check 5jl "server -> server append: unchanged, Proceed? answered (not cancelled)" '[[ "$OUT" != *"Cancelled"* ]] && extras_kept'
-mk; run "1\ny\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
+mk; run "1\ny\n" _sync_execute_or_schedule upload "$T/s" "$T/d" contents mirror
 check 5jm "Run now (no box): the deletion question is the only one" 'copied && extras_gone && [ "$(nq)" = 1 ] && [[ "$OUT" != *"Proceed?"* ]]'
 
 # ── 5c  From: size of a symlinked source ──────────────────────────────────
@@ -245,59 +247,65 @@ mk; run "${ONE}\n$Y" LOCALCMD
 check 7i "no mirror banner on an append copy" '[[ "$OUT" != *"$BAN"* ]]'
 
 # ── 8  scheduled jobs ─────────────────────────────────────────────────────
-JOB=$T/home/.local/bin/sync-j1.sh; LOG=$T/home/.local/share/sync-jobs/j1.log
-mkjob() { # mode answers
-  mk; local cmd="rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")"
-  run "2\nj1\n$2" _sync_execute_or_schedule upload "$T/s" "$T/d" "$cmd" "" "$1" local
+# A job is a record + a two-line launcher; "a cron run" here is the run itself
+# (_sync_job_run, logged to the job's log the way --run-job does). The launcher
+# dispatch through the real setup.sh is covered in tests/sync-jobs.sh.
+JOB=$T/home/.local/bin/sync-j1.sh; LOG=$T/home/.local/share/sync-jobs/j1.log; LOGD=$T/home/.local/share/sync-jobs
+jobrun() { # name -> output into its log, JRC = its exit code
+  ( exec >>"$T/home/.local/share/sync-jobs/$1.log" 2>&1; _sync_job_run "$1" ); JRC=$?
+}
+recmode() { _sync_rec_load "$1" && echo "$J_mode"; }
+mkjob() { # mode answers [direction]
+  mk
+  run "2\nj1\n$2" _sync_execute_or_schedule "${3:-upload}" "$T/s" "$T/d" contents "$1"
 }
 mkjob mirror "y\n"
 check 8a "mirror job: warning, preview, Save prompt" '[[ "$OUT" == *"⚠ Every scheduled run will delete destination files that are gone from the source."* && "$OUT" == *"⚠ 3 files would be deleted at $T/d:"* && "$OUT" == *"Save this job as mirror? [y/N]: "* ]]'
-check 8b "mode is stored in the job script" '[ "$(sed -n "s/^MODE=//p" "$JOB")" = mirror ] && grep -q "^_mirror_guard local" "$JOB"'
+check 8b "mode is stored in the job record; the launcher is two lines" '[ "$(recmode j1)" = mirror ] && [ "$(wc -l < "$JOB")" = 2 ] && bash -n "$JOB"'
 check 8c "the cron line runs that script" 'grep -q "sync-j1.sh" "$CRON_FILE"'
 check 8d "creating it ran the first mirror copy" 'copied && extras_gone'
 echo q > "$T/d/stray"; echo n > "$T/d/sub/stray2"
-bash "$(awk '{print $NF}' "$CRON_FILE")" >/dev/null 2>&1
+jobrun j1
 check 8e "cron run of a mirror job deletes extras" '[ ! -e "$T/d/stray" ] && [ ! -e "$T/d/sub/stray2" ] && copied'
 mkjob mirror "n\n"
-check 8f "Save = n: nothing saved, no cron line, nothing copied" '[ ! -e "$JOB" ] && [ ! -s "$CRON_FILE" ] && ! copied && [[ "$OUT" == *"Cancelled - nothing changed."* ]]'
+check 8f "Save = n: nothing saved, no cron line, nothing copied" '[ ! -e "$JOB" ] && [ -z "$(recmode j1)" ] && [ ! -s "$CRON_FILE" ] && ! copied && [[ "$OUT" == *"Cancelled - nothing changed."* ]]'
 mkjob append "\n"
-check 8g "append job: stored as append, no prompt" '[ "$(sed -n "s/^MODE=//p" "$JOB")" = append ] && [[ "$OUT" != *"Save this job"* ]]'
+check 8g "append job: stored as append, no prompt" '[ "$(recmode j1)" = append ] && [[ "$OUT" != *"Save this job"* ]]'
 echo q > "$T/d/stray"
-bash "$JOB" >/dev/null 2>&1
+jobrun j1
 check 8h "cron run of an append job keeps destination extras" '[ -e "$T/d/stray" ] && [ -e "$T/d/gone" ] && copied'
 mkjob mirror "y\n"
-rm -rf "$T/s"; mkdir "$T/s"; echo q > "$T/d/stray"
-bash "$JOB" >/dev/null 2>&1; JRC=$?
+rm -rf "$T/s"; mkdir "$T/s"; echo q > "$T/d/stray"; : > "$LOG"
+jobrun j1
 check 8i "empty source: cron run skips - no rsync, nothing deleted" '[ "$JRC" = 0 ] && [ -e "$T/d/stray" ] && [ -e "$T/d/a" ]'
 check 8j "skip is logged in the agreed form" 'grep -Eq "^[0-9-]+ [0-9:]+: SKIPPED j1 - source empty \(mirror refused, nothing deleted\)$" "$LOG"'
 check 8k "skip run writes no rsync output" '! grep -q "sending incremental" "$LOG"'
 rm -rf "$T/s"
-bash "$JOB" >/dev/null 2>&1
+jobrun j1
 check 8l "missing source: cron run skips too" '[ -e "$T/d/stray" ] && [ "$(grep -c SKIPPED "$LOG")" = 2 ]'
 check 8r "missing source is logged as such, not as empty/unmounted" 'tail -n 1 "$LOG" | grep -Eq ": SKIPPED j1 - source missing \(mirror refused"'
 mk; mkdir -p "$T/mnt/usb/data"; echo q > "$T/mnt/usb/data/f"; export FM_MODE=stub
-cmd="rsync -avh --progress -s $(_shq "$T/mnt/usb/data/") $(_shq "$T/d/")"
-run "2\nj2\ny\n" _sync_execute_or_schedule upload "$T/mnt/usb/data" "$T/d" "$cmd" "" mirror local
+run "2\nj2\ny\n" _sync_execute_or_schedule upload "$T/mnt/usb/data" "$T/d" contents mirror
 check 8m "unmounted source refused at creation" '[ ! -e "$T/home/.local/bin/sync-j2.sh" ] && extras_kept && [[ "$OUT" == *"Refused."* ]]'
 mk; mkdir -p "$T/mnt/usb/data"; echo q > "$T/mnt/usb/data/f"; export FM_MODE=ok
-run "2\nj2\n4\n" _sync_execute_or_schedule upload "$T/mnt/usb/data" "$T/d" "$cmd" "" mirror local   # sub/ goes whole: type the count
+run "2\nj2\n4\n" _sync_execute_or_schedule upload "$T/mnt/usb/data" "$T/d" contents mirror   # sub/ goes whole: type the count
 echo k > "$T/d/stray"; export FM_MODE=stub
-bash "$T/home/.local/bin/sync-j2.sh" >/dev/null 2>&1
+jobrun j2
 check 8n "cron run after the drive vanished (stub mount) skips" '[ -e "$T/d/stray" ] && grep -q "SKIPPED j2" "$T/home/.local/share/sync-jobs/j2.log"'
 check 8s "unmounted drive is logged as such" 'grep -Eq ": SKIPPED j2 - drive not mounted \(mirror refused" "$T/home/.local/share/sync-jobs/j2.log"'
-mk; run "2\nj3\ny\n" _sync_execute_or_schedule download "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$SERVER_USER@$SERVER_IP:$T/s/") $(_shq "$T/d/")" "" mirror server
+mk; run "2\nj3\ny\n" _sync_execute_or_schedule download "$T/s" "$T/d" contents mirror
 echo k > "$T/d/stray"; rm -rf "$T/s"; mkdir "$T/s"
-bash "$T/home/.local/bin/sync-j3.sh" >/dev/null 2>&1
-check 8o "download job: the guard checks the SERVER path (over ssh) and skips" '[ -e "$T/d/stray" ] && grep -q "SKIPPED j3" "$T/home/.local/share/sync-jobs/j3.log" && [ "$(sed -n "s/^# Direction: //p" "$T/home/.local/bin/sync-j3.sh")" = download ]'
-SSH_DOWN=1 bash "$T/home/.local/bin/sync-j3.sh" >/dev/null 2>&1; unset SSH_DOWN
+jobrun j3
+check 8o "download job: the guard checks the SERVER path (over ssh) and skips" '[ -e "$T/d/stray" ] && grep -q "SKIPPED j3" "$T/home/.local/share/sync-jobs/j3.log" && [ "$(_sync_rec_load j3; echo $J_direction)" = download ]'
+SSH_DOWN=1 jobrun j3; unset SSH_DOWN
 check 8t "unreachable server is logged as a failed check, not as an empty source" '[ -e "$T/d/stray" ] && tail -n 1 "$T/home/.local/share/sync-jobs/j3.log" | grep -Eq ": SKIPPED j3 - could not check source \(mirror refused"'
-mk; run "1\ny\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
+mk; run "1\ny\n" _sync_execute_or_schedule upload "$T/s" "$T/d" contents mirror
 check 8p "Run now with a mirror: preview, confirm, deletes" 'extras_gone && [[ "$OUT" == *"Mirror complete - 3 deleted"* ]]'
-mk; run "1\n\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
+mk; run "1\n\n" _sync_execute_or_schedule upload "$T/s" "$T/d" contents mirror
 check 8q "Run now, confirm = Enter: nothing changed" 'extras_kept && ! copied'
-mkempty; run "1\ny\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
+mkempty; run "1\ny\n" _sync_execute_or_schedule upload "$T/s" "$T/d" contents mirror
 check 8u "Run now with only empty folders to remove: warned, confirmed, removed" '[[ "$OUT" == *"⚠ 2 empty folders would be removed at $T/d:"* && "$OUT" != *"Nothing to delete"* ]] && empties_gone'
-mkempty; run "2\nj1\nn\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
+mkempty; run "2\nj1\nn\n" _sync_execute_or_schedule upload "$T/s" "$T/d" contents mirror
 check 8v "Save job (mirror) with only empty folders: warned before the Save prompt" '[[ "$OUT" == *"⚠ 2 empty folders would be removed at $T/d:"*"Save this job as mirror? [y/N]: "* ]] && empties_kept'
 
 # ── 9  Status rows ────────────────────────────────────────────────────────
@@ -307,7 +315,7 @@ status() { ( RED=$CR; YELLOW=$CY; GREEN=$'\033[G]'; NC=$'\033[N]'
   _sync_show_status ) 2>&1; }
 mk
 mkjob mirror "y\n" >/dev/null
-# legacy job: a pre-mirror script (no MODE= line, plain rsync line)
+# an old generated script (pre-mirror, no MODE= line): Status converts it to a record + launcher
 cat > "$T/home/.local/bin/sync-old.sh" <<EOF
 #!/bin/bash
 # Sync job: old
@@ -315,8 +323,10 @@ cat > "$T/home/.local/bin/sync-old.sh" <<EOF
 # Source: $T/s
 # Destination: $T/d
 exec >>"$T/home/.local/share/sync-jobs/old.log" 2>&1
+SERVER_USER="u"
+SERVER_IP="h"
 echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: old"
-rsync -avh --progress -s '$T/s/' '$T/d/'
+rsync -avh --progress -s '$T/s/' 'u@h:$T/d/'
 echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: old (exit \$?)"
 EOF
 chmod +x "$T/home/.local/bin/sync-old.sh"
@@ -327,9 +337,9 @@ printf '[2026-11-20 03:00:05] Sync finished: old (exit 0)\n' >> "$T/home/.local/
 OUT=$(status); RC=0
 row() { grep -E "^  $1 " <<<"$OUT" | head -n 1; }
 check 9a "mirror job row shows 'mirror' in the destructive colour" "[[ \"\$(row j1)\" == *\"\${CR}mirror\"* ]]"
-check 9b "legacy job (no stored mode) shows append" '[[ "$(row old)" == *append* && "$(row old)" != *mirror* ]]'
+check 9b "converted old job (no stored mode) shows append" '[[ "$(row old)" == *append* && "$(row old)" != *mirror* ]]'
 check 9c "skipped last result shown in yellow on the mirror row" "[[ \"\$(row j1)\" == *\"\${CY}last: skipped (source empty)\"* ]]"
-check 9d "clean last result shown on the legacy row" '[[ "$(row old)" == *"last: ok"* ]]'
+check 9d "clean last result shown on the converted row" '[[ "$(row old)" == *"last: ok"* ]]'
 check 9e "Immich backup row shows append" '[[ "$(row immich-backup)" == *append* ]]'
 check 9f "table has a Copy column" '[[ "$OUT" == *"Name"*"Copy"*"Note"* ]]'
 check 9g "Last runs table also reports the skip" '[[ "$OUT" == *"j1"*"skipped (source empty)"* ]]'
@@ -339,103 +349,62 @@ check 9m "Status names the real reason of the last skip" "[[ \"\$(row j1)\" == *
 printf '2026-11-22 03:00:01: SKIPPED j1 - source empty or drive not mounted (mirror refused, nothing deleted)\n' >> "$LOG"
 OUT=$(status)
 check 9n "a skip logged by an older script keeps its own wording" "[[ \"\$(row j1)\" == *\"last: skipped (source empty or drive not mounted)\"* ]]"
+printf '2026-11-23 03:00:01: SKIPPED j1 - would delete 4 files (over the mirror limit), nothing deleted\n' >> "$LOG"
+OUT=$(status)
+check 9o "a wipe-cap skip is shown with its count" "[[ \"\$(row j1)\" == *\"last: skipped (would delete 4 files (over the mirror limit))\"* ]]"
 # systemd-timer job rows too
 mkdir -p "$T/home/.config/systemd/user"
 printf '[Timer]\nOnCalendar=Sat\n' > "$T/home/.config/systemd/user/sync-wk.timer"
-cp "$JOB" "$T/home/.local/bin/sync-wk.sh"
+J_name=wk J_mode=mirror J_direction=upload J_src=$T/s J_dest=$T/d J_src_loc=local J_dest_loc=server J_copy_mode=contents J_sched_kind=timer J_sched=Sat J_created=x
+_sync_rec_write; _sync_write_launcher wk
 OUT=$(status)
 check 9h "timer job row shows its mode" '[[ "$(row wk)" == *mirror* ]]'
 rm -rf "$T/home/.config"
-# A REAL generated job script, run for real: a failed rsync must log its own
-# exit code and show as "last: failed (exit N)"; a clean run as "last: ok".
-mk; mkjob append "\n" >/dev/null
+# A REAL run of a job: a failed rsync must log its own exit code and show as
+# "last: failed (exit N)"; a clean run as "last: ok".
+mkjob append "\n" >/dev/null
 logexit() { grep -oP 'Sync finished: j1 \(exit \K[0-9]+' "$LOG" | tail -n 1; }
 rm -rf "$T/s"
-bash "$JOB" >/dev/null 2>&1; JRC=$?; LE=$(logexit)
+jobrun j1; LE=$(logexit)
 OUT=$(status)
 check 9i "real failed run (missing source) logs a non-zero exit" '[ -n "$LE" ] && [ "$LE" != 0 ]'
 check 9j "Status shows last: failed (exit N) with that same N" '[[ "$(row j1)" == *"last: failed (exit $LE)"* ]]'
-check 9k "the job script exits with the rsync code (a timer unit shows failed)" '[ "$JRC" != 0 ] && [ "$JRC" = "$LE" ]'
+check 9k "the job exits with the rsync code (a timer unit shows failed)" '[ "$JRC" != 0 ] && [ "$JRC" = "$LE" ]'
 mkdir -p "$T/s"; echo a > "$T/s/a"
-bash "$JOB" >/dev/null 2>&1; JRC=$?
+jobrun j1
 OUT=$(status)
-check 9l "a clean real run after it: log says exit 0, Status shows last: ok, script exits 0" '[ "$(logexit)" = 0 ] && [ "$JRC" = 0 ] && [[ "$(row j1)" == *"last: ok"* ]]'
+check 9l "a clean real run after it: log says exit 0, Status shows last: ok, job exits 0" '[ "$(logexit)" = 0 ] && [ "$JRC" = 0 ] && [[ "$(row j1)" == *"last: ok"* ]]'
 
 # ── 10 Edit job -> Change copy mode ──────────────────────────────────────
-mk
 mkjob append "\n" >/dev/null
 EDIT() { _sync_edit_job; }
 run "1\n6\ndelete\ny\n" EDIT
 check 10a "menu offers 'Change copy mode' as 6 and keeps 0) Back" '[[ "$OUT" == *"6)"*"Change copy mode"* && "$OUT" == *"0)"*"Back"* ]]'
-check 10b "append -> mirror stores MODE=mirror with the guard" '[ "$(sed -n "s/^MODE=//p" "$JOB")" = mirror ] && grep -q "^_mirror_guard local" "$JOB" && bash -n "$JOB"'
-check 10b2 "the mirror job script carries its own verdict (_drive_verdict + _DRIVE_ROOTS, no function from the menu)" 'grep -q "^declare -- _DRIVE_ROOTS=" "$JOB" && grep -q "^_drive_verdict ()" "$JOB" && ! grep -q "_mirror_check_here" "$JOB" && bash -n "$JOB"'
+check 10b "append -> mirror stores mode=mirror in the record; the launcher is untouched" '[ "$(recmode j1)" = mirror ] && [ "$(wc -l < "$JOB")" = 2 ] && bash -n "$JOB"'
+check 10b2 "no function copy or frozen value anywhere: the job files hold no verdict code" '! grep -q "_drive_verdict\|_mirror_guard\|SERVER_IP" "$JOB" "$LOGD/j1.job"'
 check 10c "same preview + Save prompt as at creation" '[[ "$OUT" == *"⚠ 3 files would be deleted at $T/d:"* && "$OUT" == *"Save this job as mirror? [y/N]: "* ]]'
-check 10d "the rewritten job now deletes on its cron run" 'echo q > "$T/d/stray"; bash "$JOB" >/dev/null 2>&1; [ ! -e "$T/d/stray" ]'
-mk; mkjob mirror "y\n" >/dev/null
+check 10d "the changed job now deletes on its next run" 'echo q > "$T/d/stray"; jobrun j1; [ ! -e "$T/d/stray" ]'
+mkjob mirror "y\n" >/dev/null
 run "1\n6\n\n" EDIT
-check 10f "mirror -> append (Enter) stores MODE=append" '[ "$(sed -n "s/^MODE=//p" "$JOB")" = append ] && ! grep -q "_mirror_guard" "$JOB" && [[ "$OUT" == *"Append only"* ]]'
-check 10g "append rewrite keeps the rsync line runnable and non-deleting" 'echo q > "$T/d/stray"; bash "$JOB" >/dev/null 2>&1; [ -e "$T/d/stray" ]'
-mk; mkjob append "\n" >/dev/null
+check 10f "mirror -> append (Enter) stores mode=append" '[ "$(recmode j1)" = append ] && [[ "$OUT" == *"Append only"* ]]'
+check 10g "an append job keeps destination extras" 'echo q > "$T/d/stray"; jobrun j1; [ -e "$T/d/stray" ]'
+mkjob append "\n" >/dev/null
 rm -rf "$T/s"; mkdir "$T/s"
 run "1\n6\ndelete\ny\n" EDIT
-check 10h "mirror refused on an empty source: job stays append" '[ "$(sed -n "s/^MODE=//p" "$JOB")" = append ] && [[ "$OUT" == *"Refused."* ]]'
-mk; mkjob append "\n" >/dev/null
+check 10h "mirror refused on an empty source: job stays append" '[ "$(recmode j1)" = append ] && [[ "$OUT" == *"Refused."* ]]'
+mkjob append "\n" >/dev/null
 run "1\n6\ndelete\n\n" EDIT
-check 10i "Save = Enter: job unchanged" '[ "$(sed -n "s/^MODE=//p" "$JOB")" = append ] && [[ "$OUT" == *"Cancelled - nothing changed."* ]]'
+check 10i "Save = Enter: job unchanged" '[ "$(recmode j1)" = append ] && [[ "$OUT" == *"Cancelled - nothing changed."* ]]'
 mkjob append "\n" >/dev/null; rm -rf "$T/d"; mkdir -p "$T/d/sub" "$T/d/e1" "$T/d/e2"; echo a > "$T/d/a"; echo b > "$T/d/sub/b"
 run "1\n6\ndelete\nn\n" EDIT
 check 10q "Change copy mode with only empty folders to remove: warned before the Save prompt" '[[ "$OUT" == *"⚠ 2 empty folders would be removed at $T/d:"*"Save this job as mirror? [y/N]: "* && "$OUT" != *"Nothing to delete"* ]]'
-# a pre-mirror (legacy) script is upgraded in place
-mk
-cat > "$T/home/.local/bin/sync-old.sh" <<EOF
-#!/bin/bash
-# Sync job: old
-# Direction: upload
-# Source: $T/s
-# Destination: $T/d
-exec >>"$T/home/.local/share/sync-jobs/old.log" 2>&1
-echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: old"
-rsync -avh --progress -s '$T/s/' '$T/d/'
-echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: old (exit \$?)"
-EOF
-chmod +x "$T/home/.local/bin/sync-old.sh"; echo "30 3 * * * $T/home/.local/bin/sync-old.sh" > "$CRON_FILE"
-run "1\n6\ndelete\ny\n" EDIT
-check 10j "legacy script (no MODE=) upgraded to mirror and still runs" '[ "$(sed -n "s/^MODE=//p" "$T/home/.local/bin/sync-old.sh")" = mirror ] && bash -n "$T/home/.local/bin/sync-old.sh" && bash "$T/home/.local/bin/sync-old.sh" >/dev/null 2>&1 && extras_gone && copied'
-# a legacy script's finish line logged date's exit (always 0): set_mode upgrades it
-mk
-OLD=$T/home/.local/bin/sync-old.sh; OLOG=$T/home/.local/share/sync-jobs/old.log
-cat > "$OLD" <<EOF
-#!/bin/bash
-# Sync job: old
-# Direction: upload
-# Source: $T/s
-# Destination: $T/d
-exec >>"$OLOG" 2>&1
-echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: old"
-rsync -avh --progress -s '$T/s/' '$T/d/'
-echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: old (exit \$?)"
-EOF
-chmod 750 "$OLD"
-_sync_job_set_mode "$OLD" append; SRC1=$?
-cp "$OLD" "$T/old.after1"
-rm -rf "$T/s"; bash "$OLD" >/dev/null 2>&1; ORC=$?
-OLE=$(grep -oP 'Sync finished: old \(exit \K[0-9]+' "$OLOG" | tail -n 1)
-check 10l "legacy finish line upgraded: failed rsync logs its real non-zero exit and the script exits with it" '[ "$SRC1" = 0 ] && [ -n "$OLE" ] && [ "$OLE" != 0 ] && [ "$ORC" = "$OLE" ] && bash -n "$OLD"'
-check 10m "Status shows last: failed (exit N) for the upgraded legacy job" '[[ "$(_sync_result_text old)" == *"last: failed (exit $OLE)"* ]]'
-check 10n "script mode kept (750)" '[ "$(stat -c %a "$OLD")" = 750 ]'
-_sync_job_set_mode "$OLD" append
-check 10o "a second set_mode changes nothing (idempotent, no duplicate rc/exit lines)" 'cmp -s "$OLD" "$T/old.after1" && [ "$(grep -c "^rc=" "$OLD")" = 1 ] && [ "$(grep -c "^exit \$rc" "$OLD")" = 1 ]'
-mk; mkjob append "\n" >/dev/null; cp "$JOB" "$T/new.before"
-_sync_job_set_mode "$JOB" append
-check 10p "a script already in the current form is not touched" 'cmp -s "$JOB" "$T/new.before"'
-
+check 10r "Change copy mode leaves no temp file behind (no mktemp leak)" '[ -z "$(ls "$TMPDIR" 2>/dev/null)" ] && [ -z "$(ls "$T/home/.local/bin" "$LOGD" | grep -E "\.[A-Za-z0-9]{6}$")" ]'
 # a download job (source on the server): editing to mirror must guard over ssh
-mk; JOB3=$T/home/.local/bin/sync-dl.sh
-run "2\ndl\n" _sync_execute_or_schedule download "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$SERVER_USER@$SERVER_IP:$T/s/") $(_shq "$T/d/")" "" append server
+mkjob append "\n" download >/dev/null
 run "1\n6\ndelete\ny\n" EDIT
 echo k > "$T/d/stray"; rm -rf "$T/s"; mkdir "$T/s"
-bash "$JOB3" >/dev/null 2>&1
-check 10k "edited download job guards the SERVER source and skips on empty" '[ "$(sed -n "s/^MODE=//p" "$JOB3")" = mirror ] && grep -q "^_mirror_guard server" "$JOB3" && [ -e "$T/d/stray" ] && grep -q "SKIPPED dl" "$T/home/.local/share/sync-jobs/dl.log"'
+jobrun j1
+check 10k "edited download job guards the SERVER source and skips on empty" '[ "$(recmode j1)" = mirror ] && [ -e "$T/d/stray" ] && grep -q "SKIPPED j1" "$LOG"'
 
 # ── 11  Immich backup stays append-only ───────────────────────────────────
 IMM=$(for f in step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove step_immich_backup_menu; do extract_fn "$f" "$SRC"; done)

@@ -23,7 +23,7 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
            _sync_result_text _sync_change_mode _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _sync_delete_job _sync_job_delete _sync_cron_split _sync_registry_load _sync_change_schedule _sync_install_timer _sync_remove_timer \
            _sync_rec_load _sync_rec_write _sync_valid_name _sync_default_name _sync_write_launcher _sync_job_run _sync_job_go \
-           _sync_job_operands _sync_job_steps _sync_job_import_legacy _sync_import_all_legacy _sync_tokenize _sync_setup_path _sync_run_logged _sync_one_time_backup; do
+           _sync_job_operands _sync_job_steps _sync_job_import_legacy _sync_prepare_dest _sync_rec_set_schedule _sync_rec_mode _sync_job_go _sync_import_all_legacy _sync_tokenize _sync_one_time_backup _sync_pick_schedule_unused; do
     extract_fn "$f" "$SRC"; done
   grep -E '^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_SYNC_REC_KEYS=|^_SSH_OPTS=|^export RSYNC_RSH=|^_RSYNC_FLAGS=' "$SRC"; echo 'SSH_OPTS_OK=1'; } > "$T/fn.sh"
 source "$T/fn.sh"
@@ -62,6 +62,7 @@ esac
 exit 0
 X
 printf '#!/bin/bash\nexit 0\n' > "$T/bin/loginctl"
+printf '#!/bin/bash\n[ "$1" = chown ] && exit 0\nexec "$@"\n' > "$T/bin/sudo"
 # rsync stub for the "what does the log say for exit N" runs: argv saved, exit $RSYNC_RC
 cat > "$T/rsync-stub" <<'X'
 #!/bin/bash
@@ -69,6 +70,7 @@ echo "$*" >> "$RSYNC_LOG"
 exit "${RSYNC_RC:-0}"
 X
 chmod +x "$T/bin/"* "$T/rsync-stub"
+_FV_SELF=$(readlink -f "$SRC"); FEDERVER_CONFIG=$T/federver-config   # launchers run the real setup.sh under test
 export T RSYNC_LOG="$T/rsync.log" SSH_LOG="$T/ssh.log"
 export PATH="$T/bin:$PATH" HOME="$T/home" CRON_FILE="$T/crontab" SERVER_USER=u SERVER_IP=h SERVER_HOST_TS=
 export FM_ROOT="$T/mnt/usb"
@@ -156,7 +158,14 @@ run "" _sync_delete_job
 check 2g "no jobs: says so" '[[ "$OUT" == *"No sync jobs to delete."* ]]'
 
 # ── 3  dotted job names are listed and manageable (was: empty name) ──────
-mk; mkjob my.photos >/dev/null
+mk; mkjob dotted >/dev/null
+if [ -n "$NEWDESIGN" ]; then   # a dotted name can no longer be created: make one the way an old job exists
+  _cron_remove_line "sync-dotted.sh"; rm -f "$BIND/sync-dotted.sh" "$LOGD/dotted.job"
+  mkdir -p "$BIND"; J_name=my.photos J_direction=upload J_mode=append J_copy_mode=contents J_src_loc=local J_dest_loc=server J_src=$T/s J_dest=$T/d J_sched_kind=cron J_sched="0 * * * *" J_created=x
+  _sync_rec_write; _sync_write_launcher my.photos; _cron_add_sync my.photos "0 * * * *" "$BIND/sync-my.photos.sh"
+else
+  mk; mkjob my.photos >/dev/null
+fi
 run "" _sync_list_jobs
 check 3a "List shows the dotted name" '[[ "$OUT" == *"1)"*"my.photos"*"[0 * * * *]"* ]]'
 OUT=$(status)
@@ -233,7 +242,6 @@ MIRROR_WIPE_MIN=1000
 
 # ── 7  the job record, the launcher and the run (design B) ───────────────
 if [ -n "$NEWRUN" ]; then
-_FV_SELF=$T/fv-setup.sh; FEDERVER_CONFIG=$T/federver-config
 rec() { # name direction mode [copy_mode]
   J_name=$1 J_direction=$2 J_mode=$3 J_copy_mode=${4:-contents} J_sched_kind=cron J_sched="0 * * * *" J_created=now
   if [ "$2" = upload ]; then J_src_loc=local J_dest_loc=server; else J_src_loc=server J_dest_loc=local; fi
@@ -256,10 +264,10 @@ check 7e "a missing or incomplete record does not load" '! _sync_rec_load nope &
 
 # launcher
 SERVER_USER=testuser SERVER_IP=192.0.2.77 _sync_write_launcher l1; LW=$?
-check 7f "launcher: two lines, runs setup.sh --run-job <name>, passes bash -n" '[ $LW = 0 ] && [ "$(wc -l < "$BIND/sync-l1.sh")" = 2 ] && [ "$(sed -n 2p "$BIND/sync-l1.sh")" = "exec $T/fv-setup.sh --run-job l1" ] && bash -n "$BIND/sync-l1.sh" && [ -x "$BIND/sync-l1.sh" ]'
+check 7f "launcher: two lines, runs setup.sh --run-job <name>, passes bash -n" '[ $LW = 0 ] && [ "$(wc -l < "$BIND/sync-l1.sh")" = 2 ] && [ "$(sed -n 2p "$BIND/sync-l1.sh")" = "exec $_FV_SELF --run-job l1" ] && bash -n "$BIND/sync-l1.sh" && [ -x "$BIND/sync-l1.sh" ]'
 check 7g "launcher holds no address, user or function" '! grep -Eq "192.0.2.77|testuser|SERVER_|\(\) *\{" "$BIND/sync-l1.sh"'
 _sync_write_launcher 'my.photos'
-check 7h "a dotted name is quoted into the launcher safely" '[ "$(sed -n 2p "$BIND/sync-my.photos.sh")" = "exec $T/fv-setup.sh --run-job my.photos" ]'
+check 7h "a dotted name is quoted into the launcher safely" '[ "$(sed -n 2p "$BIND/sync-my.photos.sh")" = "exec $_FV_SELF --run-job my.photos" ]'
 
 # names
 check 7i "default name from a path: Photos.2024 -> photos-2024, spaces and symbols -> -" '[ "$(_sync_default_name "/x/Photos.2024")" = photos-2024 ] && [ "$(_sync_default_name "/x/My Docs/")" = my-docs ] && [ "$(_sync_default_name "/x/a&b")" = a-b ] && [ "$(_sync_default_name /)" = job ]'
@@ -288,10 +296,10 @@ check 7p "names with spaces survive the transport (-s)" '[ $RC = 0 ] && [ -e "$T
 mk; rec tr1 upload append; : > "$SSH_LOG"
 run "" _sync_job_run tr1
 check 7q "every ssh of the run (mkdir and rsync's own) carries ConnectTimeout + keepalives" '[ "$(wc -l < "$SSH_LOG")" -ge 2 ] && ! grep -vq "ConnectTimeout=8.*ServerAliveInterval=15.*ServerAliveCountMax=4" "$SSH_LOG" && grep -q "rsync --server" "$SSH_LOG"'
-printf '#!/bin/bash\necho sudo >> "$T/sudo.log"; exit 1\n' > "$T/bin/sudo"; chmod +x "$T/bin/sudo"; : > "$T/sudo.log"
+cp "$T/bin/sudo" "$T/sudo-base"; printf '#!/bin/bash\necho sudo >> "$T/sudo.log"; exit 1\n' > "$T/bin/sudo"; chmod +x "$T/bin/sudo"; : > "$T/sudo.log"
 mk; rec ns1 upload mirror; run "" _sync_job_run ns1; mk; rec ns2 download append; J_dest=$T/nw/x; _sync_rec_write; run "" _sync_job_run ns2
 check 7r "no sudo is called by an upload (mirror) or download run" '[ ! -s "$T/sudo.log" ] && [ -e "$T/nw/x/a" ]'
-rm -f "$T/bin/sudo"
+cp "$T/sudo-base" "$T/bin/sudo"
 UNATT=$(for f in _sync_job_run _sync_job_go _sync_job_steps _sync_job_operands _sync_rec_load _pick_server_endpoint _mirror_scan _mirror_wipe_sized; do extract_fn "$f" "$T/fn.sh"; done)
 check 7s "the unattended path never mentions sudo or a terminal prompt " '[ -n "$UNATT" ] && ! grep -Eq "sudo|ssh -t|read -p|read -n|/dev/tty" <<<"$UNATT"'
 
@@ -345,6 +353,183 @@ OUT=$(PATH="$T/stub:$PATH" _sync_job_run mi6 2>&1); RC=$?
 check 7ah "a dry run that fails: nothing runs, its exit code is logged" '[ $RC = 12 ] && [ ! -s "$RSYNC_LOG" ] && [[ "$OUT" == *"Could not check what a mirror would delete (rsync exit 12)"* && "$OUT" == *"Sync finished: mi6 (exit 12)" ]]'
 run "" _sync_job_run ghost
 check 7ai "no record: logged as a failed run (exit 2), not silence" '[ $RC = 2 ] && [[ "$OUT" == *"No usable job record for '"'"'ghost'"'"'"* && "$OUT" == *"Sync finished: ghost (exit 2)" ]]'
+fi
+
+# ── 8  creating a job through the menu code (design B) ───────────────────
+if [ -n "$NEWDESIGN" ]; then
+mk; SERVER_USER=testuser SERVER_IP=192.0.2.77 mkjob j8 mirror >/dev/null
+check 8a "creation writes the record, the launcher and a cron line that runs the launcher" '_sync_rec_load j8 && [ "$J_mode" = mirror ] && [ "$J_direction" = upload ] && [ "$J_src" = "$T/s" ] && [ "$J_dest" = "$T/d" ] && [ "$J_sched_kind" = cron ] && [ "$J_sched" = "0 * * * *" ] && grep -q "^0 \* \* \* \* $BIND/sync-j8.sh$" "$CRON_FILE" 2>/dev/null && [ -x "$BIND/sync-j8.sh" ]'
+check 8b "neither the record nor the launcher holds the server's address or user" '! grep -q "192.0.2.77\|testuser" "$BIND/sync-j8.sh" "$LOGD/j8.job" && [ "$(wc -l < "$BIND/sync-j8.sh")" = 2 ]'
+check 8c "the first run after creating logs like any other run (Status reads it)" 'grep -q "Sync finished: j8 (exit 0)" "$(LOGF j8)" && [[ "$(_sync_result_text j8)" == *"last: ok"* ]]'
+check 8d "the record is private" '[ "$(stat -c %a "$LOGD/j8.job")" = 600 ]'
+
+# names: default from the folder, typed names checked
+mk; mv "$T/s" "$T/Photos.2024"; run "2\n\n" _sync_execute_or_schedule upload "$T/Photos.2024" "$T/d" contents append
+check 8e "default name of 'Photos.2024' is photos-2024 and Enter takes it" '[ -e "$BIND/sync-photos-2024.sh" ] && _sync_rec_load photos-2024'
+mk; run "2\nmy.photos\nMy Docs\n" _sync_execute_or_schedule upload "$T/s" "$T/d" contents append
+check 8f "a typed name with a bad character is refused with the character named, then asked again" '[[ "$OUT" == *"'"'"'.'"'"' is not allowed in a job name"* ]] && [ -e "$BIND/sync-my-docs.sh" ] && [ ! -e "$BIND/sync-my.photos.sh" ]'
+mk; mkjob dup >/dev/null; run "2\ndup\nother\n" _sync_execute_or_schedule upload "$T/s" "$T/d" contents append
+check 8g "a name that already exists is refused (an existing job is never overwritten)" '[[ "$OUT" == *"A job named '"'"'dup'"'"' already exists"* ]] && [ -e "$BIND/sync-other.sh" ] && [ "$(grep -c "sync-dup.sh" "$CRON_FILE")" = 1 ]'
+mk; run "2\nq\n" _sync_execute_or_schedule upload "$T/s" "$T/d" contents append
+check 8h "q backs out: nothing written" '[ -z "$(ls -A "$BIND" "$LOGD" | grep -v :)" ] && [ ! -s "$CRON_FILE" ]'
+
+# Run now (no schedule): runs the shared run, nothing saved
+mk; run "1\n" _sync_execute_or_schedule upload "$T/s" "$T/d" contents append
+check 8i "Run now copies once, saves no job" '[ -e "$T/d/a" ] && [ -e "$T/d/sub/b" ] && [[ "$OUT" == *"Sync complete."* ]] && [ -z "$(ls -A "$BIND" "$LOGD" | grep -v :)" ]'
+mk; mkdir -p "$T/ro"; chmod 555 "$T/ro"; run "1\n" _sync_execute_or_schedule upload "$T/s" "$T/ro/sub" contents append; chmod 755 "$T/ro"
+if [ "$(id -u)" = 0 ]; then echo "PASS  8j  SKIP: running as root"; PASS=$((PASS+1)); else
+check 8j "Run now into a folder that cannot be made: the run says so (no sudo in the run), the menu says 'Sync failed.'" '[[ "$OUT" == *"Could not create the destination"* && "$OUT" == *"Sync failed."* ]]'; fi
+
+# change schedule keeps the record in step; pause / resume
+mk; mkjob s1 >/dev/null; SCHED="timer Sat"
+run "" _sync_change_schedule s1 "$(grep sync-s1.sh "$CRON_FILE")" cron; unset SCHED
+check 8k "Change schedule writes the new kind and spec into the record" '_sync_rec_load s1 && [ "$J_sched_kind" = timer ] && [ "$J_sched" = Sat ]'
+mk; mkjob p1 >/dev/null
+run "1\n2\n" _sync_edit_job
+check 8l "Pause: the cron line is commented out with #PAUSED#, List shows (paused)" 'grep -q "^#PAUSED#0 \* \* \* \* .*sync-p1.sh$" "$CRON_FILE" 2>/dev/null && [[ "$OUT" == *"Paused '"'"'p1'"'"'"* ]] && [[ "$(_sync_list_jobs)" == *"(paused)"* ]]'
+run "1\n2\n" _sync_edit_job
+check 8m "Resume puts it back" 'grep -q "^0 \* \* \* \* .*sync-p1.sh$" "$CRON_FILE" 2>/dev/null && [[ "$OUT" == *"Resumed '"'"'p1'"'"'"* ]]'
+echo "stale" > "$(LOGF p1)"
+run "1\n3\n" _sync_edit_job
+check 8n "Edit -> Run now runs the launcher and shows the result" '[[ "$OUT" == *"'"'"'p1'"'"' completed."* && "$OUT" == *"last: ok"* ]] && grep -q "Sync finished: p1 (exit 0)" "$(LOGF p1)"'
+
+# the launcher itself, away from home: the real setup.sh --run-job resolves the address at run time
+mk; mkjob aw >/dev/null; mkdir -p "$T/stub"; cp "$T/rsync-stub" "$T/stub/rsync"
+printf '#!/bin/bash\ncase "$*" in *"/dev/tcp/$LAN_IP/"*) [ -n "$LAN_UP" ] && exit 0 || exit 1;; *"/dev/tcp/$TS_IP/"*) [ -n "$TS_UP" ] && exit 0 || exit 1;; esac\nexit 0\n' > "$T/stub/timeout"; chmod +x "$T/stub/timeout"
+awrun() { : > "$RSYNC_LOG"; : > "$(LOGF aw)"; PATH="$T/stub:$PATH" SERVER_IP=10.9.9.9 SERVER_HOST_TS=100.64.0.7 LAN_IP=10.9.9.9 TS_IP=100.64.0.7 LAN_UP=$1 TS_UP=$2 bash "$BIND/sync-aw.sh" >/dev/null 2>&1; JRC=$?; }
+awrun 1 1
+check 8s "launcher at home: the LAN address is used" '[ $JRC = 0 ] && grep -q "u@10.9.9.9:" "$RSYNC_LOG" && ! grep -q "100.64.0.7" "$RSYNC_LOG"'
+awrun "" 1
+check 8t "launcher away from home: the same job, unchanged, uses the Tailscale address" '[ $JRC = 0 ] && grep -q "u@100.64.0.7:" "$RSYNC_LOG" && ! grep -q "10.9.9.9" "$RSYNC_LOG" && grep -q "Sync finished: aw (exit 0)" "$(LOGF aw)"'
+awrun "" ""
+check 8u "launcher with no way to the server: exit 255, nothing started, the log says why" '[ $JRC = 255 ] && [ ! -s "$RSYNC_LOG" ] && grep -q "Server unreachable" "$(LOGF aw)" && grep -q "Sync finished: aw (exit 255)" "$(LOGF aw)" && [[ "$(_sync_result_text aw)" == *"last: failed (exit 255)"* ]]'
+
+# the one-time copies and one-time mirror banner of step_sync summaries
+step_sync_stubs() { _pick_local_path() { local_path=$T/s; }; _pick_server_path() { server_path=$T/d; }; _sync_execute_or_schedule() { echo "EXEC $*"; }; }
+BAN="Mode: mirror - deletes destination files that are gone from the source"
+mk; step_sync_stubs; type step_sync >/dev/null 2>&1 || eval "$(extract_fn step_sync "$SRC")"
+run "1\ndelete\n" step_sync
+check 8o "step_sync upload: a mirror shows the red banner in its summary and hands the job over" '[[ "$OUT" == *"$BAN"* && "$OUT" == *"EXEC upload $T/s $T/d contents mirror" ]]'
+mk; step_sync_stubs; run "1\n\n" step_sync
+check 8p "step_sync upload: append shows no banner" '[[ "$OUT" != *"$BAN"* && "$OUT" == *"EXEC upload $T/s $T/d contents append" ]]'
+mk; step_sync_stubs; run "2\ndelete\n" step_sync
+check 8q "step_sync download: a mirror shows the banner too (source/destination as picked)" '[[ "$OUT" == *"$BAN"* && "$OUT" == *"EXEC download $T/d $T/s contents mirror" ]]'
+fi
+
+# ── 9  converting old job scripts (the only code that reads one) ─────────
+if [ -n "$NEWDESIGN" ]; then
+# legacy NAME KIND: an old generated script. kinds: cur-append, cur-mirror-dl, old-exit, nice, two, flag, nokey,
+# disagree, badpre, mirror-nodelete, ip, crlf
+legacy() {
+  local n=$1 kind=$2 f=$BIND/sync-$1.sh ip=${3:-h} rs
+  rs="rsync \$DELFLAG -avh --progress -s '$T/s/' 'u@$ip:$T/d/'"
+  local hdr="#!/bin/bash
+# Sync job: $n
+# Direction: upload
+# Source: $T/s
+# Destination: $T/d
+# Created: 2026-06-01 10:00
+exec >>\"$LOGD/$n.log\" 2>&1
+
+SERVER_USER=\"u\"
+SERVER_IP=\"$ip\"
+"
+  local blk_a="# >>> copy mode (federver 14 → 3 'Change copy mode' rewrites this block)
+MODE=append
+DELFLAG=
+# <<< copy mode"
+  local pre="ssh -t 'u@$ip' 'sudo mkdir -p $T/d && sudo chown u:u $T/d'"
+  local start="echo \"[\$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: $n\""
+  local fin="rc=\$?
+echo \"[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: $n (exit \$rc)\"
+exit \$rc"
+  case $kind in
+    cur-append) printf '%s\n%s\n\n%s\n%s\n%s\n%s\n' "$hdr" "$blk_a" "$start" "$pre" "$rs" "$fin" ;;
+    cur-mirror-dl)
+      printf '#!/bin/bash\n# Sync job: %s\n# Direction: download\n# Source: %s\n# Destination: %s\n# Created: x\nexec >>"%s/%s.log" 2>&1\n\nSERVER_USER="u"\nSERVER_IP="h"\n\n' "$n" "$T/s" "$T/d" "$LOGD" "$n"
+      printf '# >>> copy mode (federver 14 → 3 rewrites this block)\nMODE=mirror\ndeclare -- _DRIVE_ROOTS="/mnt /media"\nssh () \n{ \n    command ssh -o ConnectTimeout=8 "$@"\n}\n_mirror_guard () \n{ \n    local loc=$1;\n    return 0\n}\nDELFLAG=--delete\n_mirror_guard server %s || {\n    printf "%%s: SKIPPED %%s - %%s (mirror refused, nothing deleted)\\n" "$(date)" %s "$_mirror_why"\n    exit 0\n}\n# <<< copy mode\n\n' "$T/s" "$n"
+      printf '%s\nsudo mkdir -p %s\nrsync $DELFLAG -avh --progress -s %s %s\n%s\n' "$start" "$T/d" "u@h:$T/s/" "$T/d/" "$fin" ;;
+    old-exit)
+      printf '#!/bin/bash\n# Sync job: %s\n# Direction: upload\n# Source: %s\n# Destination: %s\nexec >>"%s/%s.log" 2>&1\nSERVER_USER="u"\nSERVER_IP="h"\n%s\nrsync -avh --progress "%s/" "u@h:%s/"\necho "[$(date '"'"'+%%Y-%%m-%%d %%H:%%M:%%S'"'"')] Sync finished: %s (exit $?)"\n' "$n" "$T/s" "$T/d" "$LOGD" "$n" "$start" "$T/s" "$T/d" "$n" ;;
+    nice)     printf '%s\n%s\n\n%s\n%s\nnice %s\n%s\n' "$hdr" "$blk_a" "$start" "$pre" "${rs/\$DELFLAG /}" "$fin" ;;
+    two)      printf '%s\n%s\n\n%s\n%s\n%s\n%s\n%s\n' "$hdr" "$blk_a" "$start" "$pre" "$rs" "$rs" "$fin" ;;
+    flag)     printf '%s\n%s\n\n%s\n%s\n%s\n%s\n' "$hdr" "$blk_a" "$start" "$pre" "${rs/-avh/-avh --exclude=x}" "$fin" ;;
+    nokey)    printf '%s\n%s\n\n%s\n%s\n%s\n%s\n' "$(sed '/^# Source: /d' <<<"$hdr")" "$blk_a" "$start" "$pre" "$rs" "$fin" ;;
+    disagree) printf '%s\n%s\n\n%s\n%s\n%s\n%s\n' "$hdr" "$blk_a" "$start" "$pre" "${rs/$T\/s\//$T/other/}" "$fin" ;;
+    badpre)   printf '%s\n%s\n\n%s\n%s\n%s\n%s\n' "$hdr" "$blk_a" "$start" "scp /etc/hosts u@$ip:/tmp/" "$rs" "$fin" ;;
+    mirror-nodelete) printf '%s\n%s\n\n%s\n%s\n%s\n%s\n' "$hdr" "${blk_a/MODE=append/MODE=mirror}" "$start" "$pre" "$rs" "$fin" ;;
+    ip)       printf '%s\n%s\n\n%s\n%s\n%s\n%s\n' "$hdr" "$blk_a" "$start" "$pre" "$rs" "$fin" ;;
+    crlf)     printf '%s\n%s\n\n%s\n%s\n%s\n%s\n' "$hdr" "$blk_a" "$start" "$pre" "$rs" "$fin" | sed 's/$/\r/' ;;
+  esac > "$f"
+  chmod 755 "$f"
+  echo "0 3 * * * $f" >> "$CRON_FILE"
+}
+legacy_mk() { mk; mkdir -p "$BIND" "$LOGD"; : > "$CRON_FILE"; }
+sum() { cksum < "$1"; }
+
+legacy_mk; legacy a1 cur-append; cp "$BIND/sync-a1.sh" "$T/a1.orig"
+OUT=$(status); LAUNCH=$(cat "$BIND/sync-a1.sh")
+check 9a "current-format script: converted - record written, launcher in place, old script kept as .bak byte for byte" '_sync_rec_load a1 && [ "$J_direction" = upload ] && [ "$J_src" = "$T/s" ] && [ "$J_dest" = "$T/d" ] && [ "$J_copy_mode" = contents ] && [ "$J_mode" = append ] && [ "$J_sched_kind" = cron ] && [ "$J_sched" = "0 3 * * *" ] && cmp -s "$BIND/sync-a1.sh.bak" "$T/a1.orig" && [ "$(wc -l < "$BIND/sync-a1.sh")" = 2 ]'
+check 9b "one notice line per converted job, naming the .bak" '[[ "$OUT" == *"Converted '"'"'a1'"'"' to a launcher (old script kept as $BIND/sync-a1.sh.bak)."* ]] && [ "$(grep -c Converted <<<"$OUT")" = 1 ]'
+check 9c "the converted job runs through the launcher (real setup.sh --run-job)" 'bash "$BIND/sync-a1.sh" >/dev/null 2>&1; [ -e "$T/d/a" ] && grep -q "Sync finished: a1 (exit 0)" "$(LOGF a1)"'
+OUT=$(status)
+check 9d "a second Status converts nothing again (no new .bak, no notice)" '[[ "$OUT" != *Converted* ]] && [ ! -e "$BIND/sync-a1.sh.bak2" ] && [ "$(cat "$BIND/sync-a1.sh")" = "$LAUNCH" ]'
+
+legacy_mk; legacy m1 cur-mirror-dl
+OUT=$(status)
+check 9e "current-format mirror download job (function copies inside the block): converted, mirror + download + guard source" '_sync_rec_load m1 && [ "$J_mode" = mirror ] && [ "$J_direction" = download ] && [ "$J_src" = "$T/s" ] && [ "$J_dest" = "$T/d" ] && [ "$J_src_loc" = server ] && [ -e "$BIND/sync-m1.sh.bak" ] && ! grep -q "declare\|_mirror_guard" "$BIND/sync-m1.sh"'
+check 9f "its Status row shows mirror and the download direction" '[[ "$(grep -E "^  m1 " <<<"$OUT")" == *download*mirror* ]]'
+
+legacy_mk; legacy o1 old-exit
+OUT=$(status)
+check 9g "an old script with the '(exit \$?)' finish line and double quotes: converted (the bug dies with the script)" '_sync_rec_load o1 && [ "$J_mode" = append ] && [ "$J_src" = "$T/s" ] && [ -e "$BIND/sync-o1.sh.bak" ]'
+rm -rf "$T/s"; bash "$BIND/sync-o1.sh" >/dev/null 2>&1; JRC=$?
+check 9h "...and a failing run of it now logs rsync's real exit code" '[ "$JRC" != 0 ] && grep -qP "Sync finished: o1 \(exit \K[1-9]" "$(LOGF o1)"'
+
+legacy_mk; legacy ip1 ip 192.0.2.9
+OUT=$(status)
+check 9i "frozen-IP script: converted, neither the record nor the launcher keeps the address" '_sync_rec_load ip1 && ! grep -q "192.0.2.9" "$BIND/sync-ip1.sh" "$LOGD/ip1.job" && grep -q "192.0.2.9" "$BIND/sync-ip1.sh.bak"'
+
+legacy_mk; legacy c1 crlf
+OUT=$(status)
+check 9j "a script with CRLF line endings converts too" '_sync_rec_load c1 && [ "$J_mode" = append ]'
+
+legacy_mk; legacy d.1 cur-append
+OUT=$(status)
+check 9k "a dotted-name job converts and stays listed, editable and deletable" '_sync_rec_load d.1 && grep -qE "^  d.1 " <<<"$OUT" && [[ "$(_sync_list_jobs)" == *"d.1"* ]]'
+run "1\nsync-d.1\n" _sync_delete_job
+check 9l "...delete removes its launcher and record" '[ ! -e "$BIND/sync-d.1.sh" ] && [ ! -e "$LOGD/d.1.job" ] && ! grep -q "sync-d.1.sh" "$CRON_FILE" 2>/dev/null'
+
+# refusals: left untouched, shown in Status with the reason and the path
+refuse() { # kind reason-fragment
+  legacy_mk; legacy r1 "$1"; local before; before=$(sum "$BIND/sync-r1.sh"); cp "$BIND/sync-r1.sh" "$T/r1.orig"
+  OUT=$(status)
+  RROW=$(grep -A1 -E "^  r1 " <<<"$OUT" | tr '\n' ' ')
+  [ ! -e "$LOGD/r1.job" ] && [ "$(sum "$BIND/sync-r1.sh")" = "$before" ] && cmp -s "$BIND/sync-r1.sh" "$T/r1.orig" && [ ! -e "$BIND/sync-r1.sh.bak" ] && [[ "$RROW" == *"cannot convert: "*"$2"*"$BIND/sync-r1.sh"* ]]
+}
+check 9m "'nice rsync': refused (another command named), script untouched, reason + path in Status" 'refuse nice "another command (nice)"'
+check 9n "two rsync lines: refused" 'refuse two "more than one rsync line"'
+check 9o "an rsync flag the generator never wrote: refused, flag named" 'refuse flag "unknown rsync flag --exclude=x"'
+check 9p "a missing header key: refused, key named" 'refuse nokey "missing header: Source"'
+check 9q "header and rsync line that disagree: refused" 'refuse disagree "disagree"'
+check 9r "an unknown pre-command (scp): refused" 'refuse badpre "a line this tool did not write: scp"'
+check 9s "mode mirror but no --delete in the rsync line: refused" 'refuse mirror-nodelete "does not delete"'
+legacy_mk; legacy r1 nice; OUT=$(status); OUT2=$(status)
+check 9t "a refused job is retried (not remembered) on the next Status, still untouched" '[[ "$OUT2" == *"cannot convert"* ]] && [ ! -e "$LOGD/r1.job" ]'
+run "1\n6\n" _sync_edit_job
+check 9u "an unconverted job cannot have its copy mode changed (clear message, nothing touched)" '[[ "$OUT" == *"has no job record"* ]]'
+legacy_mk; legacy b1 cur-append; : > "$BIND/sync-b1.sh.bak"
+OUT=$(status)
+check 9v "an existing .bak is never overwritten: the next free name is used" '[ -e "$BIND/sync-b1.sh.bak2" ] && [ ! -s "$BIND/sync-b1.sh.bak" ] && _sync_rec_load b1'
+
+# the tokenizer: reads %q output, refuses anything with shell meaning, never evaluates
+tok() { _sync_tokenize "$1"; TRC=$?; TOKS=$(printf '[%s]' "${_tok[@]}"); }
+tok "rsync \$DELFLAG -avh 'a b' \"c d\" e\\ f"
+check 9w "tokenizer: \$DELFLAG, flags, single quotes, double quotes, backslash-space" '[ $TRC = 0 ] && [ "$TOKS" = "[rsync][\$DELFLAG][-avh][a b][c d][e f]" ]'
+P=$'/x/we ird & \'q\' "d" $HOME `id` a|b;c'; tok "rsync $(_shq "$P") dst"
+check 9x "tokenizer: a path printf %q wrote comes back whole (or is refused, never mangled)" '[ $TRC != 0 ] || [ "$TOKS" = "[rsync][$P][dst]" ]'
+tok "rsync \$(touch $T/PWN3) a b"; R1=$TRC; tok 'rsync a; rm -rf b'; R2=$TRC; tok 'rsync "a $b" c'; R3=$TRC; tok "rsync 'unclosed"; R4=$TRC
+check 9y "tokenizer: \$( ), ; and \$ inside double quotes and an unclosed quote are refused" '[ $R1 != 0 ] && [ $R2 != 0 ] && [ $R3 != 0 ] && [ $R4 != 0 ] && [ ! -e "$T/PWN3" ]'
 fi
 
 check_total

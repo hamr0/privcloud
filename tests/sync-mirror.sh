@@ -156,6 +156,27 @@ mk; rm -rf "$T/d"; mkdir "$T/d"
 run "${ONE}delete\n$Y" LOCALCMD
 check 5a "0 deletions: message, no confirm, copies" '[[ "$OUT" == *"✓ Nothing to delete - destination has no extra files."* && "$OUT" != *"Delete these"* ]] && copied'
 check 5b "ends with the mirror success line (0 deleted)" '[[ "$OUT" == *"Mirror complete - 0 deleted"* ]]'
+# destination = the source plus extra empty folders only (no extra files)
+mkempty() { mk; rm -rf "$T/d"; mkdir -p "$T/d/sub" "$T/d/e1" "$T/d/e2"; echo a > "$T/d/a"; echo b > "$T/d/sub/b"; }
+empties_kept() { [ -d "$T/d/e1" ] && [ -d "$T/d/e2" ]; }
+empties_gone() { [ ! -e "$T/d/e1" ] && [ ! -e "$T/d/e2" ] && [ -e "$T/d/sub/b" ]; }
+mkempty; run "${ONE}delete\ny\n$Y" LOCALCMD
+check 5c "only empty folders to remove: warned, not 'Nothing to delete'" '[[ "$OUT" == *"⚠ 2 empty folders would be removed at $T/d:"* && "$OUT" == *"e1/"* && "$OUT" != *"Nothing to delete"* ]]'
+check 5d "empty-folders-only still asks y/N, then removes them" '[[ "$OUT" == *"Delete these 2 empty folders at the destination? [y/N]: "* ]] && empties_gone && [[ "$OUT" == *"Mirror complete - 2 deleted"* ]]'
+mkempty; run "${ONE}delete\nn\n$Y" LOCALCMD
+check 5e "empty-folders-only + n: nothing removed" 'empties_kept && [[ "$OUT" == *"Cancelled - nothing changed."* ]]'
+mkempty; mkdir "$T/d/e3" "$T/d/e4" "$T/d/e5" "$T/d/e6" "$T/d/e7"
+run "${ONE}delete\nn\n$Y" LOCALCMD
+check 5f "more than 5 empty folders: 5 names then '... and M more'" '[[ "$OUT" == *"⚠ 7 empty folders would be removed"* && "$OUT" == *"... and 2 more"* ]]'
+mkempty; rm -rf "$T/d/e2"
+run "${ONE}delete\nn\n$Y" LOCALCMD
+check 5g "one empty folder is singular" '[[ "$OUT" == *"⚠ 1 empty folder would be removed at $T/d:"* && "$OUT" == *"Delete these 1 empty folder at the destination? [y/N]: "* ]]'
+mk; mkdir "$T/d/e1" "$T/d/full"; echo f > "$T/d/full/f"
+run "${ONE}delete\ny\n$Y" LOCALCMD
+check 5h "files and empty folders: file count kept, '(+ N empty folder)' added; a folder holding deleted files is not counted" '[[ "$OUT" == *"⚠ 4 files (+ 1 empty folder) would be deleted at $T/d:"* && "$OUT" == *"Delete these 4 files (+ 1 empty folder) at the destination? [y/N]: "* ]] && extras_gone && [ ! -e "$T/d/e1" ] && [ ! -e "$T/d/full" ]'
+mk; rm -rf "$T/d"; mkdir -p "$T/d/sub"; echo a > "$T/d/a"; echo b > "$T/d/sub/b"
+run "${ONE}delete\n$Y" LOCALCMD
+check 5i "nothing at all to delete still says so (no folders either)" '[[ "$OUT" == *"✓ Nothing to delete - destination has no extra files."* && "$OUT" != *"empty folder"* && "$OUT" != *"Delete these"* ]]'
 
 # ── 6  tar (sudo) route: no prompt, info line ─────────────────────────────
 if [ "$(id -u)" != 0 ]; then
@@ -244,6 +265,10 @@ mk; run "1\ny\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --pr
 check 8p "Run now with a mirror: preview, confirm, deletes" 'extras_gone && [[ "$OUT" == *"Mirror complete - 3 deleted"* ]]'
 mk; run "1\n\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
 check 8q "Run now, confirm = Enter: nothing changed" 'extras_kept && ! copied'
+mkempty; run "1\ny\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
+check 8u "Run now with only empty folders to remove: warned, confirmed, removed" '[[ "$OUT" == *"⚠ 2 empty folders would be removed at $T/d:"* && "$OUT" != *"Nothing to delete"* ]] && empties_gone'
+mkempty; run "2\nj1\nn\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
+check 8v "Save job (mirror) with only empty folders: warned before the Save prompt" '[[ "$OUT" == *"⚠ 2 empty folders would be removed at $T/d:"*"Save this job as mirror? [y/N]: "* ]] && empties_kept'
 
 # ── 9  Status rows ────────────────────────────────────────────────────────
 status() { ( RED=$CR; YELLOW=$CY; GREEN=$'\033[G]'; NC=$'\033[N]'
@@ -326,6 +351,9 @@ check 10h "mirror refused on an empty source: job stays append" '[ "$(sed -n "s/
 mk; mkjob append "\n" >/dev/null
 run "1\n6\ndelete\n\n" EDIT
 check 10i "Save = Enter: job unchanged" '[ "$(sed -n "s/^MODE=//p" "$JOB")" = append ] && [[ "$OUT" == *"Cancelled - nothing changed."* ]]'
+mkjob append "\n" >/dev/null; rm -rf "$T/d"; mkdir -p "$T/d/sub" "$T/d/e1" "$T/d/e2"; echo a > "$T/d/a"; echo b > "$T/d/sub/b"
+run "1\n6\ndelete\nn\n" EDIT
+check 10q "Change copy mode with only empty folders to remove: warned before the Save prompt" '[[ "$OUT" == *"⚠ 2 empty folders would be removed at $T/d:"*"Save this job as mirror? [y/N]: "* && "$OUT" != *"Nothing to delete"* ]]'
 # a pre-mirror (legacy) script is upgraded in place
 mk
 cat > "$T/home/.local/bin/sync-old.sh" <<EOF
@@ -342,6 +370,33 @@ EOF
 chmod +x "$T/home/.local/bin/sync-old.sh"; echo "30 3 * * * $T/home/.local/bin/sync-old.sh" > "$CRON_FILE"
 run "1\n6\ndelete\ny\n" EDIT
 check 10j "legacy script (no MODE=) upgraded to mirror and still runs" '[ "$(sed -n "s/^MODE=//p" "$T/home/.local/bin/sync-old.sh")" = mirror ] && bash -n "$T/home/.local/bin/sync-old.sh" && bash "$T/home/.local/bin/sync-old.sh" >/dev/null 2>&1 && extras_gone && copied'
+# a legacy script's finish line logged date's exit (always 0): set_mode upgrades it
+mk
+OLD=$T/home/.local/bin/sync-old.sh; OLOG=$T/home/.local/share/sync-jobs/old.log
+cat > "$OLD" <<EOF
+#!/bin/bash
+# Sync job: old
+# Direction: upload
+# Source: $T/s
+# Destination: $T/d
+exec >>"$OLOG" 2>&1
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: old"
+rsync -avh --progress -s '$T/s/' '$T/d/'
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: old (exit \$?)"
+EOF
+chmod 750 "$OLD"
+_sync_job_set_mode "$OLD" append; SRC1=$?
+cp "$OLD" "$T/old.after1"
+rm -rf "$T/s"; bash "$OLD" >/dev/null 2>&1; ORC=$?
+OLE=$(grep -oP 'Sync finished: old \(exit \K[0-9]+' "$OLOG" | tail -n 1)
+check 10l "legacy finish line upgraded: failed rsync logs its real non-zero exit and the script exits with it" '[ "$SRC1" = 0 ] && [ -n "$OLE" ] && [ "$OLE" != 0 ] && [ "$ORC" = "$OLE" ] && bash -n "$OLD"'
+check 10m "Status shows last: failed (exit N) for the upgraded legacy job" '[[ "$(_sync_last_note old)" == *"last: failed (exit $OLE)"* ]]'
+check 10n "script mode kept (750)" '[ "$(stat -c %a "$OLD")" = 750 ]'
+_sync_job_set_mode "$OLD" append
+check 10o "a second set_mode changes nothing (idempotent, no duplicate rc/exit lines)" 'cmp -s "$OLD" "$T/old.after1" && [ "$(grep -c "^rc=" "$OLD")" = 1 ] && [ "$(grep -c "^exit \$rc" "$OLD")" = 1 ]'
+mk; mkjob append "\n" >/dev/null; cp "$JOB" "$T/new.before"
+_sync_job_set_mode "$JOB" append
+check 10p "a script already in the current form is not touched" 'cmp -s "$JOB" "$T/new.before"'
 
 # a download job (source on the server): editing to mirror must guard over ssh
 mk; JOB3=$T/home/.local/bin/sync-dl.sh

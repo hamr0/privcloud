@@ -87,11 +87,11 @@ leaked() { ls "$T"/tmpd/tmp.* 2>/dev/null | wc -l; }
 rm -f "$T/copy/.env" "$T/bin-dc.sh"; reset
 OUT=$(run_step); RC=$?
 check 1b "installer copy with no .env beside it -> fail, nothing installed/scheduled" '[[ "$OUT" == *"NOT installed"* ]] && [ ! -e $T/sudo.log ]'
-check 1b2 "refused with no disk-check installed -> says nothing installed" '[[ "$OUT" == *"No disk-check is installed - nothing installed"* && "$OUT" != *"still active"* ]]'
+check 1b2 "refused with no disk-check installed -> says nothing installed" '[[ "$OUT" == *"No disk-check is installed - nothing installed"* && "$OUT" != *"still installed"* ]]'
 check 1b3 "refused run leaves no temp file and no leaked RETURN/INT/TERM trap" '[ "$(leaked)" = 0 ] && [[ "$OUT" == *"TRAPS=[]"* ]]'
 touch "$T/bin-dc.sh"
 OUT=$(run_step); RC=$?
-check 1b4 "refused with a disk-check already installed -> still active, unchanged, may be outdated, re-run 14 -> 7" '[[ "$OUT" == *"still active and unchanged"* && "$OUT" == *"outdated"* && "$OUT" == *"14 -> 7"* && "$OUT" != *"nothing installed"* ]]'
+check 1b4 "refused with a disk-check already installed -> still installed, unchanged, may be outdated, re-run 14 -> 7" '[[ "$OUT" == *"still installed and unchanged"* && "$OUT" == *"outdated"* && "$OUT" == *"14 -> 7"* && "$OUT" != *"nothing installed"* ]]'
 rm -f "$T/bin-dc.sh"
 # 1b5 a bug in the generated script (bash exits 2 on a syntax error) is a script
 # error, not a "blind config"; refuses and installs nothing

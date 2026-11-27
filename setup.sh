@@ -4770,7 +4770,7 @@ DISKEOF
 # root-only 0700, so -x is false for the non-root user running this step.
 _disk_check_existing_note() {
     if [ -e /usr/local/bin/disk-check.sh ]; then
-        warn "A previously installed disk-check is still active and unchanged - it may be outdated."
+        warn "A previously installed disk-check is still installed and unchanged - it may be outdated."
         info "Re-run federver -> 14 -> 7 from the privcloud folder to replace it."
     else
         info "No disk-check is installed - nothing installed."
@@ -5104,12 +5104,12 @@ _mirror_dry_cmd() { _rsync_with "$1" "-n --delete --out-format='%o|%n'"; }
 _rsync_with() { printf 'rsync %s %s' "$2" "${1#rsync }"; }
 
 # Guard + dry run + typed y/N. _mirror_preview <loc> <src> <dest-label> <dry-cmd> <copy|save>
-#   copy: "Delete these N files at the destination?" (skipped when N = 0)
+#   copy: "Delete these N files at the destination?" (skipped when there is nothing to delete)
 #   save: scheduled job, always asks "Save this job as mirror?"
-# rc 0 = go ahead (_mirror_n = files that will be deleted); 1 = refused,
+# rc 0 = go ahead (_mirror_n = files + empty folders that will be deleted); 1 = refused,
 # failed or cancelled - the caller copies / saves nothing.
 _mirror_preview() {
-    local loc=$1 src=$2 dest=$3 dry=$4 ask=$5 out rc=0 dels n reply=""
+    local loc=$1 src=$2 dest=$3 dry=$4 ask=$5 out rc=0 all dels dirs nf nd what="" reply=""
     _mirror_n=0
     if ! _mirror_guard "$loc" "$src"; then _mirror_refuse "$src"; return 1; fi
     if [[ "$loc" == sudo ]]; then
@@ -5121,15 +5121,28 @@ _mirror_preview() {
         fail "Could not preview the deletions (rsync exit $rc) - nothing changed."
         return 1
     fi
-    # Directories are skipped: their files are listed individually.
-    dels=$(printf '%s\n' "$out" | sed -n 's/^del\.|//p' | grep -v '/$' || true)
-    n=$(printf '%s\n' "$dels" | grep -c . || true)
-    _mirror_n=$n
+    # Files are listed by name; a directory counts only when no deleted file
+    # sits under it (those go with their files) = an empty folder.
+    all=$(printf '%s\n' "$out" | sed -n 's/^del\.|//p')
+    dels=$(printf '%s\n' "$all" | grep -v '/$' || true)
+    dirs=$(printf '%s\n' "$all" | awk '/\/$/ { d[++nd] = $0; next }
+        { p = $0; while ((i = match(p, /\/[^\/]*$/)) > 0) { p = substr(p, 1, i - 1); has[p "/"] = 1 } }
+        END { for (i = 1; i <= nd; i++) if (!(d[i] in has)) print d[i] }')
+    nf=$(printf '%s\n' "$dels" | grep -c . || true)
+    nd=$(printf '%s\n' "$dirs" | grep -c . || true)
+    _mirror_n=$((nf + nd))
     [[ "$ask" == save ]] && echo -e "  ${YELLOW}⚠ Every scheduled run will delete destination files that are gone from the source.${NC}"
-    if (( n > 0 )); then
-        echo -e "  ${YELLOW}⚠ ${n} file$([[ $n == 1 ]] || echo s) would be deleted at ${dest}:${NC}"
+    if (( nf > 0 )); then
+        what="${nf} file$([[ $nf == 1 ]] || echo s)"
+        (( nd > 0 )) && what+=" (+ ${nd} empty folder$([[ $nd == 1 ]] || echo s))"
+        echo -e "  ${YELLOW}⚠ ${what} would be deleted at ${dest}:${NC}"
         printf '%s\n' "$dels" | head -n 5 | sed 's/[[:cntrl:]]//g; s/^/    /'
-        (( n > 5 )) && echo "    ... and $((n - 5)) more"
+        (( nf > 5 )) && echo "    ... and $((nf - 5)) more"
+    elif (( nd > 0 )); then
+        what="${nd} empty folder$([[ $nd == 1 ]] || echo s)"
+        echo -e "  ${YELLOW}⚠ ${what} would be removed at ${dest}:${NC}"
+        printf '%s\n' "$dirs" | head -n 5 | sed 's/[[:cntrl:]]//g; s/^/    /'
+        (( nd > 5 )) && echo "    ... and $((nd - 5)) more"
     else
         ok "Nothing to delete - destination has no extra files."
         [[ "$ask" == copy ]] && return 0
@@ -5137,7 +5150,7 @@ _mirror_preview() {
     if [[ "$ask" == save ]]; then
         printf '  Save this job as mirror? [y/N]: '
     else
-        printf '  Delete these %s file%s at the destination? [y/N]: ' "$n" "$([[ $n == 1 ]] || echo s)"
+        printf '  Delete these %s at the destination? [y/N]: ' "$what"
     fi
     read -r reply || reply=""
     if [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]; then return 0; fi
@@ -5191,6 +5204,10 @@ _sync_job_set_mode() {  # script_path mode
         skip { next }
         !done && /^echo "\[\$\(date/ { emit() }
         /^rsync / && $0 !~ /\$DELFLAG/ { sub(/^rsync /, "rsync $DELFLAG ") }
+        # Old finish line logged "(exit $?)" = the date substitution (always 0):
+        # capture the rsync code first, log it, and exit with it.
+        /^echo ".*Sync finished: .*\(exit \$\?\)"$/ {
+            sub(/\(exit \$\?\)/, "(exit $rc)"); print "rc=$?"; print; print "exit $rc"; next }
         { print }' "$sp" > "$tmp"
     chmod --reference="$sp" "$tmp"
     if bash -n "$tmp" 2>/dev/null && mv "$tmp" "$sp" && [[ "$(_sync_job_mode "$sp")" == "$mode" ]]; then
@@ -7603,17 +7620,18 @@ _smb_env_content() { # user uid gid password   (uses _SMB_NAMES/_SMB_PATHS)
 }
 
 # Is 445 reachable from the LAN? Prints yes|no|unknown (firewalld not running).
+# No --zone: asks the default zone, where _fw_defaults opens ports.
 _smb_fw_state() {
     local p s
-    p=$(sudo firewall-cmd --zone=public --query-port=445/tcp 2>/dev/null) || p=${p:-unknown}
-    s=$(sudo firewall-cmd --zone=public --query-service=samba 2>/dev/null) || s=${s:-unknown}
+    p=$(sudo firewall-cmd --query-port=445/tcp 2>/dev/null) || p=${p:-unknown}
+    s=$(sudo firewall-cmd --query-service=samba 2>/dev/null) || s=${s:-unknown}
     if [[ "$p" == yes || "$s" == yes ]]; then echo yes
     elif [[ "$p" == no && "$s" == no ]]; then echo no
     else echo unknown; fi
 }
 
 _smb_fw_fix() {
-    echo -e "    ${YELLOW}sudo firewall-cmd --permanent --zone=public --remove-port=445/tcp --remove-service=samba && sudo firewall-cmd --reload${NC}"
+    echo -e "    ${YELLOW}sudo firewall-cmd --permanent --remove-port=445/tcp --remove-service=samba && sudo firewall-cmd --reload${NC}"
 }
 
 # Write config + (re)create the container from _SMB_USER/_SMB_PW and the folder
@@ -7910,7 +7928,7 @@ _smb_setup() {
     fi
     ok "Port 445 is free"
     case "$(_smb_fw_state)" in
-        yes) fail "Firewall: port 445 is open to the home network (public zone). Close it first:"
+        yes) fail "Firewall: port 445 is open to the home network (default zone). Close it first:"
              _smb_fw_fix
              return 1 ;;
         no)  ok "Firewall: 445 is not open to the home network" ;;

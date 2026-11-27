@@ -42,7 +42,7 @@ and the destination is wiped. So the feature is mostly about the guard rails.
 2. **Always a second confirmation with a preview.** Choosing mirror runs a dry run
    (`rsync -n --delete`) and shows `⚠ N files would be deleted at <dest>:`, the first five
    names, `... and M more`, then `Delete these N files at the destination? [y/N]`. Enter or
-   `n` → `Cancelled - nothing changed.` Nothing to delete → says so and copies. A one-time
+   `n` → `Cancelled - nothing changed.` Nothing to delete → says so and copies. Only empty folders to remove (no files) is not "nothing": it shows `⚠ N empty folders would be removed at <dest>:` and asks the same y/N, and with files too the header adds `(+ N empty folders)`. A one-time
    mirror then still shows the existing summary box (with a red `Mode: mirror` line) and its
    `Proceed? [y/N]` — two confirmations is intended.
 3. **Source guard — never mirror from nothing.** A missing source, an empty directory, or a

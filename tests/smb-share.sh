@@ -62,9 +62,13 @@ X
 cat > "$T/bin/firewall-cmd" <<'X'
 #!/bin/bash
 [ -n "$FW_DOWN" ] && exit 252
+# Zones are modelled: a query without --zone asks the default zone (FW_DEFAULT,
+# public if unset). FW_PORT / FW_SVC = the zone where it is open; "1" = the default zone.
+DEF=${FW_DEFAULT:-public}; Z=$DEF
+for a in "$@"; do case "$a" in --zone=*) Z=${a#--zone=} ;; esac; done
 for a in "$@"; do case "$a" in
-  --query-port=445/tcp) [ -n "$FW_PORT" ] && { echo yes; exit 0; }; echo no; exit 1 ;;
-  --query-service=samba) [ -n "$FW_SVC" ] && { echo yes; exit 0; }; echo no; exit 1 ;;
+  --query-port=445/tcp) [ -n "$FW_PORT" ] && [ "${FW_PORT/#1/$DEF}" = "$Z" ] && { echo yes; exit 0; }; echo no; exit 1 ;;
+  --query-service=samba) [ -n "$FW_SVC" ] && [ "${FW_SVC/#1/$DEF}" = "$Z" ] && { echo yes; exit 0; }; echo no; exit 1 ;;
 esac; done
 X
 cat > "$T/bin/docker" <<'X'
@@ -124,7 +128,7 @@ PASS=0; FAILN=0
 mk() { local d="$T/c/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _)"; mkdir -p "$d"
   printf '%s' "$1" > "$d/name"; echo "$2" > "$d/running"; echo "$3" > "$d/policy"; : > "$d/mounts"; [ "$2" = true ] && touch "$d/listening"; }
 reset() { rm -rf "$T/c" "$T/opt" "$SMBSTATUS"; mkdir -p "$T/c" "$T/opt"; : > "$DOCKER_LOG"
-  unset NO_IMAGE FAIL_PULL SUDO_FAIL LISTEN FW_PORT FW_SVC FW_DOWN FAIL_RUN FAIL_RM NO_LISTEN OPENSSL_FAIL TS_DOWN FAKE_GID FM_MODE
+  unset NO_IMAGE FAIL_PULL SUDO_FAIL LISTEN FW_PORT FW_SVC FW_DEFAULT FW_DOWN FAIL_RUN FAIL_RM NO_LISTEN OPENSSL_FAIL TS_DOWN FAKE_GID FM_MODE
   _SMB_NAMES=(); _SMB_PATHS=(); }
 check() { if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rc=$RC]"; FAILN=$((FAILN+1)); fi; }
 # run <stdin-text> <hold-seconds> cmd...   (hold keeps stdin open so read -t can time out)
@@ -145,9 +149,15 @@ check 1b "445 in use: stops, installs nothing" '[ $RC != 0 ] && [[ "$OUT" == *"P
 reset; mk samba-poc true unless-stopped; export LISTEN=1; run "$SI" 0 step_samba
 check 1c "POC container present: prints teardown command" '[[ "$OUT" == *"docker compose -p samba-poc down"* ]]'
 reset; export FW_PORT=1; run "$SI" 0 step_samba
-check 1d "445 open in public zone: stops with the fix, installs nothing" '[ $RC != 0 ] && [[ "$OUT" == *"--remove-port=445/tcp"* ]] && [ -z "$(RUNLINE)" ] && [ ! -e "$ENVF" ]'
+check 1d "445 open in the default zone: stops with the fix, installs nothing" '[ $RC != 0 ] && [[ "$OUT" == *"--remove-port=445/tcp"* ]] && [ -z "$(RUNLINE)" ] && [ ! -e "$ENVF" ]'
 reset; export FW_SVC=1; run "$SI" 0 step_samba
-check 1e "samba service open in public zone: stops" '[ $RC != 0 ] && [ -z "$(RUNLINE)" ]'
+check 1e "samba service open in the default zone: stops" '[ $RC != 0 ] && [ -z "$(RUNLINE)" ]'
+reset; export FW_DEFAULT=home FW_PORT=1; run "$SI" 0 step_samba
+check 1d2 "445 open in a non-public default zone (home): still stops, fix names no zone" '[ $RC != 0 ] && [[ "$OUT" == *"--remove-port=445/tcp"* && "$OUT" != *"--zone="* && "$OUT" == *"default zone"* ]] && [ -z "$(RUNLINE)" ]'
+reset; export FW_DEFAULT=home FW_SVC=1; run "$SI" 0 step_samba
+check 1e2 "samba service open in a non-public default zone: stops with the open-LAN message" '[ $RC != 0 ] && [[ "$OUT" == *"is open to the home network"* ]] && [ -z "$(RUNLINE)" ]'
+reset; export FW_DEFAULT=home FW_PORT=public; run $'1\ny' 0 step_samba
+check 1e3 "445 open only in public while the default zone is home: not flagged (the LAN NIC is not in public)" '[[ "$OUT" != *"445 is open"* && "$OUT" != *"port 445 is open"* && "$OUT" == *"Folder to share"* ]]'
 reset; export FW_DOWN=1; run $'1\ny' 0 step_samba
 check 1f "firewalld unreadable: warns, continues to the folder prompt" '[[ "$OUT" == *"could not read the state"* && "$OUT" == *"Folder to share"* ]]'
 reset; run $'1\ny' 0 step_samba
@@ -249,6 +259,8 @@ mkset; export SUDO_FAIL=1; run $'5\n' 0 step_samba
 check 5j "Stop with sudo refused: reports failure" '[ $RC != 0 ] && [[ "$OUT" == *"Stop failed"* ]]'
 mkset; export FW_PORT=1; run $'0\n' 0 step_samba
 check 5k "status flags 445 open on LAN with the fix" '[[ "$OUT" == *"445 open on the LAN"* && "$OUT" == *"--remove-port=445/tcp"* ]]'
+mkset; export FW_DEFAULT=home FW_PORT=1; run $'0\n' 0 step_samba
+check 5k2 "status flags 445 open in a non-public default zone, fix names no zone" '[[ "$OUT" == *"445 open on the LAN"* && "$OUT" == *"--remove-port=445/tcp"* && "$OUT" != *"--zone="* ]]'
 
 # 6 manage folders
 mkset; run $'2\n'"$T/files/My Pics"$'\n\n' 0 step_samba

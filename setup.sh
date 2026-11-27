@@ -5,10 +5,15 @@
 # symlinks — the installed `federver` is a symlink into the repo, so we must
 # find package.json next to the REAL script, not next to /usr/local/bin.
 _fv_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
-# `|| true`: a missing/unreadable package.json falls through to the literal below
-# rather than aborting (defensive — set -e is enabled later in this file).
-FEDERVER_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$(dirname "$_fv_self")/package.json" 2>/dev/null || true)"
-FEDERVER_VERSION="${FEDERVER_VERSION:-0.9.5}"
+# The one version reader: prints the "version" of package.json file $1, or
+# "unknown" when it is missing/unreadable/has none. `|| true`: a bad file must
+# not abort (set -e is enabled later in this file).
+_fv_pkg_version() {
+    local v
+    v="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" 2>/dev/null | head -1 || true)"
+    printf '%s' "${v:-unknown}"
+}
+FEDERVER_VERSION="$(_fv_pkg_version "$(dirname "$_fv_self")/package.json")"
 _FV_SELF=$_fv_self   # absolute path of this script: written into sync-job launchers
 unset _fv_self
 #
@@ -1681,13 +1686,22 @@ _storage_unmount() {
     info "Safe to unplug the drive."
 }
 
-# Helper to update .env and redeploy affected containers
+# The one .env writer: _set_env KEY VAL FILE. Sets KEY=VAL with a literal match
+# on the whole key (values go through ENVIRON, so | & \ need no escaping),
+# appended when missing, every other line untouched. The temp file is made 0600
+# and replaces FILE, so the result is always 0600 (.env holds the DB password).
+# A missing FILE is created.
 _set_env() {
-    local key="$1" val="$2" file="$3"
-    if grep -q "^${key}=" "$file"; then
-        sed -i "s|^${key}=.*|${key}=${val}|" "$file"
+    local key="$1" val="$2" file="$3" tmp
+    [[ -e "$file" ]] || ( umask 077; : > "$file" ) || return 1
+    tmp="$(umask 077; mktemp "$file.XXXXXX")" || return 1
+    if K="$key" V="$val" awk 'BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; n = length(k) + 1 }
+         !done && substr($0, 1, n) == k "=" { print k "=" v; done = 1; next }
+         { print }
+         END { if (!done) print k "=" v }' "$file" > "$tmp"; then
+        mv "$tmp" "$file"
     else
-        echo "${key}=${val}" >> "$file"
+        rm -f "$tmp"; return 1
     fi
 }
 

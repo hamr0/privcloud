@@ -7,16 +7,15 @@
 # Run: bash tests/picker-guard.sh   (non-zero on any failure)
 # SETUP_SH=<file> tests another copy of setup.sh (fail-first check).
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$H/lib.sh"
 SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/home/privcloud"
 GREEN=; RED=; YELLOW=; BLUE=; BOLD=; DIM=; NC=
-{ grep -E '^(ok|fail|info|warn)\(\)' "$SRC"
-  grep -m1 '^_shq()' "$SRC"
-  awk '/^_svc_power_body\(\)/{p=1} p{print} p&&/^_svc_power_all_remote\(\)/{exit}' "$SRC"
-  for f in _env_get _require_data_mount _unified_service_picker _picker_data_guard; do
-    awk -v f="$f" '$0 ~ "^"f"\\(\\)"{p=1} p{print} p&&/^}/{exit}' "$SRC"; done; } > "$T/fn.sh"
+for f in ok fail info warn _shq _svc_power_body _svc_sudo_guard _svc_power_all_body _svc_power _svc_power_all _svc_power_remote \
+         _svc_power_all_remote _env_get _require_data_mount _unified_service_picker _picker_data_guard; do
+  extract_fn "$f" "$SRC"; done > "$T/fn.sh"
 source "$T/fn.sh"
 type _unified_service_picker >/dev/null 2>&1 || echo "FAIL  setup: _unified_service_picker not found in $SRC"
 # laptop-side stubs
@@ -26,8 +25,7 @@ _ts_start_both() { echo "TS_START" >> "$T/acts.log"; }
 _syncthing_start_both() { echo "ST_START" >> "$T/acts.log"; }
 systemctl() { return 1; }
 printf 'MUSIC_LOCATION=/mnt/data/media\nFILES_LOCATION=/mnt/data\n' > "$T/home/privcloud/.env"
-cat > "$T/bin/findmnt" <<'X'
-#!/bin/bash
+stub_findmnt <<'X'
 [ -n "$FINDMNT_SRC" ] && echo "$FINDMNT_SRC"; exit 0
 X
 printf '#!/bin/bash\nexit 0\n' > "$T/bin/sleep"
@@ -45,8 +43,7 @@ X
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH" SSH_LOG=$T/ssh.log FAKE_HOME=$T/home
 SERVER_USER=tester SERVER_IP=192.0.2.1
-PASS=0; FAILN=0
-check() { if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rc=$RC out='${OUT:0:200}']"; FAILN=$((FAILN+1)); fi; }
+CHECK_DIAG='rc=$RC out='"'"'${OUT:0:200}'"'"
 # pick: 3=navidrome 4=filebrowser a=All (Start list: tailscale, syncthing, navidrome, filebrowser, adguard)
 go() { : > "$SSH_LOG"; : > "$T/acts.log"; OUT=$(printf '%s\n' "$1" | _unified_service_picker start 2>&1); RC=$?; }
 started() { grep -qE 'docker start|compose up' "$SSH_LOG"; }
@@ -60,5 +57,4 @@ go 3; check 2a "navidrome, drive mounted: started" '[ $RC = 0 ] && grep -q "dock
 go 4; check 2b "filebrowser, drive mounted: started" '[ $RC = 0 ] && grep -q "docker start" "$SSH_LOG"'
 go a; check 2c "All, drive mounted: compose up runs" '[ $RC = 0 ] && grep -q "compose up" "$SSH_LOG"'
 
-echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
-[ "$FAILN" = 0 ]
+check_total

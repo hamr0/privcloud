@@ -6,15 +6,13 @@
 # Stubbed tailscale and date (a fixed "now"): no real tailscale, no network.
 # SETUP_SH=<file> tests another copy of setup.sh (fail-first check).
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$H/lib.sh"
 SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin"
 GREEN= RED= YELLOW= DIM= NC= BOLD=
-grep -m1 '^_ts_ipv4()' "$SRC" > "$T/fn.sh"
-awk '/^_ts_state\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC" >> "$T/fn.sh"
-awk '/^_ts_key\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC" >> "$T/fn.sh"
-awk '/^_ts_running\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC" >> "$T/fn.sh"
+for f in _ts_ipv4 _ts_state _ts_key _ts_running; do extract_fn "$f" "$SRC"; done > "$T/fn.sh"
 source "$T/fn.sh"
 cat > "$T/bin/tailscale" <<'X'
 #!/bin/bash
@@ -30,9 +28,8 @@ exec /usr/bin/date "$@"
 X
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH"
-PASS=0; FAILN=0
 EXP=2026-06-01T12:00:00Z; EPOCH=$(/usr/bin/date -d "$EXP" +%s)
-check() { if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rec='$REC' key='$KEY']"; FAILN=$((FAILN+1)); fi; }
+CHECK_DIAG="rec='\$REC' key='\$KEY'"
 at() { # seconds until expiry
   export KEY_EXPIRY=$EXP NOW=$(( EPOCH - $1 )); REC=$(_ts_state); KEY=$(_ts_key "$REC"); }
 at 43200;      check 1 "+12h: 1 day left, not expired" '[ "$(cut -d" " -f3 <<<"$REC")" = 1 ] && [[ "$KEY" == *"1 days"* && "$KEY" != *expired* ]]'
@@ -76,5 +73,4 @@ _ts_state; echo \"TS_IP=\$(_ts_ipv4)\""
 done <<<"$LISTS"
 check 11 "each remote payload runs in a clean bash -s (no 'command not found'), yields TS_IP=first" '[ $bad = 0 ]'
 
-echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
-[ "$FAILN" = 0 ]
+check_total

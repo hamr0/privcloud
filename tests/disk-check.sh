@@ -72,7 +72,7 @@ cat > "$T/step.sh" <<'X'
 info(){ echo "I:$*"; }; warn(){ echo "W:$*"; }; fail(){ echo "F:$*"; }; ok(){ echo "O:$*"; }
 YELLOW= NC= BLUE= BOLD= DIM= GREEN= RED=
 hostname(){ echo 1.2.3.4; }
-sudo(){ echo "SUDO $*" >> $T/sudo.log; case "$1" in grep) command grep "${@:2}"; return;; rm) command rm "${@:2}";; install) eval "$INSTALL_HOOK"; cp "${@: -2:1}" "$T/installed.sh"; chmod "$7" "$T/installed.sh";; esac; return 0; }
+sudo(){ case "$1" in -v) return 0;; env) echo "SUDO-DRYRUN $*" >> $T/sudo-dry.log; shift; command env "$@"; return;; esac; echo "SUDO $*" >> $T/sudo.log; case "$1" in grep) command grep "${@:2}"; return;; rm) command rm "${@:2}";; install) eval "$INSTALL_HOOK"; cp "${@: -2:1}" "$T/installed.sh"; chmod "$7" "$T/installed.sh";; esac; return 0; }
 _cron_get(){ echo ""; }; _cron_set(){ echo "CRONSET $2" >> $T/sudo.log; return 0; }
 X
 extract_fn _cron_drop "$SRC" >> "$T/step.sh"   # the real helper (honours $2), not a copy
@@ -104,6 +104,8 @@ rm -f "$T/bin-dc.sh"
 # error, not a "blind config"; refuses and installs nothing
 OUT=$(run_step "" 's/^THRESHOLD=85$/THRESHOLD=85 )(/'); RC=$?
 check 1b5 "syntax error in generated script (bash rc 2) -> 'Monitor script error', not 'blind', nothing installed" '[[ "$OUT" == *"Monitor script error (dry-run exit 2)"* && "$OUT" != *"would be blind"* && ! -e $T/sudo.log && "$(leaked)" = 0 ]]'
+# 1b6 the dry-run runs with the privileges of the real run (root), so a root-only path is not "missing"
+check 1b6 "install dry-run goes through sudo (same privileges as the real run), not as the invoking user" 'grep -q "^SUDO-DRYRUN env DISKCHECK_DRYRUN=1 bash " $T/sudo-dry.log'
 # 1c same with .env present and a good location -> installs 0700, scheduled
 mkdir -p "$T/copy/data"; printf 'FILES_LOCATION=%s\n' "$T/copy/data" > "$T/copy/.env"; echo "$T/copy/data" > "$T/fm"; printf '/ 40\n%s 50\n' "$T/copy/data" > "$DF_MAP"
 OUT=$(run_step); RC=$?

@@ -5867,8 +5867,10 @@ step_disk_monitor() {
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     env_file="$SCRIPT_DIR/.env"
 
-    # Generate, then dry-run the exact script (as this user, no curl, no writes)
-    # and show what it resolved. Nothing is installed or scheduled until it passes.
+    # Generate, then dry-run the exact script (no curl, no writes) and show what it
+    # resolved. The dry run is root, like the real cron run: as this user a root-only
+    # path would look missing. Nothing is installed or scheduled until it passes.
+    sudo -v || { fail "Need sudo to check and install the monitor - disk-check NOT installed."; return 1; }
     tmp=$(mktemp) || { fail "Could not create a temp file - disk-check NOT installed."; return 1; }
     # The temp file holds the Kuma push URL: remove it on every way out of this
     # function (return or Ctrl-C/TERM). Traps are shell-global, so the handler
@@ -5878,7 +5880,7 @@ step_disk_monitor() {
     trap "rm -f '$tmp'; trap - RETURN INT TERM; kill -TERM \$BASHPID" TERM
     _disk_check_script "$push_url" "$env_file" > "$tmp"
     info "Checking what the monitor will watch..."
-    dry_out=$(DISKCHECK_DRYRUN=1 bash "$tmp" 2>&1) || dry_rc=$?
+    dry_out=$(sudo env DISKCHECK_DRYRUN=1 bash "$tmp" 2>&1) || dry_rc=$?
     echo "$dry_out" | sed 's/^/    /'
     if (( dry_rc == 4 )); then
         fail "The monitor would be blind (see above) - disk-check NOT installed."

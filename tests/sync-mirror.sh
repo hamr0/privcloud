@@ -20,8 +20,8 @@ CR=$'\033[R]'; CY=$'\033[Y]'   # status() swaps these in for RED/YELLOW
   grep -E "^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_RSYNC_FLAGS=" "$SRC"
   for f in _drive_verdict _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
            _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
-           _sync_mode_cell _sync_last_note _sync_last_result _sync_change_mode \
-           _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
+           _sync_mode_cell _sync_result_text _sync_last_result _sync_change_mode \
+           _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs _sync_cron_split _sync_registry_load _sync_job_delete _sync_delete_job _sync_change_schedule _sync_remove_timer _confirm_delete _cron_cmd _cron_get _cron_drop _cron_set _cron_remove_line _cron_replace_line \
            _cron_to_english _sync_one_time_backup; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 source "$T/fn.sh"
 type _sync_one_time_backup >/dev/null 2>&1 || echo "FAIL  setup: mirror functions not found in $SRC (older setup.sh?)"
@@ -421,7 +421,7 @@ cp "$OLD" "$T/old.after1"
 rm -rf "$T/s"; bash "$OLD" >/dev/null 2>&1; ORC=$?
 OLE=$(grep -oP 'Sync finished: old \(exit \K[0-9]+' "$OLOG" | tail -n 1)
 check 10l "legacy finish line upgraded: failed rsync logs its real non-zero exit and the script exits with it" '[ "$SRC1" = 0 ] && [ -n "$OLE" ] && [ "$OLE" != 0 ] && [ "$ORC" = "$OLE" ] && bash -n "$OLD"'
-check 10m "Status shows last: failed (exit N) for the upgraded legacy job" '[[ "$(_sync_last_note old)" == *"last: failed (exit $OLE)"* ]]'
+check 10m "Status shows last: failed (exit N) for the upgraded legacy job" '[[ "$(_sync_result_text old)" == *"last: failed (exit $OLE)"* ]]'
 check 10n "script mode kept (750)" '[ "$(stat -c %a "$OLD")" = 750 ]'
 _sync_job_set_mode "$OLD" append
 check 10o "a second set_mode changes nothing (idempotent, no duplicate rc/exit lines)" 'cmp -s "$OLD" "$T/old.after1" && [ "$(grep -c "^rc=" "$OLD")" = 1 ] && [ "$(grep -c "^exit \$rc" "$OLD")" = 1 ]'

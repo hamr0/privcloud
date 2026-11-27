@@ -19,9 +19,9 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
            _cron_cmd _cron_get _cron_drop _cron_set _cron_add_sync _cron_remove_line _cron_replace_line _cron_to_english \
            _drive_verdict _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
            _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _src_size _confirm_delete \
-           _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode _sync_mode_cell _sync_last_note _sync_last_result \
+           _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode _sync_mode_cell _sync_result_text _sync_last_result \
            _sync_result_text _sync_change_mode _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
-           _sync_delete_job _sync_job_delete _sync_registry_load _sync_change_schedule _sync_install_timer _sync_remove_timer \
+           _sync_delete_job _sync_job_delete _sync_cron_split _sync_registry_load _sync_change_schedule _sync_install_timer _sync_remove_timer \
            _sync_rec_load _sync_rec_write _sync_valid_name _sync_default_name _sync_write_launcher _sync_job_run _sync_job_go \
            _sync_job_cmd _sync_job_import_legacy _sync_import_all_legacy _sync_tokenize _sync_setup_path _sync_run_logged _sync_one_time_backup; do
     extract_fn "$f" "$SRC"; done
@@ -136,16 +136,16 @@ check 1g "timer -> timer: only the OnCalendar changes" 'grep -q "^OnCalendar=wee
 unset SCHED
 
 # ── 2  delete (pinned): menu Delete and Edit -> Delete ───────────────────
-mk; mkjob d1 >/dev/null; mkjob d2 >/dev/null
+mk; mkjob d1 >/dev/null; mkjob d2 >/dev/null; echo log > "$(LOGF d1)"; echo log > "$(LOGF d2)"
 run "1\nsync-d1\n" _sync_delete_job
 check 2a "Delete a job: cron line, script and log of that job are gone" '! grep -q "sync-d1.sh" "$CRON_FILE" 2>/dev/null && [ ! -e "$(SCRIPT d1)" ] && [ ! -e "$(LOGF d1)" ] && [[ "$OUT" == *"Deleted"*"d1"* ]]'
-check 2b "the other job is untouched" 'grep -q "sync-d2.sh" "$CRON_FILE" 2>/dev/null && [ -e "$(SCRIPT d2)" ]'
+check 2b "the other job is untouched" 'grep -q "sync-d2.sh" "$CRON_FILE" 2>/dev/null && [ -e "$(SCRIPT d2)" ] && [ -e "$(LOGF d2)" ]'
 mk; mkjob d1 >/dev/null
 run "1\n\n" _sync_delete_job
 check 2c "blank confirmation cancels: nothing removed" 'grep -q "sync-d1.sh" "$CRON_FILE" 2>/dev/null && [ -e "$(SCRIPT d1)" ] && [[ "$OUT" == *"Nothing deleted"* ]]'
 run "1\nwrong\n" _sync_delete_job
 check 2d "wrong confirmation cancels" 'grep -q "sync-d1.sh" "$CRON_FILE" 2>/dev/null && [ -e "$(SCRIPT d1)" ]'
-mk; mkjob d1 >/dev/null
+mk; mkjob d1 >/dev/null; echo log > "$(LOGF d1)"
 run "1\n5\nsync-d1\n" _sync_edit_job
 check 2e "Edit job -> Delete does the same removal" '! grep -q "sync-d1.sh" "$CRON_FILE" 2>/dev/null && [ ! -e "$(SCRIPT d1)" ] && [ ! -e "$(LOGF d1)" ] && [[ "$OUT" == *"Deleted"*"d1"* ]]'
 mk; SCHED="timer Sat"; mkjob d3 >/dev/null; unset SCHED
@@ -154,9 +154,20 @@ check 2f "a timer job: timer + service units, script and log are removed" '[ ! -
 run "" _sync_delete_job
 check 2g "no jobs: says so" '[[ "$OUT" == *"No sync jobs to delete."* ]]'
 
+# ── 3  dotted job names are listed and manageable (was: empty name) ──────
+mk; mkjob my.photos >/dev/null
+run "" _sync_list_jobs
+check 3a "List shows the dotted name" '[[ "$OUT" == *"1)"*"my.photos"*"[0 * * * *]"* ]]'
+OUT=$(status)
+check 3b "Status row carries the dotted name" 'grep -q "^  my.photos " <<<"$OUT"'
+run "1\n6\n\n" _sync_edit_job
+check 3c "Edit job opens the dotted job" '[[ "$OUT" == *"my.photos"*"cron"* ]]'
+run "1\nsync-my.photos\n" _sync_delete_job
+check 3d "Delete removes the dotted job" '! grep -q "sync-my.photos.sh" "$CRON_FILE" && [ ! -e "$(SCRIPT my.photos)" ]'
+
 # ── 4  the logged result of a run: rsync exit 0 / 23 / 24 / 255 ──────────
 mk; mkjob r1 >/dev/null
-note() { _sync_last_note r1; }
+note() { _sync_result_text r1; }
 cronrun r1 0;   N0=$(note)
 check 4a "exit 0 -> last: ok, job exits 0" '[ "$JRC" = 0 ] && [[ "$N0" == *"last: ok"* ]] && grep -q "Sync finished: r1 (exit 0" "$(LOGF r1)"'
 cronrun r1 23;  N23=$(note)

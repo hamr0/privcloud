@@ -5400,7 +5400,7 @@ _sync_job_mode() {  # script_path -> mirror | append (no MODE= line = legacy = a
 
 # One "# Key: value" header line of a job script (first match; empty if none).
 _sync_job_field() {  # script_path key
-    sed -n "s/^# $2: //p" "$1" | head -n 1
+    sed -n "s/^# $2: //p" "$1" 2>/dev/null | head -n 1
 }
 
 # Rewrite a job script's mode in place (also upgrades pre-mirror scripts).
@@ -5457,8 +5457,8 @@ _sync_mode_cell() {
     esac
 }
 
-# "last: ..." note for a Status row, coloured: ok green, skipped yellow, failed red.
-_sync_last_note() {  # job_name
+# The "last: ..." text of a job (Status rows and Last runs): ok green, skipped yellow, failed red.
+_sync_result_text() {  # job_name -> the coloured "last: ..." text of its last run
     local kind when exitc
     IFS='|' read -r kind when exitc <<<"$(_sync_last_result "$HOME/.local/share/sync-jobs/$1.log")"
     case "$kind" in
@@ -5469,7 +5469,6 @@ _sync_last_note() {  # job_name
         *)       echo -e "${DIM}last: never${NC}" ;;
     esac
 }
-
 # Last result of a sync job from its log: "kind|when|exit", kind = ok | fail |
 # skipped (the mirror guard refused; the third field is its reason) | running
 # (started, no finish line) | never.
@@ -5827,7 +5826,7 @@ _sync_edit_job() {
     echo -e "  ${BOLD}Edit a sync job${NC}"
     echo ""
 
-    if ! _sync_list_jobs "all"; then
+    if ! _sync_list_jobs; then
         info "No sync jobs to edit."
         return
     fi
@@ -5842,17 +5841,15 @@ _sync_edit_job() {
         return
     fi
 
-    local job_name="${_sync_jobs[$((pick-1))]}"
-    local old_line="${_sync_job_lines[$((pick-1))]}"
-    local job_type="${_sync_job_types[$((pick-1))]}"
-    local is_paused=false sched human
+    local i=$((pick-1))
+    local job_name="${_sync_jobs[i]}"
+    local old_line="${_sync_job_lines[i]}"
+    local job_type="${_sync_job_types[i]}"
+    local sched="${_sync_job_scheds[i]}" is_paused=false human
+    [[ -n "${_sync_job_paused[i]}" ]] && is_paused=true
     if [[ "$job_type" == "cron" ]]; then
-        echo "$old_line" | grep -q "^#PAUSED#" && is_paused=true
-        sched=$(echo "$old_line" | sed 's/^#PAUSED#//' | awk '{print $1,$2,$3,$4,$5}')
         human=$(_cron_to_english "$sched")
     else
-        [[ "$(systemctl --user is-enabled "sync-${job_name}.timer" 2>/dev/null)" != "enabled" ]] && is_paused=true
-        sched="$old_line"
         human="weekly (${sched}), catches missed runs"
     fi
 
@@ -5878,7 +5875,7 @@ _sync_edit_job() {
             if [[ "$job_type" == "cron" ]]; then
                 local new_line
                 if $is_paused; then
-                    new_line=$(echo "$old_line" | sed 's/^#PAUSED#//')
+                    new_line=${old_line#'#PAUSED#'}
                     _cron_replace_line "$old_line" "$new_line" || return 1
                     ok "Resumed '${job_name}'"
                 else
@@ -5929,19 +5926,7 @@ _sync_edit_job() {
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             tail -n 30 "$log_path" | sed 's/^/  /'
             ;;
-        5)
-            echo ""
-            _confirm_delete "sync-${job_name}" || return 0
-            if [[ "$job_type" == "cron" ]]; then
-                _cron_remove_line "$old_line" || return 1
-            else
-                _sync_remove_timer "$job_name"
-            fi
-            local script_path="$HOME/.local/bin/sync-${job_name}.sh"
-            local log_path="$HOME/.local/share/sync-jobs/${job_name}.log"
-            rm -f "$script_path" "$log_path"
-            ok "Deleted '${job_name}'"
-            ;;
+        5) _sync_job_delete "$job_name" "$job_type" "$old_line" ;;
         6) _sync_change_mode "$job_name" ;;
         0) return ;;
         *) fail "Invalid choice." ;;
@@ -5982,14 +5967,10 @@ _sync_change_schedule() {
         return
     fi
 
-    # Cron → cron: preserve #PAUSED# prefix and the script path field.
-    local prefix="" rest
-    if echo "$old_line" | grep -q "^#PAUSED#"; then
-        prefix="#PAUSED#"
-        rest=$(echo "$old_line" | sed 's/^#PAUSED#//' | awk '{for(i=6;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":"")}')
-    else
-        rest=$(echo "$old_line" | awk '{for(i=6;i<=NF;i++) printf "%s%s", $i, (i<NF?" ":"")}')
-    fi
+    # Cron → cron: preserve the #PAUSED# prefix and the command field.
+    _sync_cron_split "$old_line"
+    local prefix="" rest=$_cs_cmd
+    [[ -n "$_cs_paused" ]] && prefix="#PAUSED#"
 
     local new_line="${prefix}${sched_spec} ${rest}"
     _cron_replace_line "$old_line" "$new_line" || return 1
@@ -6085,72 +6066,31 @@ _sync_show_status() {
         fi
     done
 
-    # Laptop-side sync crons
-    local laptop_crons
-    laptop_crons=$(crontab -l 2>/dev/null) || laptop_crons=""
-
-    if [[ -n "$laptop_crons" ]]; then
-        echo "$laptop_crons" | while IFS= read -r line; do
-            if echo "$line" | grep -q "sync-.*\.sh"; then
-                local sched name direction status
-                sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
-                name=$(echo "$line" | grep -oP 'sync-\K[^.]+(?=\.sh)')
-                local script_path
-                script_path=$(echo "$line" | grep -oP '/[^ ]*sync-[^ ]*\.sh')
-                direction="sync"
-                if [[ -f "$script_path" ]]; then
-                    direction=$(grep '^# Direction:' "$script_path" 2>/dev/null | sed 's/# Direction: //')
-                    [[ -z "$direction" ]] && direction="sync"
-                fi
-                status=""
-                if echo "$line" | grep -q "^#PAUSED#"; then
-                    status="${YELLOW}(paused)${NC}"
-                    sched=$(echo "$line" | sed 's/^#PAUSED#//' | awk '{print $1,$2,$3,$4,$5}')
-                    name=$(echo "$line" | sed 's/^#PAUSED#//' | grep -oP 'sync-\K[^.]+(?=\.sh)')
-                    script_path=$(echo "$line" | sed 's/^#PAUSED#//' | grep -oP '/[^ ]*sync-[^ ]*\.sh')
-                    if [[ -f "$script_path" ]]; then
-                        direction=$(grep '^# Direction:' "$script_path" 2>/dev/null | sed 's/# Direction: //')
-                        [[ -z "$direction" ]] && direction="sync"
-                    fi
-                fi
-                local when
-                when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s " "$name" "$sched" "$when" "$direction"
-                echo -e "$(_sync_mode_cell "$(_sync_job_mode "$script_path")") $(_sync_last_note "$name") $status"
-            fi
-        done
-    fi
-
-    # Laptop-side sync timers (systemd --user)
-    local unit_dir="$HOME/.config/systemd/user" has_timer=false
-    if [[ -d "$unit_dir" ]]; then
-        local timer_file
-        for timer_file in "$unit_dir"/sync-*.timer; do
-            [[ -f "$timer_file" ]] || continue
-            has_timer=true
-            local tname oncal status script_path direction
-            tname=$(basename "$timer_file" .timer); tname="${tname#sync-}"
-            oncal=$(awk -F= '/^OnCalendar=/{print $2; exit}' "$timer_file")
-            status=""
-            [[ "$(systemctl --user is-enabled "sync-${tname}.timer" 2>/dev/null)" != "enabled" ]] && status="${YELLOW}(paused)${NC}"
-            script_path="$HOME/.local/bin/sync-${tname}.sh"
-            direction="sync"
-            if [[ -f "$script_path" ]]; then
-                direction=$(grep '^# Direction:' "$script_path" 2>/dev/null | sed 's/# Direction: //')
-                [[ -z "$direction" ]] && direction="sync"
-            fi
-            printf "  %-20s %-18s %-16s %-10s " "$tname" "$oncal" "weekly" "$direction"
-            echo -e "$(_sync_mode_cell "$(_sync_job_mode "$script_path")") $(_sync_last_note "$tname") ${status:-${DIM}timer${NC}}"
-        done
-    fi
+    # Laptop-side sync jobs: cron lines and systemd --user timers, one registry
+    _sync_registry_load
+    local i name sched when direction tag script_path
+    for i in "${!_sync_jobs[@]}"; do
+        name=${_sync_jobs[i]}; sched=${_sync_job_scheds[i]}
+        script_path="$HOME/.local/bin/sync-${name}.sh"
+        direction=$(_sync_job_field "$script_path" Direction)
+        [[ -z "$direction" ]] && direction="sync"
+        if [[ "${_sync_job_types[i]}" == cron ]]; then
+            when=$(_cron_to_english "$sched"); tag=""
+            [[ -n "${_sync_job_paused[i]}" ]] && tag="${YELLOW}(paused)${NC}"
+        else
+            when="weekly"; tag="${DIM}timer${NC}"
+            [[ -n "${_sync_job_paused[i]}" ]] && tag="${YELLOW}(paused)${NC}"
+        fi
+        printf "  %-20s %-18s %-16s %-10s " "$name" "$sched" "$when" "$direction"
+        echo -e "$(_sync_mode_cell "$(_sync_job_mode "$script_path")") $(_sync_result_text "$name") $tag"
+    done
 
     # Check outside subshells (pipe subshells can't propagate state)
     local has_server=false has_laptop=false
     [[ -n "$server_timer_oncal" ]] && has_server=true
     [[ -n "$server_crons" ]] && echo "$server_crons" | grep -qE "immich-backup|disk-check" && has_server=true
     [[ -n "$server_scripts" ]] && has_server=true
-    [[ -n "$laptop_crons" ]] && echo "$laptop_crons" | grep -q "sync-.*\.sh" && has_laptop=true
-    $has_timer && has_laptop=true
+    (( ${#_sync_jobs[@]} > 0 )) && has_laptop=true
     if [[ "$has_server" == "false" && "$has_laptop" == "false" ]]; then
         echo ""
         info "No scheduled tasks found."
@@ -6237,95 +6177,90 @@ _sync_show_status() {
         local logf
         for logf in "$log_dir"/*.log; do
             [[ -f "$logf" ]] || continue
-            local jname when status kind exitc
+            local jname when kind exitc
             jname=$(basename "$logf" .log)
             IFS='|' read -r kind when exitc <<<"$(_sync_last_result "$logf")"
-            case "$kind" in
-                ok)      status="${GREEN}✓ ok${NC}" ;;
-                skipped) status="${YELLOW}last: skipped${exitc:+ ($exitc)}${NC}" ;;
-                fail)    status="${RED}✗ exit ${exitc}${NC}" ;;
-                *)       status="${YELLOW}running?${NC}" ;;
-            esac
             printf "  %-20s %-20s " "$jname" "$when"
-            echo -e "$status"
+            echo -e "$(_sync_result_text "$jname")"
         done
     fi
 
     echo ""
 }
 
-_sync_list_jobs() {
-    local filter="$1"  # "active", "paused", or "all"
-    local laptop_crons
-    laptop_crons=$(crontab -l 2>/dev/null) || laptop_crons=""
+# One crontab line split into _cs_paused ("1" for a #PAUSED# line), _cs_sched (its five
+# schedule fields) and _cs_cmd (what it runs). The only place the #PAUSED# convention
+# and the field layout are read; the registry and Change schedule both use it.
+_sync_cron_split() {  # line
+    local l=$1
+    _cs_paused=""
+    if [[ "$l" == '#PAUSED#'* ]]; then _cs_paused=1; l=${l#'#PAUSED#'}; fi
+    _cs_sched=""; _cs_cmd=""
+    [[ "$l" == '#'* ]] && return 0
+    local a b c d e rest
+    read -r a b c d e rest <<<"$l"
+    _cs_sched="$a $b $c $d $e"; _cs_cmd=$rest
+}
 
-    _sync_jobs=()
-    _sync_job_lines=()
-    _sync_job_types=()     # "cron" | "timer"
-    local i=1
-
-    # Cron-backed jobs
+# Every laptop sync job (cron lines that run a sync-<name>.sh, plus systemd --user
+# timers sync-<name>.timer) into parallel arrays, in list order: _sync_jobs (name),
+# _sync_job_types (cron|timer), _sync_job_scheds (5 cron fields | OnCalendar spec),
+# _sync_job_paused ("1" or ""), _sync_job_lines (the raw cron line | the OnCalendar
+# spec). The name is the launcher's basename between "sync-" and ".sh" (parameter
+# expansion, so a dot in a name is fine). List, Edit, Delete and Status read this.
+_sync_registry_load() {
+    _sync_jobs=(); _sync_job_types=(); _sync_job_scheds=(); _sync_job_paused=(); _sync_job_lines=()
+    local line base name unit_dir="$HOME/.config/systemd/user" tf oncal
     while IFS= read -r line; do
         [[ -z "$line" ]] && continue
-        case "$filter" in
-            active)
-                echo "$line" | grep -q "^#PAUSED#" && continue
-                echo "$line" | grep -q "sync-.*\.sh" || continue
-                ;;
-            paused)
-                echo "$line" | grep -q "^#PAUSED#" || continue
-                echo "$line" | grep -q "sync-.*\.sh" || continue
-                ;;
-            all)
-                echo "$line" | grep -q "sync-.*\.sh" || { echo "$line" | sed 's/^#PAUSED#//' | grep -q "sync-.*\.sh" || continue; }
-                ;;
-        esac
-
-        local clean_line name sched status_tag
-        clean_line=$(echo "$line" | sed 's/^#PAUSED#//')
-        name=$(echo "$clean_line" | grep -oP 'sync-\K[^.]+(?=\.sh)')
-        sched=$(echo "$clean_line" | awk '{print $1,$2,$3,$4,$5}')
-        status_tag=""
-        echo "$line" | grep -q "^#PAUSED#" && status_tag=" ${YELLOW}(paused)${NC}"
-
-        echo -e "    ${BOLD}${i})${NC} ${name}  [${sched}]  ${DIM}cron${NC}${status_tag}"
-        _sync_jobs+=("$name")
-        _sync_job_lines+=("$line")
-        _sync_job_types+=("cron")
-        ((i++))
-    done <<< "$laptop_crons"
-
-    # Timer-backed jobs
-    local unit_dir="$HOME/.config/systemd/user"
+        _sync_cron_split "$line"
+        [[ "$_cs_cmd" == */sync-*.sh ]] || continue
+        base=${_cs_cmd##*/}; name=${base#sync-}; name=${name%.sh}
+        _sync_jobs+=("$name"); _sync_job_types+=(cron); _sync_job_scheds+=("$_cs_sched")
+        _sync_job_paused+=("$_cs_paused"); _sync_job_lines+=("$line")
+    done <<< "$(crontab -l 2>/dev/null || true)"
     if [[ -d "$unit_dir" ]]; then
-        local timer_file
-        for timer_file in "$unit_dir"/sync-*.timer; do
-            [[ -f "$timer_file" ]] || continue
-            local tname oncal is_enabled paused=false status_tag=""
-            tname=$(basename "$timer_file" .timer)
-            tname="${tname#sync-}"
-            oncal=$(awk -F= '/^OnCalendar=/{print $2; exit}' "$timer_file")
-            is_enabled=$(systemctl --user is-enabled "sync-${tname}.timer" 2>/dev/null)
-            [[ "$is_enabled" != "enabled" ]] && paused=true
-
-            case "$filter" in
-                active) $paused && continue ;;
-                paused) $paused || continue ;;
-            esac
-
-            $paused && status_tag=" ${YELLOW}(paused)${NC}"
-            echo -e "    ${BOLD}${i})${NC} ${tname}  [${oncal}]  ${DIM}timer${NC}${status_tag}"
-            _sync_jobs+=("$tname")
-            _sync_job_lines+=("$oncal")     # for timer, "line" holds the OnCalendar spec
-            _sync_job_types+=("timer")
-            ((i++))
+        for tf in "$unit_dir"/sync-*.timer; do
+            [[ -f "$tf" ]] || continue
+            base=${tf##*/}; name=${base#sync-}; name=${name%.timer}
+            oncal=$(awk -F= '/^OnCalendar=/{print $2; exit}' "$tf")
+            _sync_jobs+=("$name"); _sync_job_types+=(timer); _sync_job_scheds+=("$oncal"); _sync_job_lines+=("$oncal")
+            if [[ "$(systemctl --user is-enabled "sync-${name}.timer" 2>/dev/null)" == enabled ]]; then
+                _sync_job_paused+=("")
+            else
+                _sync_job_paused+=(1)
+            fi
         done
     fi
+}
 
-    if [[ ${#_sync_jobs[@]} -eq 0 ]]; then
-        return 1
+# Print the numbered job list from the registry (a menu number is an array index + 1).
+# rc 1 = no jobs.
+_sync_list_jobs() {
+    local i tag
+    _sync_registry_load
+    for i in "${!_sync_jobs[@]}"; do
+        tag=""
+        [[ -n "${_sync_job_paused[i]}" ]] && tag=" ${YELLOW}(paused)${NC}"
+        echo -e "    ${BOLD}$((i + 1)))${NC} ${_sync_jobs[i]}  [${_sync_job_scheds[i]}]  ${DIM}${_sync_job_types[i]}${NC}${tag}"
+    done
+    (( ${#_sync_jobs[@]} > 0 ))
+}
+
+# Delete a job: typed confirm, then its cron line or timer, launcher/script, record and
+# log. The one delete used by the Delete menu and by Edit -> Delete. rc 0 also when the
+# user cancels (nothing removed); 1 = the cron line could not be removed.
+_sync_job_delete() {  # name type line
+    local name=$1 type=$2 line=$3
+    echo ""
+    _confirm_delete "sync-${name}" || return 0
+    if [[ "$type" == cron ]]; then
+        _cron_remove_line "$line" || return 1
+    else
+        _sync_remove_timer "$name"
     fi
-    return 0
+    rm -f "$HOME/.local/bin/sync-${name}.sh" "$HOME/.local/share/sync-jobs/${name}.log"
+    ok "Deleted sync job '${name}'"
 }
 
 _sync_delete_job() {
@@ -6333,7 +6268,7 @@ _sync_delete_job() {
     echo -e "  ${BOLD}Delete a sync job${NC}"
     echo ""
 
-    if ! _sync_list_jobs "all"; then
+    if ! _sync_list_jobs; then
         info "No sync jobs to delete."
         return
     fi
@@ -6347,26 +6282,8 @@ _sync_delete_job() {
         fail "Invalid choice."
         return
     fi
-
-    local job_name="${_sync_jobs[$((pick-1))]}"
-    local old_line="${_sync_job_lines[$((pick-1))]}"
-    local job_type="${_sync_job_types[$((pick-1))]}"
-    echo ""
-    _confirm_delete "sync-${job_name}" || return 0
-
-    if [[ "$job_type" == "cron" ]]; then
-        _cron_remove_line "$old_line" || return 1
-    else
-        _sync_remove_timer "$job_name"
-    fi
-
-    local script_path="$HOME/.local/bin/sync-${job_name}.sh"
-    local log_path="$HOME/.local/share/sync-jobs/${job_name}.log"
-    rm -f "$script_path" "$log_path"
-
-    ok "Deleted sync job '${job_name}'"
+    _sync_job_delete "${_sync_jobs[$((pick-1))]}" "${_sync_job_types[$((pick-1))]}" "${_sync_job_lines[$((pick-1))]}"
 }
-
 # Path-picker helpers shared by step_sync (recurring sync jobs) and
 # _sync_one_time_backup (ad-hoc rsync). Set globals: local_path, server_path,
 # sources, copy_mode.

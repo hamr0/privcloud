@@ -114,4 +114,33 @@ check E7 "set_env leaves a commented-out line alone and appends the real one" '[
 NLV=$'a\nb'; BOTHV="x #'\""
 check E8 "set_env refuses a newline and a value with both quote kinds, file untouched" '! _set_env RT "$NLV" "$T/rt3.env" >/dev/null 2>&1 && ! _set_env RT "$BOTHV" "$T/rt3.env" >/dev/null 2>&1 && [ "$(_env_get RT "$T/rt3.env")" = new ]'
 
+# ── D  data defaults: one table, equal to what step_deploy writes and .env.example holds ──
+DKEYS="FILES_LOCATION MEDIA_LOCATION MUSIC_LOCATION UPLOAD_LOCATION DB_DATA_LOCATION"
+{ for f in ok fail info warn _env_get _env_quote _set_env _data_defaults _drive_verdict _require_data_mount _install_smart_playlists step_deploy; do
+    extract_fn "$f" "$SRC"; done; grep -E '^_DRIVE_ROOTS=' "$SRC"; } > "$T/fn2.sh"
+mkdir -p "$T/dep"; cp "$T/fn2.sh" "$T/dep/fn.sh"; cp "$H/../.env.example" "$T/dep/.env.example"
+for c in sg openssl hostname sleep docker; do printf '#!/bin/bash\nexit 0\n' > "$T/bin/$c"; chmod +x "$T/bin/$c"; done
+step_logrotation() { :; }
+source "$T/dep/fn.sh"      # step_deploy takes SCRIPT_DIR from where it is sourced: $T/dep
+OUT=$(printf '%s\n' "$T/plain/base" | step_deploy 2>&1); RC=$?
+CHECK_DIAG='rc=$RC out=${OUT:0:300}'
+dep_ok=1; diag=
+for k in $DKEYS; do
+  [ "$(_env_get "$k" "$T/dep/.env")" = "$(_data_defaults "$k" "$T/plain/base")" ] || { dep_ok=0; diag+=" $k:[$(_env_get "$k" "$T/dep/.env")]"; }
+done
+CHECK_DIAG='rc=$RC bad:$diag'
+check D1 "step_deploy writes exactly _data_defaults KEY BASE for every data key" '[ $dep_ok = 1 ] && [ -d "$T/plain/base/immich/upload" ]'
+check D2 ".env stays mode 600 after step_deploy" '[ "$(stat -c %a "$T/dep/.env")" = 600 ]'
+KEYS_WRITTEN=$(extract_fn step_deploy "$SRC" | grep -oE '_set_env "[A-Z_]+"' | sed 's/_set_env "//; s/"//' | sort -u)
+miss=
+for k in $KEYS_WRITTEN; do grep -qE "^$k=" "$H/../.env.example" || miss+=" $k"; done
+CHECK_DIAG='missing:$miss'
+check D3 "every key step_deploy writes is in .env.example" '[ -n "$KEYS_WRITTEN" ] && [ -z "$miss" ]'
+check D4 ".env.example has FILES_LOCATION and no stale DATA_ROOT" 'grep -q "^FILES_LOCATION=" "$H/../.env.example" && ! grep -q "DATA_ROOT" "$H/../.env.example"'
+bad=
+for k in $DKEYS; do [ "$(_env_get "$k" "$H/../.env.example")" = "$(_data_defaults "$k")" ] || bad+=" $k"; done
+CHECK_DIAG='differs:$bad'
+check D5 ".env.example value equals _data_defaults KEY for every data key" '[ -z "$bad" ]'
+check D6 "no hand-written fallback paths left (/mnt/data/data, /home/\$USER/data/immich, /mnt/data/media literals)" '! grep -v "^ *#" "$SRC" | grep -qE "/mnt/data/data|/home/\\\$USER/data/immich|:-/mnt/data/media\}|def=/mnt/data"'
+
 check_total

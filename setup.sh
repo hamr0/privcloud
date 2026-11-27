@@ -2014,9 +2014,9 @@ _services_action() {
         _media=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null)
         _files=$(_env_get FILES_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null)
         case "$target" in
-            navidrome)   _require_data_mount "${_media:-/mnt/data/media}" || return 1 ;;
-            filebrowser) _require_data_mount "${_files:-/mnt/data}"       || return 1 ;;
-            all)         _require_data_mount "${_files:-/mnt/data}"       || return 1 ;;
+            navidrome)   _require_data_mount "${_media:-$(_data_defaults MUSIC_LOCATION)}" || return 1 ;;
+            filebrowser) _require_data_mount "${_files:-$(_data_defaults FILES_LOCATION)}"       || return 1 ;;
+            all)         _require_data_mount "${_files:-$(_data_defaults FILES_LOCATION)}"       || return 1 ;;
         esac
     fi
 
@@ -2119,8 +2119,8 @@ _show_laptop_services() {
 _picker_data_guard() { # navidrome|filebrowser|all
     local var def
     case "$1" in
-        navidrome)       var=MUSIC_LOCATION; def=/mnt/data/media ;;
-        filebrowser|all) var=FILES_LOCATION; def=/mnt/data ;;
+        navidrome)       var=MUSIC_LOCATION; def=$(_data_defaults MUSIC_LOCATION) ;;
+        filebrowser|all) var=FILES_LOCATION; def=$(_data_defaults FILES_LOCATION) ;;
         *) return 0 ;;
     esac
     ssh "$SERVER_USER@$SERVER_IP" "$(declare -p GREEN RED YELLOW BOLD DIM NC _DRIVE_ROOTS; declare -f _env_get _drive_verdict _require_data_mount fail info); p=\$(_env_get $var \"\$HOME/privcloud/.env\" 2>/dev/null); _require_data_mount \"\${p:-$def}\""
@@ -2431,7 +2431,7 @@ step_deploy() {
         info "Cancelled — no changes made."
         return 0
     fi
-    base_path="${base_path:-/mnt/data}"
+    base_path="${base_path:-$(_data_defaults FILES_LOCATION)}"
     base_path="${base_path/#\~/$HOME}"
 
     # Set up .env
@@ -2439,14 +2439,14 @@ step_deploy() {
         cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
     fi
 
-    _set_env "UPLOAD_LOCATION" "${base_path}/immich/upload" "$SCRIPT_DIR/.env"
-    _set_env "DB_DATA_LOCATION" "${base_path}/immich/postgres" "$SCRIPT_DIR/.env"
-    _set_env "MEDIA_LOCATION" "${base_path}/media" "$SCRIPT_DIR/.env"
+    _set_env "UPLOAD_LOCATION" "$(_data_defaults UPLOAD_LOCATION "$base_path")" "$SCRIPT_DIR/.env"
+    _set_env "DB_DATA_LOCATION" "$(_data_defaults DB_DATA_LOCATION "$base_path")" "$SCRIPT_DIR/.env"
+    _set_env "MEDIA_LOCATION" "$(_data_defaults MEDIA_LOCATION "$base_path")" "$SCRIPT_DIR/.env"
 
     # MUSIC_LOCATION: preserve a custom folder set via Storage > Change music
     # location. Re-running Deploy used to silently revert it to the default,
     # which would also strip out the smart-playlist (.nsp) files inside it.
-    local default_music="${base_path}/media/My Music"
+    local default_music; default_music=$(_data_defaults MUSIC_LOCATION "$base_path")
     local existing_music example_music
     existing_music=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env")
     example_music=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env.example")
@@ -2464,7 +2464,7 @@ step_deploy() {
         _set_env "MUSIC_LOCATION" "$default_music" "$SCRIPT_DIR/.env"
     fi
 
-    _set_env "FILES_LOCATION" "${base_path}" "$SCRIPT_DIR/.env"
+    _set_env "FILES_LOCATION" "$(_data_defaults FILES_LOCATION "$base_path")" "$SCRIPT_DIR/.env"
 
     UPLOAD_LOCATION=$(_env_get UPLOAD_LOCATION "$SCRIPT_DIR/.env")
     DB_DATA_LOCATION=$(_env_get DB_DATA_LOCATION "$SCRIPT_DIR/.env")
@@ -2555,6 +2555,22 @@ step_deploy() {
     step_logrotation
 }
 
+# The default for each data key under a base data path: _data_defaults KEY [BASE]
+# (BASE defaults to /mnt/data). The one table: step_deploy writes these into .env and
+# every fallback for a missing key reads them, so the two can never disagree;
+# .env.example holds the BASE=/mnt/data values (a test compares).
+_data_defaults() {
+    local base="${2:-/mnt/data}"
+    case "$1" in
+        FILES_LOCATION)   printf '%s\n' "$base" ;;
+        MEDIA_LOCATION)   printf '%s\n' "$base/media" ;;
+        MUSIC_LOCATION)   printf '%s\n' "$base/media/My Music" ;;
+        UPLOAD_LOCATION)  printf '%s\n' "$base/immich/upload" ;;
+        DB_DATA_LOCATION) printf '%s\n' "$base/immich/postgres" ;;
+        *) return 1 ;;
+    esac
+}
+
 # The one .env reader: _env_get KEY FILE prints KEY's value, nothing when the key or
 # file is missing. It never sources the file (`source` trips on unquoted values with
 # spaces, e.g. MUSIC_LOCATION=/mnt/data/media/My Music). One rule for every reader
@@ -2590,13 +2606,9 @@ _syncthing_build_mounts() {
     data_path=$(_env_get FILES_LOCATION "$env_file")
     media_path=$(_env_get MEDIA_LOCATION "$env_file")
     upload=$(_env_get UPLOAD_LOCATION "$env_file")
-    [[ -z "$data_path"  ]] && data_path="/mnt/data/data"
-    [[ -z "$media_path" ]] && media_path="/mnt/data/media"
-    if [[ -n "$upload" ]]; then
-        immich_path=$(dirname "$upload")
-    else
-        immich_path="/home/$USER/data/immich"
-    fi
+    [[ -z "$data_path"  ]] && data_path="$(_data_defaults FILES_LOCATION)"
+    [[ -z "$media_path" ]] && media_path="$(_data_defaults MEDIA_LOCATION)"
+    immich_path=$(dirname "${upload:-$(_data_defaults UPLOAD_LOCATION)}")
 
     mounts=()
     local p seen=""
@@ -2620,14 +2632,10 @@ _syncthing_show_paths() {
     echo ""
     echo -e "  ${BOLD}Expected from .env (data / media / immich)${NC}"
     local data_path media_path upload immich_path
-    data_path=$(_env_get FILES_LOCATION "$env_file");   data_path="${data_path:-/mnt/data/data}"
-    media_path=$(_env_get MEDIA_LOCATION "$env_file"); media_path="${media_path:-/mnt/data/media}"
+    data_path=$(_env_get FILES_LOCATION "$env_file");   data_path="${data_path:-$(_data_defaults FILES_LOCATION)}"
+    media_path=$(_env_get MEDIA_LOCATION "$env_file"); media_path="${media_path:-$(_data_defaults MEDIA_LOCATION)}"
     upload=$(_env_get UPLOAD_LOCATION "$env_file")
-    if [[ -n "$upload" ]]; then
-        immich_path=$(dirname "$upload")
-    else
-        immich_path="/home/$USER/data/immich"
-    fi
+    immich_path=$(dirname "${upload:-$(_data_defaults UPLOAD_LOCATION)}")
     echo -e "    data:    $data_path"
     echo -e "    media:   $media_path"
     echo -e "    immich:  $immich_path"
@@ -5197,7 +5205,7 @@ step_immich_backup() {
     # repoint the job at a fresh (empty) folder.
     default_dir=$(_configured_backup_dir)
     [ -n "$default_dir" ] || default_dir=$(_pick_backup_default "$src_dir")
-    default_dir=${default_dir:-$(realpath -m "${DB_DATA_LOCATION:-/home/$USER/data/immich/postgres}/../backups")}
+    default_dir=${default_dir:-$(realpath -m "${DB_DATA_LOCATION:-$(_data_defaults DB_DATA_LOCATION)}/../backups")}
 
     read -rp "  Backup destination [${default_dir}, q=back]: " BACKUP_DIR   # -r: a backslash in a path is kept
     [[ "$BACKUP_DIR" == "q" ]] && return 2

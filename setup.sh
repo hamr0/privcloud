@@ -575,6 +575,7 @@ _show_laptop_menu() {
     echo -e "  ${BOLD}11)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
     echo -e "  ${BOLD}12)${NC} Manage Syncthing                    ${DIM}← real-time bidirectional file sync${NC}"
     echo -e "  ${BOLD}13)${NC} Manage remote desktop               ${DIM}← install, access XFCE via RDP${NC}"
+    echo -e "  ${BOLD}16)${NC} Connect phone (Files app)           ${DIM}← iPhone/Android open server folders over Tailscale${NC}"
     echo ""
     echo -e "  ${DIM}-- Immich photo management --${NC}"
     echo -e "  ${BOLD}i)${NC}  Immich (privcloud)                  ${DIM}← start/stop/status/update/backup${NC}"
@@ -6539,7 +6540,7 @@ step_status() {
 
     if [[ "$remote" == "true" ]]; then
         local server_info
-        server_info=$( { declare -f _ts_state _ps_autostart; cat <<'REMOTE_STATUS'
+        server_info=$( { declare -f _ts_state _ps_autostart _smb_summary _smb_folder_check _smb_sessions _smb_devices _smb_devname; cat <<'REMOTE_STATUS'
             echo "@@HOSTNAME@@$(hostname)"
             echo "@@IP@@$(hostname -I | awk '{print $1}')"
             echo "@@TS_STATE@@$(_ts_state)"
@@ -6562,6 +6563,10 @@ step_status() {
             echo "@@DISK_START@@"
             df -h 2>/dev/null | awk 'NR>1 && $1 ~ /^\/dev\// && $1 !~ /loop/ && !seen[$1]++'
             echo "@@DISK_END@@"
+            echo "@@SMB@@$(_smb_summary docker)"
+            echo "@@SMB_DEV_START@@"
+            _smb_devices docker
+            echo "@@SMB_DEV_END@@"
 REMOTE_STATUS
         } | ssh "$SERVER_USER@$SERVER_IP" bash -s ) || { fail "Cannot reach server at $SERVER_IP."; return 1; }
 
@@ -6579,6 +6584,8 @@ REMOTE_STATUS
         DSTATS=$(echo "$server_info" | sed -n '/@@DSTATS_START@@/,/@@DSTATS_END@@/p' | grep -v '@@DSTATS')
         USB_DISKS=$(echo "$server_info" | grep '@@USB_DISKS@@' | sed 's/@@USB_DISKS@@//')
         DISK=$(echo "$server_info" | sed -n '/@@DISK_START@@/,/@@DISK_END@@/p' | grep -v '@@DISK')
+        SMB=$(echo "$server_info" | grep '@@SMB@@' | sed 's/@@SMB@@//')
+        SMB_DEV=$(echo "$server_info" | sed -n '/@@SMB_DEV_START@@/,/@@SMB_DEV_END@@/p' | grep -v '@@SMB_DEV')
     else
         HOSTNAME=$(hostname)
         IP=$(hostname -I | awk '{print $1}')
@@ -6595,6 +6602,8 @@ REMOTE_STATUS
         DSTATS=$(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null)
         USB_DISKS=$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}' | paste -sd'|' -)
         DISK=$(df -h / /home /mnt/data 2>/dev/null | tail -n +2 | awk '!seen[$1]++')
+        SMB=$(_smb_summary docker)
+        SMB_DEV=$(_smb_devices docker)
     fi
 
     echo -e "  ${BOLD}Server${NC}"
@@ -6693,6 +6702,10 @@ REMOTE_STATUS
     else
         echo -e "    ${DIM}No containers running${NC}"
     fi
+
+    echo ""
+    echo -e "  ${BOLD}File sharing (SMB)${NC}"
+    _smb_summary_render "${SMB:-none}" "${SMB_DEV:-}"
 
     echo ""
     echo -e "  ${BOLD}Service URLs (local network)${NC}"
@@ -7071,6 +7084,625 @@ step_reset_password() {
     esac
 }
 
+# ── SMB file sharing (Samba) ─────────────────────────
+# Server-only install: a Samba container on host networking so phones and
+# laptops can open chosen folders over Tailscale (smb://<tailscale-ip>).
+# Host networking (not a published port) so boot order vs Tailscale does not
+# matter and smbd sees the real client IP; access is gated three ways: Samba
+# `hosts allow` (tailnet range only), firewalld (tailscale0 is trusted, 445 is
+# never opened on the public zone) and one password-protected user.
+# Each shared folder is its own share (named after the folder), never "all".
+# Floating tag + Watchtower, like the other services.
+_SMB_IMAGE="ghcr.io/servercontainers/samba:smbd-only-latest"
+_SMB_DIR="/opt/samba"   # kept on Uninstall; samba.env (login + password) and shares.conf, root 600
+_SMB_SETTLE=1           # seconds between "is it up yet" polls
+_SMB_POLL=3             # seconds between phone-connect polls
+_SMB_DRIVE_ROOTS="/mnt /run/media"   # folders here must sit on a real /dev/* mount
+_SMB_WAIT_TRIES=40      # x _SMB_POLL = 2 minutes
+_SMB_NAMES=(); _SMB_PATHS=(); _SMB_USER=""; _SMB_PW=""; _SMB_REAL=""
+
+_smb_exists()  { sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx samba; }
+_smb_running() { sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qx samba; }
+_smb_listening() { sudo ss -ltnH 'sport = :445' 2>/dev/null | grep -q .; }
+_smb_ts_ip() { tailscale ip -4 2>/dev/null | head -1; }
+
+# The files folder FileBrowser serves (same .env value the compose file mounts).
+_smb_files_path() {
+    local SCRIPT_DIR
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _env_get FILES_LOCATION "$SCRIPT_DIR/.env"
+}
+
+# 16 alphanumeric characters: easy to type on a phone keyboard.
+_smb_gen_password() {
+    local raw pw
+    raw=$(openssl rand -base64 96) || return 1
+    pw=$(printf '%s' "$raw" | LC_ALL=C tr -dc 'A-Za-z0-9')
+    pw=${pw:0:16}
+    (( ${#pw} == 16 )) || return 1
+    printf '%s' "$pw"
+}
+
+# A typed password must survive the env file and the container's own scripts:
+# docker's env-file is literal (spaces, $, quotes are fine), but the image runs
+# `echo -e "$password"`, which turns a backslash into an escape, and a leading
+# "-" can be read as an echo option. Prints the reason and returns 1 if bad.
+_smb_pw_check() {
+    local p=$1
+    if (( ${#p} < 8 )); then echo "too short (at least 8 characters)"; return 1; fi
+    if (( ${#p} > 64 )); then echo "too long (64 characters at most)"; return 1; fi
+    if printf '%s' "$p" | LC_ALL=C grep -q '[^ -~]'; then echo "plain keyboard characters only (no accents or control characters)"; return 1; fi
+    if [[ "$p" == *\\* ]]; then echo "a backslash (\\) would be mangled by Samba - pick another character"; return 1; fi
+    if [[ "$p" == -* ]]; then echo "must not start with -"; return 1; fi
+    if [[ "$p" == " "* || "$p" == *" " ]]; then echo "no space at the start or end"; return 1; fi
+    return 0
+}
+
+# Ask for a password. Enter (or g) = generate; otherwise typed twice. Sets
+# _SMB_PW. Returns 1 if input ends (no terminal).
+_smb_ask_password() { # prompt-text
+    local a b why
+    while true; do
+        printf '  %s' "$1"
+        read -r -s a || { echo ""; return 1; }
+        echo ""
+        if [[ -z "$a" || "$a" == g ]]; then
+            _SMB_PW=$(_smb_gen_password) || { fail "Could not generate a password (openssl failed)."; return 1; }
+            return 0
+        fi
+        if ! why=$(_smb_pw_check "$a"); then fail "Password $why."; continue; fi
+        printf '  Type it again to confirm: '
+        read -r -s b || { echo ""; return 1; }
+        echo ""
+        if [[ "$a" != "$b" ]]; then fail "The two passwords did not match. Try again."; continue; fi
+        _SMB_PW=$a
+        return 0
+    done
+}
+
+# ── folders ──
+# Share name from a folder: basename, unsupported characters become "-".
+_smb_name_for() {
+    local n
+    n=$(basename "$1" | LC_ALL=C tr -c 'A-Za-z0-9_-' '-' | sed 's/^-*//; s/-*$//' | cut -c1-32)
+    echo "${n:-share}"
+}
+
+# Is $1 usable as a share name that is not taken yet? Prints the reason if not.
+_smb_name_ok() {
+    local n=$1 i
+    if [[ ! "$n" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$ ]]; then echo "use letters, digits, - and _ (max 32)"; return 1; fi
+    case "${n,,}" in global|homes|printers|ipc|print) echo "that name is reserved"; return 1 ;; esac
+    for i in "${!_SMB_NAMES[@]}"; do
+        if [[ "${_SMB_NAMES[$i],,}" == "${n,,}" ]]; then echo "already used by ${_SMB_PATHS[$i]}"; return 1; fi
+    done
+    return 0
+}
+
+# Validate a folder to share. On success sets _SMB_REAL (resolved path); on
+# failure prints the reason and returns 1.
+_smb_check_path() {
+    local p=$1 r i
+    _SMB_REAL=""
+    if [[ "$p" != /* ]]; then fail "Use a full path starting with / (got '$p')."; return 1; fi
+    if [[ "$p" == *[:\|]* || "$p" == *$'\n'* ]]; then fail "A path with ':' or '|' can't be used here."; return 1; fi
+    if [[ ! -e "$p" ]]; then fail "'$p' does not exist."; return 1; fi
+    r=$(realpath -e -- "$p" 2>/dev/null) || { fail "Could not resolve '$p'."; return 1; }
+    if [[ "$r" == *[:\|]* || "$r" == *$'\n'* ]]; then fail "The resolved path ($r) has a ':' or '|' and can't be used here."; return 1; fi
+    if [[ ! -d "$r" ]]; then fail "'$r' is not a folder."; return 1; fi
+    case "$r" in
+        /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib*|/boot|/boot/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/var|/var/*|/root|/root/*|/opt|/opt/*|/home|/mnt)
+            fail "'$r' is a system location - sharing it would expose the system. Pick a folder of your own."; return 1 ;;
+        /run|/run/*) if [[ "$r" != /run/media/?* ]]; then fail "'$r' is a system location (only /run/media/... drives can be shared)."; return 1; fi ;;
+    esac
+    if [[ ! -w "$r" ]]; then fail "'$r' is not writable by $(id -un) - sharing it would not let you save files."; return 1; fi
+    for i in "${!_SMB_PATHS[@]}"; do
+        if [[ "${_SMB_PATHS[$i]}" == "$r" ]]; then fail "'$r' is already shared as \"${_SMB_NAMES[$i]}\"."; return 1; fi
+    done
+    _SMB_REAL=$r
+}
+
+# Validate + add one folder to the in-memory list; asks for another name on a
+# clash. Returns 1 (nothing added) on a bad folder or if the name prompt is
+# left blank.
+_smb_add_folder() {
+    local name why
+    _smb_check_path "$1" || return 1
+    name=$(_smb_name_for "$_SMB_REAL")
+    while ! why=$(_smb_name_ok "$name"); do
+        warn "Share name \"$name\": $why."
+        printf '  Another name for %s (Enter = skip this folder): ' "$_SMB_REAL"
+        read -r name || return 1
+        [[ -z "$name" ]] && { info "Skipped."; return 1; }
+    done
+    _SMB_NAMES+=("$name"); _SMB_PATHS+=("$_SMB_REAL")
+}
+
+# ✓ ok / missing / notdir / unmounted. Under /mnt and /run/media the folder
+# must sit on a real mount whose source is a /dev/* device: a bare directory on
+# the system disk (drive not plugged in) or an autofs/stub mount is not it.
+_smb_folder_check() {
+    local p=$1 t s r
+    [[ -d "$p" ]] || { echo missing; return; }
+    for r in ${_SMB_DRIVE_ROOTS:-/mnt /run/media}; do
+        [[ "$p" == "$r"/* ]] || continue
+        t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null)
+        s=$(findmnt -n -o SOURCE -T "$p" 2>/dev/null)
+        if [[ -z "$t" || "$t" == / || "$s" != /dev/* ]]; then echo unmounted; return; fi
+    done
+    echo ok
+}
+
+_smb_folder_reason() { # check-result
+    case "$1" in
+        ok) ;;
+        missing) echo "folder missing" ;;
+        *) echo "drive not mounted" ;;
+    esac
+}
+
+# Saved share list -> _SMB_NAMES/_SMB_PATHS (root-only file, so sudo).
+_smb_load() {
+    local line
+    _SMB_NAMES=(); _SMB_PATHS=()
+    while IFS= read -r line; do
+        [[ "$line" == *'|'* ]] || continue
+        _SMB_NAMES+=("${line%%|*}"); _SMB_PATHS+=("${line#*|}")
+    done < <(sudo cat "$_SMB_DIR/shares.conf" 2>/dev/null)
+    (( ${#_SMB_NAMES[@]} > 0 ))
+}
+
+# Login + password back from the root-only env file -> _SMB_USER/_SMB_PW.
+_smb_cur_login() {
+    local line
+    line=$(sudo grep -m1 '^ACCOUNT_' "$_SMB_DIR/samba.env" 2>/dev/null)
+    [[ -n "$line" ]] || return 1
+    _SMB_USER=${line#ACCOUNT_}; _SMB_USER=${_SMB_USER%%=*}
+    _SMB_PW=${line#*=}
+}
+
+# The container's whole config as an env file (read once by --env-file; the
+# password never touches argv). One SAMBA_VOLUME_CONFIG_s<N> per folder (the
+# image evals the variable name, so it must not contain the share name).
+_smb_env_content() { # user uid gid password   (uses _SMB_NAMES/_SMB_PATHS)
+    local u=$1 grp="" i
+    [[ "$3" != "$2" ]] && grp="; force group = smbshare"
+    [[ "$3" != "$2" ]] && printf 'GROUP_smbshare=%s\n' "$3"
+    printf '%s\n' \
+        "ACCOUNT_$u=$4" \
+        "UID_$u=$2" \
+        "SAMBA_GLOBAL_STANZA=hosts allow = 100.64.0.0/10 127.0.0.1;hosts deny = 0.0.0.0/0;server min protocol = SMB2;server smb encrypt = desired"
+    for i in "${!_SMB_NAMES[@]}"; do
+        printf '%s\n' "SAMBA_VOLUME_CONFIG_s$i=[${_SMB_NAMES[$i]}]; path = /shares/${_SMB_NAMES[$i]}; valid users = $u; guest ok = no; read only = no; browseable = yes; force user = $u$grp; veto files = /lost+found/.Trash-*/; delete veto files = no"
+    done
+}
+
+# Is 445 reachable from the LAN? Prints yes|no|unknown (firewalld not running).
+_smb_fw_state() {
+    local p s
+    p=$(sudo firewall-cmd --zone=public --query-port=445/tcp 2>/dev/null) || p=${p:-unknown}
+    s=$(sudo firewall-cmd --zone=public --query-service=samba 2>/dev/null) || s=${s:-unknown}
+    if [[ "$p" == yes || "$s" == yes ]]; then echo yes
+    elif [[ "$p" == no && "$s" == no ]]; then echo no
+    else echo unknown; fi
+}
+
+_smb_fw_fix() {
+    echo -e "    ${YELLOW}sudo firewall-cmd --permanent --zone=public --remove-port=445/tcp --remove-service=samba && sudo firewall-cmd --reload${NC}"
+}
+
+# Write config + (re)create the container from _SMB_USER/_SMB_PW and the folder
+# list, then verify it is running and listening. Never says "done" on failure;
+# after the old container is gone a failure says so loudly.
+_smb_apply() {
+    local uid gid envc listc i mounts=() n up=0
+    uid=$(id -u); gid=$(id -g)
+    envc=$(_smb_env_content "$_SMB_USER" "$uid" "$gid" "$_SMB_PW")
+    listc=$(for i in "${!_SMB_NAMES[@]}"; do printf '%s|%s\n' "${_SMB_NAMES[$i]}" "${_SMB_PATHS[$i]}"; done)
+    info "Writing $_SMB_DIR/samba.env + shares.conf (root only, mode 600)..."
+    if ! { sudo install -d -m 755 "$_SMB_DIR" \
+        && printf '%s\n' "$envc"  | sudo install -m 600 /dev/stdin "$_SMB_DIR/samba.env" \
+        && printf '%s\n' "$listc" | sudo install -m 600 /dev/stdin "$_SMB_DIR/shares.conf"; }; then
+        fail "Could not write the config under $_SMB_DIR - nothing was changed."
+        return 1
+    fi
+    for i in "${!_SMB_NAMES[@]}"; do mounts+=(-v "${_SMB_PATHS[$i]}:/shares/${_SMB_NAMES[$i]}"); done
+    # Fetch the image before touching a running container, so a failed
+    # download never takes down a working share.
+    if ! sudo docker image inspect "$_SMB_IMAGE" > /dev/null 2>&1; then
+        info "Downloading Samba image..."
+        if ! sudo docker pull "$_SMB_IMAGE" > /dev/null; then
+            fail "Could not download $_SMB_IMAGE (no internet, or the registry is unreachable). Nothing was started or removed."
+            return 1
+        fi
+    fi
+    if _smb_exists; then
+        info "Recreating the Samba container..."
+        sudo docker rm -f samba > /dev/null 2>&1
+        if ! _container_gone samba; then
+            fail "Could not remove the old container - it is still running with the OLD settings."
+            return 1
+        fi
+    else
+        info "Starting Samba container..."
+    fi
+    if sudo docker run -d --name samba --network host --restart=unless-stopped \
+            --env-file "$_SMB_DIR/samba.env" "${mounts[@]}" "$_SMB_IMAGE" > /dev/null; then
+        for n in 1 2 3 4 5 6 7 8; do
+            if _smb_running && _smb_listening; then up=1; break; fi
+            sleep "$_SMB_SETTLE"
+        done
+    fi
+    if (( ! up )); then
+        echo -e "  ${RED}✗ FILE SHARING IS NOT RUNNING.${NC} The old container is gone and the new one did not come up."
+        sudo docker logs --tail 20 samba 2>&1
+        echo -e "  ${BOLD}Recover:${NC} run ${BOLD}federver -> 16${NC} again (it reuses your saved folders and password), or ${BOLD}Start${NC} if the menu offers it."
+        return 1
+    fi
+    ok "Samba running on port 445."
+}
+
+# ── what phones are doing ──
+# Prints "ip|share|since" per open share (smbstatus -S). Args: docker words.
+_smb_sessions() {
+    "$@" exec samba smbstatus -S 2>/dev/null | awk '
+        /^-+$/ {go=1; next}
+        go && NF>=5 {t=""; for (i=4;i<=NF-2;i++) t=t (t?" ":"") $i; print $3 "|" $1 "|" t}'
+}
+
+# Tailscale device name for a tailnet IP (falls back to the IP).
+_smb_devname() {
+    local n
+    n=$(tailscale status 2>/dev/null | awk -v ip="$1" '$1==ip{print $2; exit}')
+    echo "${n:-$1}"
+}
+
+# One line per connected device: "name|shares opened|since HH:MM" (smbstatus -S
+# rows grouped by client IP; a device with two shares is one line).
+_smb_devices() { # docker words
+    local sess ip
+    sess=$(_smb_sessions "$@")
+    for ip in $(cut -d'|' -f1 <<<"$sess" | sort -u); do
+        awk -F'|' -v ip="$ip" -v n="$(_smb_devname "$ip")" '
+            $1==ip {sh=sh (sh?", ":"") $2; split($3,a," ")
+                    for (i in a) if (a[i] ~ /^[0-9]+:[0-9]+:[0-9]+$/ && (m==""||a[i]<m)) m=a[i]}
+            END {print n "|" sh "|" substr(m,1,5)}' <<<"$sess"
+    done
+}
+
+_smb_plural() { (( $1 == 1 )) && echo "$1 device" || echo "$1 devices"; }
+
+# One line of facts: state|folders|folders-not-available|devices ("none" = no container).
+_smb_summary() { # docker words
+    local st n=0 bad=0 d p k
+    st=$(_ps_autostart "$@" 2>/dev/null | sed -n 's/^samba|//p' | head -1)
+    [[ -z "$st" ]] && { echo none; return; }
+    while IFS='|' read -r d p; do
+        [[ "$d" == /shares/* ]] || continue
+        n=$((n+1)); [[ "$(_smb_folder_check "$p")" == ok ]] || bad=$((bad+1))
+    done < <("$@" inspect -f '{{range .Mounts}}{{.Destination}}|{{.Source}}{{println}}{{end}}' samba 2>/dev/null)
+    k=$(_smb_sessions "$@" | cut -d'|' -f1 | sort -u | awk 'END{print NR}')
+    case "$st" in
+        Up*) echo "running|$n|$bad|$k" ;;
+        "stopped (autostart off)") echo "stopped-off|$n|$bad|$k" ;;
+        *) echo "stopped|$n|$bad|$k" ;;
+    esac
+}
+
+_smb_summary_render() { # summary-line [devices-lines]   (the (s) Status section)
+    local st n bad k extra="" nm sh since
+    IFS='|' read -r st n bad k <<<"$1"
+    (( bad )) && extra=" (${bad} ${RED}✗${NC} not mounted)"
+    case "$st" in
+        running)     echo -e "    ${GREEN}✓${NC} running · $n folders$extra · $(_smb_plural "$k") connected"
+                     while IFS='|' read -r nm sh since; do
+                         [[ -n "$nm" ]] && printf '      %-16s %s   since %s\n' "$nm" "$sh" "$since"
+                     done <<<"${2:-}" ;;
+        stopped-off) echo -e "    ${RED}✗ stopped (autostart off)${NC}" ;;
+        stopped)     echo -e "    ${RED}✗ not running${NC}" ;;
+        *)           echo -e "    ${DIM}not set up (federver → 16)${NC}" ;;
+    esac
+}
+
+# Full status block for the submenu (folders from the saved list, so a down
+# container still shows what it should be sharing).
+_smb_status() {
+    local st i c pol fw sess ip name
+    echo ""
+    echo -e "  ${BOLD}File sharing (SMB)${NC}"
+    st=$(_ps_autostart sudo docker 2>/dev/null | sed -n 's/^samba|//p' | head -1)
+    if [[ "$st" == Up* ]]; then echo -e "    State:     ${GREEN}running${NC}  ${DIM}($st)${NC}"
+    elif [[ -n "$st" ]]; then   echo -e "    State:     ${RED}${st}${NC}"
+    else                        echo -e "    State:     ${RED}not set up${NC}"; return 0
+    fi
+    pol=$(sudo docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' samba 2>/dev/null)
+    if [[ "$pol" == no ]]; then echo -e "    Autostart: ${RED}off${NC}  ${DIM}(stays down after a reboot)${NC}"
+    else echo -e "    Autostart: ${GREEN}on${NC}"; fi
+    if _smb_listening; then echo -e "    Port 445:  ${GREEN}listening${NC}"
+    else                    echo -e "    Port 445:  ${RED}not listening${NC}"; fi
+    _smb_load || true
+    echo -e "    Folders:"
+    for i in "${!_SMB_NAMES[@]}"; do
+        c=$(_smb_folder_check "${_SMB_PATHS[$i]}")
+        if [[ "$c" == ok ]]; then echo -e "      ${GREEN}✓${NC} ${_SMB_NAMES[$i]}  ${DIM}${_SMB_PATHS[$i]}${NC}"
+        else echo -e "      ${RED}✗${NC} ${_SMB_NAMES[$i]}  ${DIM}${_SMB_PATHS[$i]}${NC}  ${RED}$(_smb_folder_reason "$c")${NC}"; fi
+    done
+    case "$(_smb_fw_state)" in
+        yes) echo -e "    Firewall:  ${RED}✗ 445 open on the LAN${NC}"; _smb_fw_fix ;;
+        no)  echo -e "    Firewall:  ${GREEN}LAN closed${NC}  ${DIM}(Tailscale only)${NC}" ;;
+        *)   echo -e "    Firewall:  ${YELLOW}unknown${NC}" ;;
+    esac
+    sess=$(_smb_devices sudo docker)
+    echo -e "    Connected:"
+    if [[ -z "$sess" ]]; then
+        echo -e "      ${DIM}nobody right now (an iPhone drops idle connections: none = no recent use)${NC}"
+    else
+        while IFS='|' read -r name c ip; do
+            echo -e "      $name  ${DIM}opened: $c  since $ip${NC}"
+        done <<<"$sess"
+    fi
+}
+
+# The connect box. Args are plain values so it can be tested.
+_smb_connect_box() { # tailscale-ip user password
+    local i
+    echo ""
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${BOLD}Connect to your folders${NC}"
+    echo ""
+    echo -e "    Server:    ${BLUE}smb://$1${NC}"
+    echo -e "    User:      ${BOLD}$2${NC}"
+    echo -e "    Password:  ${BOLD}$3${NC}"
+    echo -e "    Folders:   $(printf '%s ' "${_SMB_NAMES[@]}")"
+    echo ""
+    echo -e "  ${BOLD}iPhone / iPad${NC} (Tailscale app connected)"
+    echo -e "    Files -> ... -> Connect to Server -> ${BOLD}smb://$1${NC} -> Connect"
+    echo -e "    Registered User -> $2 + password above -> pick a folder"
+    echo -e "  ${BOLD}Android${NC} (Material Files app, Tailscale connected)"
+    echo -e "    Add storage -> SMB server -> host ${BOLD}$1${NC}, user $2 + password above"
+    echo -e "  ${BOLD}Laptop${NC}: file manager -> Connect to server -> ${BOLD}smb://$1${NC}"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# Optional live check after setup: poll smbstatus until a phone shows up.
+_smb_wait_phone() {
+    local n s ip share rc
+    echo ""
+    echo -e "  Connect your phone now — waiting... ${DIM}(Enter = skip)${NC}"
+    for ((n = 0; n < _SMB_WAIT_TRIES; n++)); do
+        rc=0; read -r -t "$_SMB_POLL" || rc=$?
+        (( rc > 128 )) || { info "Skipped."; return 0; }   # Enter (0) or end of input
+        s=$(_smb_sessions sudo docker | head -1)
+        if [[ -n "$s" ]]; then
+            ip=${s%%|*}; share=${s#*|}; share=${share%%|*}
+            ok "$(_smb_devname "$ip") connected, opened \"$share\""
+            return 0
+        fi
+    done
+    warn "No phone connected within the wait. Common causes: Tailscale is off on the phone, or the password was typed wrong."
+    info "Try later: federver -> 16 shows connected devices."
+}
+
+# ── set up ──
+_smb_setup() {
+    local user ip f first=1 saved=0
+    user=$(id -un)
+    echo -e "  Shares folders from this server with the Files app on iPhone/Android and with"
+    echo -e "  laptops. Reachable over Tailscale only, never from the open home network."
+    echo ""
+    echo -e "  ${BOLD}What Set up installs:${NC}"
+    echo -e "    • Samba file server as a Docker container \"samba\""
+    echo -e "      (image $_SMB_IMAGE, downloaded now, ~20 MB RAM)"
+    echo -e "    • Settings in $_SMB_DIR (folders + password, root only)"
+    echo -e "    • Nothing installed on the system itself (no dnf packages)"
+    echo -e "  Same rules as the other containers: autostart on (Stop turns it off),"
+    echo -e "  Watchtower keeps it updated, included in Start All / Stop All and (s) Status."
+    echo -e "  Uninstall removes the container and keeps $_SMB_DIR."
+    echo ""
+    printf '  Continue? [Y/n] '
+    read -n 1 -r
+    echo ""
+    if [[ "$REPLY" =~ ^[Nn]$ ]]; then info "Cancelled. Nothing changed."; return 0; fi
+    echo ""
+    if [[ ! "$user" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        fail "Login name '$user' is not usable as a Samba user (lowercase letters, digits, _ and - only)."
+        return 1
+    fi
+    ip=$(_smb_ts_ip)
+    if [[ -z "$ip" ]]; then
+        fail "Tailscale is not connected on this server. File sharing is tailnet-only - run federver -> 8 first."
+        return 1
+    fi
+    ok "Tailscale connected ($ip)"
+    if _smb_listening; then
+        fail "Port 445 is already in use:"
+        sudo ss -ltnpH 'sport = :445' 2>/dev/null | sed 's/^/    /'
+        if sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx samba-poc; then
+            echo -e "  The Samba proof-of-concept container is still there. Remove it first:"
+            echo -e "    ${YELLOW}cd ~/samba-poc && docker compose -p samba-poc down && rm -rf ~/samba-poc${NC}"
+        else
+            echo -e "  Stop that service (a host Samba? ${YELLOW}sudo systemctl disable --now smb${NC}) and retry."
+        fi
+        return 1
+    fi
+    ok "Port 445 is free"
+    case "$(_smb_fw_state)" in
+        yes) fail "Firewall: port 445 is open to the home network (public zone). Close it first:"
+             _smb_fw_fix
+             return 1 ;;
+        no)  ok "Firewall: 445 is not open to the home network" ;;
+        *)   warn "Firewall: could not read the state (firewalld not running?). Make sure 445 is not open to the LAN." ;;
+    esac
+    echo ""
+
+    # A previous (uninstalled) setup left its folders and password behind.
+    if _smb_load && _smb_cur_login; then
+        echo -e "  Saved setup found: ${#_SMB_NAMES[@]} folder(s) ($(printf '%s ' "${_SMB_NAMES[@]}"))."
+        printf '  Reuse it, with the same password? [Y/n] '
+        read -n 1 -r
+        echo ""
+        if [[ ! "$REPLY" =~ ^[Nn]$ ]]; then saved=1; fi
+    fi
+    if (( ! saved )); then
+        _SMB_NAMES=(); _SMB_PATHS=()
+        echo -e "  ${DIM}Tip: your files folder is $(_smb_files_path)${NC}"
+        while true; do
+            if (( first )); then printf '  Folder to share (type a path, Enter = cancel): '
+            else printf '  Another folder? (path, Enter = done): '; fi
+            read -r f || f=""
+            if [[ -z "$f" ]]; then
+                (( first )) && { info "Cancelled. Nothing changed."; return 0; }
+                break
+            fi
+            if _smb_add_folder "$f"; then first=0; ok "Sharing ${_SMB_NAMES[-1]}"; fi
+        done
+        _smb_ask_password "Password for $user (Enter = generate, or type one): " || { fail "No password set - nothing installed."; return 1; }
+        _SMB_USER=$user
+    fi
+    _smb_apply || return 1
+    _smb_connect_box "$ip" "$_SMB_USER" "$_SMB_PW"
+    echo -e "  ${RED}Save the password${NC} - Manage password shows it again."
+    _smb_wait_phone
+    ok "File sharing set up: ${#_SMB_NAMES[@]} folders."
+}
+
+# ── manage folders ──
+_smb_list_folders() {
+    local i c
+    echo ""
+    for i in "${!_SMB_NAMES[@]}"; do
+        c=$(_smb_folder_check "${_SMB_PATHS[$i]}")
+        if [[ "$c" == ok ]]; then echo -e "    $((i+1))) ${_SMB_NAMES[$i]} -> ${_SMB_PATHS[$i]} ${GREEN}✓${NC}"
+        else echo -e "    $((i+1))) ${_SMB_NAMES[$i]} -> ${_SMB_PATHS[$i]} ${RED}✗ $(_smb_folder_reason "$c")${NC}"; fi
+    done
+    echo ""
+}
+
+_smb_manage_folders() {
+    local in i r
+    if ! _smb_load || ! _smb_cur_login; then fail "Could not read the saved setup under $_SMB_DIR (sudo refused?)."; return 1; fi
+    while true; do
+        _smb_list_folders
+        printf '  Type a path to add, a number to remove, Enter = back: '
+        read -r in || in=""
+        [[ -z "$in" ]] && return 0
+        if [[ "$in" =~ ^[0-9]+$ ]]; then
+            i=$((in-1))
+            if (( in < 1 || i >= ${#_SMB_NAMES[@]} )); then fail "No folder number $in."; continue; fi
+            if (( ${#_SMB_NAMES[@]} == 1 )); then
+                fail "That is the last shared folder. To stop sharing everything use Uninstall."
+                continue
+            fi
+            printf '  Stop sharing "%s"? Files are NOT deleted. [y/N] ' "${_SMB_NAMES[$i]}"
+            read -n 1 -r r
+            echo ""
+            [[ "$r" =~ ^[Yy]$ ]] || { info "Kept."; continue; }
+            unset '_SMB_NAMES[i]' '_SMB_PATHS[i]'
+            _SMB_NAMES=("${_SMB_NAMES[@]}"); _SMB_PATHS=("${_SMB_PATHS[@]}")
+            _smb_apply || return 1
+            info "Phones that were open on it will lose the share."
+        else
+            _smb_add_folder "$in" || continue
+            _smb_apply || return 1
+            ok "Now sharing ${_SMB_NAMES[-1]}. Connected phones must reconnect."
+        fi
+    done
+}
+
+# ── manage password ──
+_smb_manage_password() {
+    local ip in
+    if ! _smb_cur_login; then fail "Could not read $_SMB_DIR/samba.env (sudo refused or file missing)."; return 1; fi
+    _smb_load || true
+    ip=$(_smb_ts_ip)
+    _smb_connect_box "${ip:-<server tailscale ip>}" "$_SMB_USER" "$_SMB_PW"
+    printf '  New password (Enter = keep, g = generate, or type one): '
+    read -r -s in || in=""
+    echo ""
+    [[ -z "$in" ]] && { info "Password kept."; return 0; }
+    if [[ "$in" == g ]]; then
+        _SMB_PW=$(_smb_gen_password) || { fail "Could not generate a password (openssl failed)."; return 1; }
+    else
+        local why b
+        if ! why=$(_smb_pw_check "$in"); then fail "Password $why. Nothing changed."; return 1; fi
+        printf '  Type it again to confirm: '
+        read -r -s b || b=""
+        echo ""
+        if [[ "$in" != "$b" ]]; then fail "The two passwords did not match. Nothing changed."; return 1; fi
+        _SMB_PW=$in
+    fi
+    _smb_apply || return 1
+    ok "Password changed. Phones must re-enter it. New password: ${BOLD}$_SMB_PW${NC}"
+}
+
+_smb_uninstall() {
+    echo ""
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${RED}DELETE file sharing (Samba)${NC}"
+    echo ""
+    echo -e "  ${BOLD}What will happen:${NC}"
+    echo -e "    ${RED}•${NC} Stop + remove the samba container (phones lose access)"
+    echo -e "  ${BOLD}Kept:${NC}"
+    echo -e "    ${GREEN}•${NC} $_SMB_DIR/ (login, password, folder list); your files are never touched"
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    _confirm_delete samba || return 0
+    info "Removing samba container..."
+    sudo docker rm -f samba > /dev/null 2>&1
+    if ! _container_gone samba; then
+        fail "Container 'samba' is still present (or docker could not be queried) - not removed."
+        return 1
+    fi
+    ok "File sharing removed."
+    echo -e "  ${DIM}Config kept at $_SMB_DIR. To wipe it:${NC} sudo rm -rf $_SMB_DIR"
+}
+
+step_samba() {
+    info "Opens folders on this server to phones and laptops over Tailscale (SMB)."
+    echo ""
+    if ! command -v docker &>/dev/null; then
+        fail "Docker not installed. Run step 5 first."
+        return 1
+    fi
+    local choice
+    if ! _smb_exists; then
+        echo -e "  Not set up yet. Set up picks the folders, makes a password and starts sharing."
+        echo ""
+        echo -e "  ${BOLD}1)${NC} Set up"
+        echo -e "  ${BOLD}0)${NC} Back"
+        echo ""
+        read -p "  Choose: " choice
+        case $choice in
+            1) _smb_setup ;;
+            0|*) return ;;
+        esac
+        return
+    fi
+    _smb_status
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Refresh"
+    echo -e "  ${BOLD}2)${NC} Manage folders             ${DIM}<- add or stop sharing folders${NC}"
+    echo -e "  ${BOLD}3)${NC} Manage password           ${DIM}<- show it, change it${NC}"
+    echo -e "  ${BOLD}4)${NC} Start"
+    echo -e "  ${BOLD}5)${NC} Stop"
+    echo -e "  ${BOLD}6)${NC} Restart"
+    echo -e "  ${BOLD}7)${NC} ${RED}Uninstall${NC}                 ${DIM}<- remove container, keep $_SMB_DIR${NC}"
+    echo -e "  ${BOLD}0)${NC} Back"
+    echo ""
+    read -p "  Choose: " choice
+    case $choice in
+        1) _smb_status ;;
+        2) _smb_manage_folders ;;
+        3) _smb_manage_password ;;
+        4) info "Starting...";   _svc_power start samba   && ok "Started."   || { fail "Start failed.";   return 1; } ;;
+        5) info "Stopping...";   _svc_power stop samba    && ok "Stopped."   || { fail "Stop failed.";    return 1; } ;;
+        6) info "Restarting..."; _svc_power restart samba && ok "Restarted." || { fail "Restart failed."; return 1; } ;;
+        7) _smb_uninstall ;;
+        0|*) return ;;
+    esac
+}
+# ── end SMB file sharing ─────────────────────────────
+
 # ── CLI argument handling (used by SSH routing) ─────
 if [[ "${1:-}" == "--run" && -n "${2:-}" ]]; then
     # Guard against stale checkouts: if the requested function doesn't exist
@@ -7133,6 +7765,7 @@ else
             13) run_step "[13] Manage remote desktop" "_on_server step_remotedesktop" ;;
             14) run_step "[14] Manage sync and backups" step_manage_sync ;;
             15) run_step "[15] Save to pass" step_save_to_pass ;;
+            16) run_step "[16] Connect phone (Files app)" "_on_server step_samba" ;;
             s)  run_step "[s] Status" step_status ;;
             i)  run_step "[i] Immich (privcloud)" step_immich ;;
             p)  run_step "[p] Power" step_power ;;

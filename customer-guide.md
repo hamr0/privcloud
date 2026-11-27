@@ -38,6 +38,7 @@ Your server. Your data. No cloud required.
 - [WireGuard VPN](#wireguard-vpn)
 - [AdGuard Home DNS ad blocker](#adguard-home-dns-ad-blocker)
 - [Syncthing real-time folder sync](#syncthing-real-time-folder-sync)
+- [Connect phone (Files app)](#connect-phone-files-app)
 - [Remote desktop](#remote-desktop)
 - [Save to pass](#save-to-pass)
 - [Server maintenance](#server-maintenance)
@@ -117,6 +118,7 @@ Run `privcloud` with no command for the interactive menu. Pick a number and it r
   -- Tools --
   14) Manage sync and backups               ← sync jobs, Immich backup (DB + photos), disk-space monitor
   15) Save to pass                          ← from laptop, backup everything to pass
+  16) Connect phone (Files app)             ← iPhone/Android open server folders over Tailscale
 
   s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-7)   0)  Exit
 ```
@@ -1168,6 +1170,33 @@ Menu is organised by category — `Status` spans everything, then `Sync -` entri
 | **Direction** | One-way per transfer | Bidirectional |
 | **Runs from** | Laptop (SSHes to server) | Both sides independently |
 | **Good for** | Bulk transfers, scheduled backups, cleanup | Live working folders, notes, code drafts |
+
+---
+
+## Connect phone (Files app)
+
+Open folders from the server on an iPhone, Android phone or laptop as a network drive (SMB), over Tailscale only. `federver` -> `16`.
+
+**What it does.** Runs a Samba container (`ghcr.io/servercontainers/samba:smbd-only-latest`, updated by Watchtower like the other services) on the host network. You choose the folders; each becomes its own share named after the folder (read-write, files owned by your server login). Nothing is shared until you add it, and system locations (`/`, `/etc`, `/usr`, `/var`, `/root`, `/opt`, ...) are refused. There is one user: your server login name, with a password that is generated (16 letters and digits) or typed by you (8 to 64 plain characters, no backslash, not starting with `-`). The login, password and folder list live in `/opt/samba` (root-only, mode 600).
+
+**Who can connect.** Only tailnet devices. Samba accepts the Tailscale address range (`100.64.0.0/10`) and nothing else, and the firewall's public zone never opens port 445 (`tailscale0` is trusted). Set up stops if 445 is already in use (and tells you how to remove the proof-of-concept container if that is what it is) or if 445 is open to the home network, printing the command that closes it.
+
+**What Set up installs** (it says so first and asks `Continue? [Y/n]`; `n` changes nothing): one Docker container named `samba` (image `ghcr.io/servercontainers/samba:smbd-only-latest`, downloaded then, about 20 MB RAM), settings in `/opt/samba` (folders + password, root only), and nothing on the system itself (no dnf packages). Like the other containers: autostart on (Stop turns it off), Watchtower keeps it updated, it is included in Start All / Stop All and in `(s)` Status. Uninstall removes the container and keeps `/opt/samba`.
+
+**Set up.** `16` -> `1) Set up`: after that confirmation it checks Tailscale, port 445 and the firewall, asks `Folder to share (type a path, Enter = cancel)` (your files folder is suggested), repeats `Another folder?` until you press Enter, asks for a password (Enter = generate), starts the container and prints the connect box. Then it can wait up to two minutes while you connect your phone and tell you when it sees it.
+
+**The screen once set up.** Status first: state (`stopped (autostart off)` in red if you stopped it), autostart, each folder with a tick or the reason it is not available (folder missing, or drive not mounted: for folders under `/mnt` or `/run/media` the drive must really be mounted), whether the LAN side of the firewall is closed, and connected devices by Tailscale name with the shares they opened (an iPhone drops idle connections, so an empty list means no recent use). Menu: `1) Refresh`, `2) Manage folders`, `3) Manage password`, `4) Start`, `5) Stop`, `6) Restart`, `7) Uninstall`.
+
+- **Manage folders**: type a path to add one (a share-name clash asks for another name), or a number to stop sharing it (files are never deleted; the last folder cannot be removed, use Uninstall instead). Every change rewrites the config and recreates the container, so connected phones must reconnect. If the new container does not start it says so in red; run `16` again, which offers to reuse the saved folders and password.
+- **Manage password**: shows the user and the full password with the phone steps, then `New password (Enter = keep, g = generate)`. Phones must re-enter the new password.
+- **Uninstall** asks you to type `samba`, removes the container, verifies it is gone and keeps `/opt/samba`. Set up afterwards offers to reuse the saved setup.
+
+**Connect.**
+- **iPhone / iPad** (Tailscale app connected): Files -> `...` -> Connect to Server -> `smb://<server tailscale ip>` -> Registered User -> `<your server user>` + password -> pick a folder.
+- **Android**: install *Material Files* -> Add storage -> SMB server -> host `<server tailscale ip>`, your user + password.
+- **Laptop**: file manager -> Connect to server -> `smb://<server tailscale ip>`.
+
+`federver -> s` shows a "File sharing (SMB)" section: `✓ running · 2 folders · 1 device connected`, with one line per connected device (Tailscale name, the folders it has open, since time).
 
 ---
 

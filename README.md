@@ -82,6 +82,7 @@ Every step is safe to re-run. Server steps auto-route via SSH; laptop steps run 
 | **WireGuard** | Route all your phone or laptop traffic through home — public WiFi privacy |
 | **AdGuard Home** | Network-wide ad and tracker blocker for every device |
 | **Syncthing** | Real-time folder sync between your devices |
+| **Connect phone (SMB)** | Open chosen server folders from the iPhone/Android Files app or a laptop over Tailscale, like a network drive |
 | **Remote Desktop** | The full Fedora desktop, from any device |
 | **Watchtower** | Keeps everything up-to-date automatically |
 | **Backups** | One-time or scheduled (systemd timer) backups of your photos + Immich database — no downtime, defaults to an external drive |

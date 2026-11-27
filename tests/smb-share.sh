@@ -1,0 +1,370 @@
+#!/bin/bash
+# Tests for the SMB file-sharing step in setup.sh (step_samba and the _smb_*
+# helpers): set-up flow, manage folders/password, status, (s) section,
+# phone live-wait, uninstall. Run: bash tests/smb-share.sh (non-zero on failure)
+# Everything runs in a mktemp sandbox with stubbed docker/sudo/ss/firewall-cmd/
+# id/openssl/tailscale/findmnt: no real containers, no sudo, no network. All
+# names and ids are fake. SETUP_SH=<file> tests another copy of setup.sh.
+H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+SRC=${SETUP_SH:-$H/../setup.sh}
+T=$(mktemp -d) || exit 1
+trap 'rm -rf "$T"' EXIT
+mkdir -p "$T/bin" "$T/c" "$T/files/docs" "$T/files/media" "$T/files/My Pics" "$T/opt" "$T/mnt/usb/data" "$T/ro"
+BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
+{ grep -E '^(ok|fail|info|warn)\(\)' "$SRC"
+  grep -m1 '^_shq()' "$SRC"
+  awk '/^_svc_power_body\(\)/{p=1} p{print} /^_ps_autostart\(\)/{q=1} q&&/^}/{exit}' "$SRC"
+  awk '/^_env_get\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
+  awk '/^_container_gone\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
+  awk '/^_confirm_delete\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
+  sed -n '/^# ── SMB file sharing/,/^# ── end SMB/p' "$SRC"; } > "$T/fn.sh"
+source "$T/fn.sh"
+type step_samba >/dev/null 2>&1 || echo "FAIL  setup: step_samba not found in $SRC (older setup.sh?)"
+_SMB_DIR=$T/opt/samba; _SMB_SETTLE=0; _SMB_POLL=0.2; _SMB_WAIT_TRIES=3; _SMB_DRIVE_ROOTS="$T/mnt"
+echo "FILES_LOCATION=$T/files" > "$T/.env"   # _smb_files_path reads .env next to fn.sh
+
+cat > "$T/bin/sudo" <<'X'
+#!/bin/bash
+[ "$1" = -v ] && { [ -n "$SUDO_FAIL" ] && exit 1; exit 0; }; exec "$@"
+X
+cat > "$T/bin/id" <<'X'
+#!/bin/bash
+case "$1" in -un) echo testuser;; -u) echo 4242;; -g) echo "${FAKE_GID:-4242}";; esac
+X
+cat > "$T/bin/openssl" <<'X'
+#!/bin/bash
+[ -n "$OPENSSL_FAIL" ] && exit 1
+echo "Zx9/Qw8+Er7Ty6Ui5Op4As3Df2Gh1Jk0LmNbVcXz/aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789+/abcdefghijklmnop"
+X
+cat > "$T/bin/tailscale" <<'X'
+#!/bin/bash
+[ -n "$TS_DOWN" ] && exit 1
+case "$1" in
+  status) echo "100.99.99.98   iphone-test   someone@   iOS   -" ;;
+  *) echo 100.99.99.99 ;;
+esac
+X
+cat > "$T/bin/ss" <<'X'
+#!/bin/bash
+if [ -n "$LISTEN" ] || [ -e "$DOCKER_STATE/samba/listening" ]; then echo "LISTEN 0 4096 0.0.0.0:445 0.0.0.0:*"; fi
+X
+cat > "$T/bin/findmnt" <<'X'
+#!/bin/bash
+case "$*" in *TARGET*) col=T;; *) col=S;; esac
+case "${FM_MODE:-ok}" in
+  ok)   [ $col = T ] && echo "$TMNT/usb" || echo /dev/sdb1 ;;
+  root) [ $col = T ] && echo / || echo /dev/nvme0n1p2 ;;
+  stub) [ $col = T ] && echo "$TMNT/usb" || echo systemd-1 ;;
+esac
+X
+cat > "$T/bin/firewall-cmd" <<'X'
+#!/bin/bash
+[ -n "$FW_DOWN" ] && exit 252
+for a in "$@"; do case "$a" in
+  --query-port=445/tcp) [ -n "$FW_PORT" ] && { echo yes; exit 0; }; echo no; exit 1 ;;
+  --query-service=samba) [ -n "$FW_SVC" ] && { echo yes; exit 0; }; echo no; exit 1 ;;
+esac; done
+X
+cat > "$T/bin/docker" <<'X'
+#!/bin/bash
+C=$DOCKER_STATE
+key() { printf '%s' "$1" | tr -c 'A-Za-z0-9' _; }
+echo "docker $*" >> "$DOCKER_LOG"
+cmd=$1; shift
+case "$cmd" in
+  info) exit 0 ;;
+  image) [ -n "$NO_IMAGE" ] && [ ! -e "$C/.pulled" ] && exit 1; exit 0 ;;
+  pull) [ -n "$FAIL_PULL" ] && exit 1; mkdir -p "$C"; touch "$C/.pulled"; exit 0 ;;
+  run)
+    [ -n "$FAIL_RUN" ] && exit 1
+    name=; pol=no; mounts=
+    while [ $# -gt 0 ]; do case "$1" in
+      --name) name=$2; shift 2;; --restart=*) pol=${1#--restart=}; shift;;
+      -v) src=${2%%:/shares/*}; dst=/shares/${2##*:/shares/}; mounts="$mounts$dst|$src"$'\n'; shift 2;; *) shift;; esac; done
+    d=$C/$(key "$name"); mkdir -p "$d"; printf '%s' "$name" > "$d/name"; echo "$pol" > "$d/policy"; printf '%s' "$mounts" > "$d/mounts"
+    if [ -n "$NO_LISTEN" ]; then echo false > "$d/running"; else echo true > "$d/running"; touch "$d/listening"; fi ;;
+  rm)
+    [ -n "$FAIL_RM" ] && exit 1
+    for a in "$@"; do case "$a" in -*) ;; *) rm -rf "$C/$(key "$a")";; esac; done ;;
+  ps)
+    all=0; q=0
+    for a in "$@"; do case "$a" in -a) all=1;; -aq) all=1; q=1;; *Status*) full=1;; esac; done
+    [ "$full" = 1 ] || q=1
+    for d in "$C"/*/; do [ -d "$d" ] || continue
+      [ "$all" = 1 ] || [ "$(cat "$d/running")" = true ] || continue
+      n=$(cat "$d/name")
+      if [ "$q" = 1 ]; then echo "$n"
+      elif [ "$(cat "$d/running")" = true ]; then echo "$n|Up 2 hours"; else echo "$n|Exited (0) 3 hours ago"; fi
+    done ;;
+  inspect)
+    fmt=""; names=()
+    while [ $# -gt 0 ]; do case "$1" in -f) fmt=$2; shift 2;; *) names+=("$1"); shift;; esac; done
+    for n in "${names[@]}"; do d=$C/$(key "$n"); [ -d "$d" ] || exit 1
+      case "$fmt" in
+        *State.Running*) echo "$(cat "$d/running") $(cat "$d/policy")" ;;
+        *'{{.Name}}'*)   echo "/$n $(cat "$d/policy")" ;;
+        *Mounts*)        cat "$d/mounts" ;;
+        *RestartPolicy*) cat "$d/policy" ;;
+      esac; done ;;
+  update) pol=${1#--restart=}; d=$C/$(key "$2"); [ -d "$d" ] || exit 1; echo "$pol" > "$d/policy" ;;
+  start|stop|restart)
+    d=$C/$(key "$1"); [ -d "$d" ] || exit 1
+    if [ "$cmd" = stop ]; then echo false > "$d/running"; rm -f "$d/listening"; else echo true > "$d/running"; touch "$d/listening"; fi ;;
+  exec) case "$*" in *"smbstatus -S"*) printf '\nService      pid     Machine       Connected at                     Encryption   Signing\n%s\n' "---------------------------------------------------------------------------------------------"; cat "$SMBSTATUS" 2>/dev/null ;; esac ;;
+  logs) echo "fake samba log" ;;
+esac
+exit 0
+X
+chmod +x "$T/bin/"*
+export PATH="$T/bin:$PATH" DOCKER_STATE=$T/c DOCKER_LOG=$T/docker.log SMBSTATUS=$T/smbstatus TMNT=$T/mnt
+PASS=0; FAILN=0
+mk() { local d="$T/c/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _)"; mkdir -p "$d"
+  printf '%s' "$1" > "$d/name"; echo "$2" > "$d/running"; echo "$3" > "$d/policy"; : > "$d/mounts"; [ "$2" = true ] && touch "$d/listening"; }
+reset() { rm -rf "$T/c" "$T/opt" "$SMBSTATUS"; mkdir -p "$T/c" "$T/opt"; : > "$DOCKER_LOG"
+  unset NO_IMAGE FAIL_PULL SUDO_FAIL LISTEN FW_PORT FW_SVC FW_DOWN FAIL_RUN FAIL_RM NO_LISTEN OPENSSL_FAIL TS_DOWN FAKE_GID FM_MODE
+  _SMB_NAMES=(); _SMB_PATHS=(); }
+check() { if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rc=$RC]"; FAILN=$((FAILN+1)); fi; }
+# run <stdin-text> <hold-seconds> cmd...   (hold keeps stdin open so read -t can time out)
+run() { local in=$1 hold=$2; shift 2; OUT=$( { printf '%s' "$in"; sleep "$hold"; } | "$@" 2>&1); RC=$?; }
+ENVF=$_SMB_DIR/samba.env; SHF=$_SMB_DIR/shares.conf
+RUNLINE() { grep '^docker run' "$DOCKER_LOG"; }
+PWOF() { sed -n 's/^ACCOUNT_testuser=//p' "$ENVF"; }
+NSH() { grep -c '|' "$SHF"; }
+# a finished set-up with docs + media, password FakePass0123456x
+mkset() { reset; run $'1\ny'"$T/files/docs"$'\n'"$T/files/media"$'\n\nFakePass0123456x\nFakePass0123456x\n' 0 step_samba; }
+SI="1"$'\ny'"$T/files/docs"$'\n\n'   # choice 1, one folder, done (callers add the password line)
+
+# 1 set-up: checks
+reset; export TS_DOWN=1; run "$SI" 0 step_samba
+check 1a "no tailscale: stops, installs nothing" '[ $RC != 0 ] && [[ "$OUT" == *"Tailscale is not connected"* ]] && [ -z "$(RUNLINE)" ] && [ ! -e "$ENVF" ]'
+reset; export LISTEN=1; run "$SI" 0 step_samba
+check 1b "445 in use: stops, installs nothing" '[ $RC != 0 ] && [[ "$OUT" == *"Port 445 is already in use"* ]] && [ -z "$(RUNLINE)" ] && [ ! -e "$ENVF" ]'
+reset; mk samba-poc true unless-stopped; export LISTEN=1; run "$SI" 0 step_samba
+check 1c "POC container present: prints teardown command" '[[ "$OUT" == *"docker compose -p samba-poc down"* ]]'
+reset; export FW_PORT=1; run "$SI" 0 step_samba
+check 1d "445 open in public zone: stops with the fix, installs nothing" '[ $RC != 0 ] && [[ "$OUT" == *"--remove-port=445/tcp"* ]] && [ -z "$(RUNLINE)" ] && [ ! -e "$ENVF" ]'
+reset; export FW_SVC=1; run "$SI" 0 step_samba
+check 1e "samba service open in public zone: stops" '[ $RC != 0 ] && [ -z "$(RUNLINE)" ]'
+reset; export FW_DOWN=1; run $'1\ny' 0 step_samba
+check 1f "firewalld unreadable: warns, continues to the folder prompt" '[[ "$OUT" == *"could not read the state"* && "$OUT" == *"Folder to share"* ]]'
+reset; run $'1\ny' 0 step_samba
+check 1g "Enter at first folder prompt cancels, nothing changed" '[ $RC = 0 ] && [[ "$OUT" == *"Cancelled. Nothing changed"* ]] && [ -z "$(RUNLINE)" ] && [ ! -e "$ENVF" ]'
+reset; run $'0\n' 0 step_samba
+check 1h "not set up submenu: Set up + Back only, with explanation" '[[ "$OUT" == *"Not set up yet"* && "$OUT" == *"1) Set up"* && "$OUT" != *"Manage folders"* ]]'
+reset; run $'1\ny' 0 step_samba
+check 1i "set up shows 2-line explanation, ✓ checks, files-folder tip" '[[ "$OUT" == *"Tailscale only"* || "$OUT" == *"Tailscale only,"* || "$OUT" == *"over Tailscale only"* ]] && [[ "$OUT" == *"Tailscale connected (100.99.99.99)"* && "$OUT" == *"Port 445 is free"* && "$OUT" == *"Tip: your files folder is $T/files"* ]]'
+
+# 2 set-up: folders
+reset; run $'1\nyrelative/dir\n/nonexistent/zzz\n'"$T/files/docs"$'\n\n\n' 0 step_samba
+check 2a "bad folders re-ask with a reason; good one then accepted" '[[ "$OUT" == *"Use a full path"* && "$OUT" == *"does not exist"* && "$OUT" == *"Sharing docs"* && $RC = 0 ]]'
+reset; run $'1\ny/etc\n/\n/usr\n/proc\n/home\n/var\n/dev\n\n' 0 step_samba
+check 2b "system paths refused with the reason" '[ "$(grep -c "system location" <<<"$OUT")" -ge 6 ] && [ -z "$(RUNLINE)" ]'
+echo hi > "$T/afile"; reset; run $'1\ny'"$T/afile"$'\n\n' 0 step_samba
+check 2c "a file (not a folder) refused" '[[ "$OUT" == *"is not a folder"* ]]'
+if [ "$(id -u)" != 0 ]; then chmod 555 "$T/ro"; reset; run $'1\ny'"$T/ro"$'\n\n' 0 step_samba; chmod 755 "$T/ro"
+check 2d "non-writable folder refused" '[[ "$OUT" == *"not writable"* ]]'; fi
+reset; ln -s "$T/files/docs" "$T/link"; run $'1\ny'"$T/link"$'\n\n\n' 0 step_samba
+check 2e "symlink resolved via realpath" 'grep -qx "docs|$T/files/docs" "$SHF"'
+reset; run $'1\ny'"$T/files/docs"$'\n'"$T/files/docs"$'\n\n\n' 0 step_samba
+check 2f "same folder twice: refused as already shared" '[[ "$OUT" == *"already shared"* ]] && [ "$(NSH)" = 1 ]'
+reset; mkdir -p "$T/other/docs"; run $'1\ny'"$T/files/docs"$'\n'"$T/other/docs"$'\nmydocs2\n\n\n' 0 step_samba
+check 2g "name clash: asks for another name" '[[ "$OUT" == *"Another name for"* ]] && grep -qx "mydocs2|$T/other/docs" "$SHF"'
+reset; run $'1\ny'"$T/files/docs"$'\n'"$T/other/docs"$'\nbad name!\n\n\n\n' 0 step_samba
+check 2h "invalid replacement name re-asked; blank skips folder" '[[ "$OUT" == *"use letters, digits"* ]] && [ "$(NSH)" = 1 ]'
+reset; run $'1\ny'"$T/files/My Pics"$'\n\n\n' 0 step_samba
+check 2i "folder name with a space becomes a valid share name" 'grep -qx "My-Pics|$T/files/My Pics" "$SHF"'
+
+# 3 set-up: apply, password, honesty
+mkset
+check 3a "two folders: set-up ok, success line says 2 folders" '[ $RC = 0 ] && [[ "$OUT" == *"File sharing set up: 2 folders."* ]]'
+check 3b "one -v mount per folder at /shares/<name>, host net, env-file, autostart policy" \
+  '[[ "$(RUNLINE)" == *"--network host"* && "$(RUNLINE)" == *"--env-file $ENVF"* && "$(RUNLINE)" == *"--restart=unless-stopped"* && "$(RUNLINE)" == *"-v $T/files/docs:/shares/docs"* && "$(RUNLINE)" == *"-v $T/files/media:/shares/media"* && "$(RUNLINE)" == *smbd-only-latest* && "$(RUNLINE)" != *" -p "* ]]'
+check 3c "one SAMBA_VOLUME_CONFIG per share, both valid-user restricted, read-write, veto" \
+  '[ "$(grep -c "^SAMBA_VOLUME_CONFIG_s" "$ENVF")" = 2 ] && grep -q "^SAMBA_VOLUME_CONFIG_s0=\[docs\]; path = /shares/docs; valid users = testuser; guest ok = no; read only = no" "$ENVF" && grep -q "^SAMBA_VOLUME_CONFIG_s1=\[media\]" "$ENVF" && grep -q "veto files = /lost+found/.Trash-\*/" "$ENVF"'
+check 3d "env + list files are mode 600, list has name|path" '[ "$(stat -c %a "$ENVF")" = 600 ] && [ "$(stat -c %a "$SHF")" = 600 ] && grep -qx "docs|$T/files/docs" "$SHF"'
+check 3e "hosts allow tailnet only, SMB2, runtime uid" 'grep -q "hosts allow = 100.64.0.0/10 127.0.0.1;hosts deny = 0.0.0.0/0;server min protocol = SMB2;server smb encrypt = desired" "$ENVF" && grep -q "^UID_testuser=4242$" "$ENVF" && ! grep -q GROUP_ "$ENVF"'
+check 3f "typed password used; never on docker argv/log" '[ "$(PWOF)" = FakePass0123456x ] && ! grep -qF FakePass0123456x "$DOCKER_LOG"'
+check 3g "connect box: server ip, user, password, iPhone + Android steps" '[[ "$OUT" == *smb://100.99.99.99* && "$OUT" == *"User:      testuser"* && "$OUT" == *FakePass0123456x* && "$OUT" == *iPhone* && "$OUT" == *Android* && "$OUT" == *"Material Files"* ]]'
+reset; run $'1\ny'"$T/files/docs"$'\n\n\n' 0 step_samba
+PW=$(PWOF)
+check 3h "Enter = generated password: 16 alphanumeric, shown in output" '[[ "$PW" =~ ^[A-Za-z0-9]{16}$ && "$OUT" == *"$PW"* ]]'
+reset; export FAKE_GID=5353; run "$SI"$'\n' 0 step_samba
+check 3i "gid != uid: group + force group" 'grep -q "^GROUP_smbshare=5353$" "$ENVF" && grep -q "force group = smbshare" "$ENVF"'
+reset; run $'1\ny'"$T/files/docs"$'\n\nshort1\nback\\slash1234\n-leadingdash12\n'$'\xc3\xa9ccentpass1\nGoodPass12345\nOtherPass12345\nGoodPass12345\nGoodPass12345\n' 0 step_samba
+check 3j "bad typed passwords rejected with reasons (short, backslash, dash, accent); mismatch re-asks; then works" \
+  '[[ "$OUT" == *"too short"* && "$OUT" == *"backslash"* && "$OUT" == *"must not start with -"* && "$OUT" == *"plain keyboard"* && "$OUT" == *"did not match"* ]] && [ "$(PWOF)" = GoodPass12345 ]'
+WEIRD="sp ace\$HOME\"q'x%s;#|&"
+reset; run $'1\ny'"$T/files/docs"$'\n\n'"$WEIRD"$'\n'"$WEIRD"$'\n' 0 step_samba
+check 3k "password with spaces, \$, quotes, ;, #, | round-trips through the env file" '[ "$(PWOF)" = "$WEIRD" ] && ! grep -qF "$WEIRD" "$DOCKER_LOG"'
+reset; run $'1\ny'"$T/files/docs"$'\n\n\n' 0 step_samba; run $'3\n' 0 step_samba
+check 3l "Manage password shows the stored weird/generated password in full" '[[ "$OUT" == *"$(PWOF)"* ]]'
+reset; export FAIL_RUN=1; run "$SI"$'\n' 0 step_samba
+check 3m "docker run fails: loud failure, no success line" '[ $RC != 0 ] && [[ "$OUT" == *"NOT RUNNING"* && "$OUT" != *"File sharing set up"* ]]'
+reset; export NO_LISTEN=1; run "$SI"$'\n' 0 step_samba
+check 3n "container not listening: failure, no success line" '[ $RC != 0 ] && [[ "$OUT" != *"File sharing set up"* ]]'
+reset; export OPENSSL_FAIL=1; run "$SI"$'\n' 0 step_samba
+check 3o "password generation fails: nothing installed" '[ $RC != 0 ] && [ -z "$(RUNLINE)" ] && [ ! -e "$ENVF" ]'
+# saved setup reuse after an uninstall
+mkset; run $'7\nsamba\n' 0 step_samba
+run $'1\nyy' 0 step_samba
+check 3p "after uninstall, Set up offers the saved folders + password and reuses them" '[[ "$OUT" == *"Saved setup found: 2 folder"* && "$OUT" == *"File sharing set up: 2 folders."* ]] && [ "$(PWOF)" = FakePass0123456x ]'
+
+# 4 live phone wait
+reset; printf 'docs         14      100.99.99.98  Fri Nov 27 09:10:11 2026 UTC     -            -\n' > "$SMBSTATUS"
+run "$SI"$'\n' 3 step_samba
+check 4a "phone seen: '<device> connected, opened \"<share>\"' with Tailscale name" '[[ "$OUT" == *"waiting"* && "$OUT" == *"iphone-test connected, opened \"docs\""* ]]'
+reset; run "$SI"$'\n' 2 step_samba
+check 4b "no phone: timeout message with common causes, setup still reported" '[[ "$OUT" == *"No phone connected"* && "$OUT" == *"Tailscale is off on the phone"* && "$OUT" == *"File sharing set up"* ]]'
+reset; run "$SI"$'\n\n' 0 step_samba
+check 4c "Enter skips the wait" '[[ "$OUT" == *Skipped* && "$OUT" != *"No phone connected"* ]]'
+
+# 5 submenu + status
+mkset; run $'0\n' 0 step_samba
+check 5a "set-up submenu: status block + 7 items" '[[ "$OUT" == *running* && "$OUT" == *"Port 445:  listening"* && "$OUT" == *"Autostart: on"* && "$OUT" == *"docs"* && "$OUT" == *"LAN closed"* && "$OUT" == *"2) Manage folders"* && "$OUT" == *"3) Manage password"* && "$OUT" == *"7) Uninstall"* ]]'
+mkset; printf 'docs         14      100.99.99.98  Fri Nov 27 09:10:11 2026 UTC     -            -\nmedia        14      100.99.99.98  Fri Nov 27 09:11:00 2026 UTC     -            -\nmedia        20      100.99.99.77  Fri Nov 27 09:12:00 2026 UTC     -            -\n' > "$SMBSTATUS"; run $'0\n' 0 step_samba
+check 5b "connected devices: Tailscale name mapped, IP fallback, shares + since" '[[ "$OUT" == *"iphone-test"* && "$OUT" == *"opened: docs, media"* && "$OUT" == *"100.99.99.77"* && "$OUT" == *"since 09:10"* ]]'
+mkset; run $'0\n' 0 step_samba
+check 5c "nobody connected: note about idle iPhone connections" '[[ "$OUT" == *"drops idle connections"* ]]'
+mkset; _smb_load; rm -rf "$T/files/media"; run $'0\n' 0 step_samba; mkdir -p "$T/files/media"
+check 5d "missing folder: ✗ with reason" '[[ "$OUT" == *"✗ media"* && "$OUT" == *"folder missing"* ]]'
+reset; run $'1\ny'"$T/mnt/usb/data"$'\n\n\n' 0 step_samba
+run $'0\n' 0 step_samba
+check 5e "drive mounted (findmnt /dev/* source): ✓" '[[ "$OUT" == *"✓ data"* ]]'
+export FM_MODE=root; run $'0\n' 0 step_samba
+check 5f "unmounted drive (bare dir on system disk, target /): ✗ drive not mounted" '[[ "$OUT" == *"✗ data"* && "$OUT" == *"drive not mounted"* ]]'
+export FM_MODE=stub; run $'0\n' 0 step_samba
+check 5g "stub/autofs mount (source not /dev/*): ✗ drive not mounted" '[[ "$OUT" == *"drive not mounted"* ]]'
+unset FM_MODE
+mkset; run $'5\n' 0 step_samba; run $'0\n' 0 step_samba
+check 5h "Stop -> 'stopped (autostart off)' in status; policy no" '[[ "$OUT" == *"stopped (autostart off)"* && "$OUT" == *"Autostart: off"* ]] && grep -qx no "$T/c/samba/policy"'
+run $'4\n' 0 step_samba
+check 5i "Start -> running + unless-stopped" 'grep -qx unless-stopped "$T/c/samba/policy" && [ "$(cat "$T/c/samba/running")" = true ]'
+mkset; export SUDO_FAIL=1; run $'5\n' 0 step_samba
+check 5j "Stop with sudo refused: reports failure" '[ $RC != 0 ] && [[ "$OUT" == *"Stop failed"* ]]'
+mkset; export FW_PORT=1; run $'0\n' 0 step_samba
+check 5k "status flags 445 open on LAN with the fix" '[[ "$OUT" == *"445 open on the LAN"* && "$OUT" == *"--remove-port=445/tcp"* ]]'
+
+# 6 manage folders
+mkset; run $'2\n'"$T/files/My Pics"$'\n\n' 0 step_samba
+check 6a "add a folder: container recreated with 3 mounts, password unchanged" '[ "$(NSH)" = 3 ] && grep -q "^docker rm -f samba" "$DOCKER_LOG" && [ "$(RUNLINE | wc -l)" = 2 ] && [ "$(PWOF)" = FakePass0123456x ] && [[ "$OUT" == *"Now sharing My-Pics"* && "$OUT" == *reconnect* ]]'
+check 6b "list is reprinted with numbers and ✓" '[[ "$OUT" == *"1) docs -> $T/files/docs ✓"* ]]'
+mkset; run $'2\n/etc\n'"$T/files/docs"$'\n\n' 0 step_samba
+check 6c "system path and already-shared folder refused in manage" '[[ "$OUT" == *"system location"* && "$OUT" == *"already shared"* ]] && [ "$(NSH)" = 2 ]'
+mkset; mkdir -p "$T/other2/docs"; run $'2\n'"$T/other2/docs"$'\nnewdocs\n\n' 0 step_samba
+check 6d "name clash in manage asks for a name" 'grep -qx "newdocs|$T/other2/docs" "$SHF"'
+mkset; run $'2\n1\ny\n\n' 0 step_samba
+check 6e "remove with y: share gone, files not deleted, container recreated" '[ "$(NSH)" = 1 ] && grep -qx "media|$T/files/media" "$SHF" && [ -d "$T/files/docs" ] && [[ "$OUT" == *"Files are NOT deleted"* ]]'
+mkset; run $'2\n1\nn\n\n' 0 step_samba
+check 6f "remove with N keeps the share" '[ "$(NSH)" = 2 ] && [ "$(RUNLINE | wc -l)" = 1 ]'
+mkset; run $'2\n1\n\n\n' 0 step_samba
+check 6g "remove with blank answer keeps the share" '[ "$(NSH)" = 2 ]'
+mkset; run $'2\n1\ny1\n\n' 0 step_samba
+check 6h "refuses removing the last folder, points to Uninstall" '[[ "$OUT" == *"last shared folder"* && "$OUT" == *Uninstall* ]] && [ "$(NSH)" = 1 ]'
+mkset; run $'2\n9\n\n' 0 step_samba
+check 6i "bad number rejected" '[[ "$OUT" == *"No folder number 9"* ]] && [ "$(NSH)" = 2 ]'
+mkset; export FAIL_RUN=1; run $'2\n'"$T/files/My Pics"$'\n' 0 step_samba
+check 6j "recreate fails after rm: loud NOT RUNNING + how to recover, no success" '[ $RC != 0 ] && [[ "$OUT" == *"NOT RUNNING"* && "$OUT" == *"run federver -> 16 again"* && "$OUT" != *"Now sharing"* ]] && [ ! -d "$T/c/samba" ]'
+unset FAIL_RUN
+run $'1\nyy' 0 step_samba
+check 6k 'recovery works: Set up reuses saved folders after a failed recreate' '[[ "$OUT" == *"Saved setup found: 3 folder"* && "$OUT" == *"File sharing set up: 3 folders."* ]]'
+mkset; export FAIL_RM=1; run $'2\n'"$T/files/My Pics"$'\n' 0 step_samba
+check 6l "old container cannot be removed: says it still runs the OLD settings" '[ $RC != 0 ] && [[ "$OUT" == *"OLD settings"* ]]'
+
+# 7 manage password
+mkset; run $'3\n\n' 0 step_samba
+check 7a "Enter keeps the password, nothing recreated" '[[ "$OUT" == *"Password kept"* ]] && [ "$(RUNLINE | wc -l)" = 1 ] && [ "$(PWOF)" = FakePass0123456x ]'
+check 7b "screen shows user, full password, phone steps" '[[ "$OUT" == *"User:      testuser"* && "$OUT" == *FakePass0123456x* && "$OUT" == *smb://100.99.99.99* && "$OUT" == *iPhone* ]]'
+mkset; run $'3\ng\n' 0 step_samba
+check 7c "g generates 16 alphanumeric, shown, applied; folders kept; re-enter notice" 'PW=$(PWOF); [[ "$PW" =~ ^[A-Za-z0-9]{16}$ && "$PW" != FakePass0123456x && "$OUT" == *"$PW"* && "$OUT" == *"re-enter"* ]] && [ "$(NSH)" = 2 ] && ! grep -qF "$PW" "$DOCKER_LOG"'
+mkset; run $'3\nBrandNew-pass9\nBrandNew-pass9\n' 0 step_samba
+check 7d "typed + confirmed password applied" '[ "$(PWOF)" = BrandNew-pass9 ] && [ "$(RUNLINE | wc -l)" = 2 ]'
+mkset; run $'3\nBrandNew-pass9\nDifferent-pass9\n' 0 step_samba
+check 7e "mismatch: nothing changed" '[[ "$OUT" == *"did not match"* ]] && [ "$(PWOF)" = FakePass0123456x ] && [ "$(RUNLINE | wc -l)" = 1 ]'
+mkset; run $'3\nshort\n' 0 step_samba
+check 7f "too short: nothing changed" '[[ "$OUT" == *"too short"* ]] && [ "$(PWOF)" = FakePass0123456x ]'
+mkset; run $'3\nbad\\slash12345\n' 0 step_samba
+check 7g "backslash rejected: nothing changed" '[[ "$OUT" == *backslash* ]] && [ "$(PWOF)" = FakePass0123456x ]'
+mkset; run $'3\nBrandNew-pass9\nBrandNew-pass9\n' 0 step_samba >/dev/null; export FAIL_RUN=1
+mkset; export FAIL_RUN=1; run $'3\ng\n' 0 step_samba
+check 7h "recreate fails after password change: loud, no success" '[ $RC != 0 ] && [[ "$OUT" == *"NOT RUNNING"* && "$OUT" != *"Password changed"* ]]'
+unset FAIL_RUN
+
+# 8 uninstall
+mkset; run $'7\n\n' 0 step_samba
+check 8a "blank confirm cancels" '[ -d "$T/c/samba" ] && [[ "$OUT" == *Cancelled* ]]'
+mkset; run $'7\nsamb\n' 0 step_samba
+check 8b "mismatch cancels" '[ -d "$T/c/samba" ] && [[ "$OUT" == *"did not match"* ]]'
+mkset; run $'7\nsamba\n' 0 step_samba
+check 8c "match: container gone, /opt/samba kept" '[ $RC = 0 ] && [ ! -d "$T/c/samba" ] && [ -f "$ENVF" ] && [ -f "$SHF" ] && [[ "$OUT" == *"File sharing removed"* ]]'
+mkset; export FAIL_RM=1; run $'7\nsamba\n' 0 step_samba
+check 8d "rm fails: not reported as removed" '[ $RC != 0 ] && [[ "$OUT" != *"File sharing removed"* ]]'
+
+# 9 (s) Status section: three states
+reset; S=$(_smb_summary docker); R=$(_smb_summary_render "$S")
+check 9a "not set up" '[ "$S" = none ] && [[ "$R" == *"not set up (federver → 16)"* ]]'
+mkset; S=$(_smb_summary docker); R=$(_smb_summary_render "$S")
+check 9b "running: ✓ running · N folders · K devices connected" '[ "$S" = "running|2|0|0" ] && [[ "$R" == *"✓ running · 2 folders · 0 devices connected"* ]]'
+printf 'docs         14      100.99.99.98  Fri Nov 27 09:10:11 2026 UTC     -            -\n' > "$SMBSTATUS"; rm -rf "$T/files/media"
+S=$(_smb_summary docker); R=$(_smb_summary_render "$S"); mkdir -p "$T/files/media"
+check 9c "running with a missing folder and a device: (1 ✗ not mounted) · 1 device" '[ "$S" = "running|2|1|1" ] && [[ "$R" == *"(1 ✗ not mounted)"* && "$R" == *"1 device connected"* && "$R" != *"1 devices"* ]]'
+mkset; _svc_power stop samba 2>/dev/null; S=$(_smb_summary docker); R=$(_smb_summary_render "$S")
+check 9d "stopped: red ✗ stopped (autostart off)" '[ "${S%%|*}" = stopped-off ] && [[ "$R" == *"✗ stopped (autostart off)"* ]]'
+check 9e "step_status wires the SMB section (remote gather + local path + render)" '[ "$(grep -c "@@SMB@@" "$SRC")" -ge 2 ] && grep -q "_smb_summary_render" "$SRC" && grep -q "declare -f _ts_state _ps_autostart _smb_summary _smb_folder_check _smb_sessions _smb_devices _smb_devname" "$SRC" && grep -q "@@SMB_DEV_START@@" "$SRC"'
+
+# 11 real smbstatus -S output (captured on the live server) as the fixture
+FIX() { printf '%s\n' \
+ 'resumes      328     100.99.99.98  Fri Nov 27 09:13:18 2026 UTC     AES-128-GCM  AES-128-GMAC' \
+ 'formal-docs  328     100.99.99.98  Fri Nov 27 09:13:17 2026 UTC     AES-128-GCM  AES-128-GMAC' > "$SMBSTATUS"; }
+mkset >/dev/null; FIX
+check 11a "one device with two shares = one line: name via tailscale status, both shares, earliest time" \
+  '[ "$(_smb_devices docker)" = "iphone-test|resumes, formal-docs|09:13" ]'
+S=$(_smb_summary docker); R=$(_smb_summary_render "$S" "$(_smb_devices docker)")
+echo "---- (s) section, 1 device ----"; echo "$R"
+check 11b "(s): '1 device connected' (singular) + device line under the summary" '[ "$S" = "running|2|0|1" ] && [[ "$R" == *"· 1 device connected"* && "$R" != *"1 devices"* && "$R" == *"iphone-test"*"resumes, formal-docs   since 09:13"* ]] && [ "$(wc -l <<<"$R")" = 2 ]'
+printf '%s\n' 'media        401     100.99.99.77  Fri Nov 27 10:02:05 2026 UTC     AES-128-GCM  AES-128-GMAC' >> "$SMBSTATUS"
+S=$(_smb_summary docker); R=$(_smb_summary_render "$S" "$(_smb_devices docker)")
+echo "---- (s) section, 2 devices ----"; echo "$R"
+check 11c "(s): '2 devices connected', IP fallback name for an unknown device, one line each" '[[ "$R" == *"· 2 devices connected"* && "$R" == *"100.99.99.77"*"media   since 10:02"* ]] && [ "$(wc -l <<<"$R")" = 3 ]'
+rm -f "$SMBSTATUS"
+S=$(_smb_summary docker); R=$(_smb_summary_render "$S" "$(_smb_devices docker)")
+echo "---- (s) section, 0 devices ----"; echo "$R"
+check 11d "(s): '0 devices connected', no device lines" '[[ "$R" == *"· 0 devices connected"* ]] && [ "$(wc -l <<<"$R")" = 1 ]'
+FIX; run $'0\n' 0 step_samba
+check 11e "submenu Connected parses the real format: name, both shares, earliest since time" '[[ "$OUT" == *"iphone-test"*"opened: resumes, formal-docs  since 09:13"* ]]'
+
+# 12 what Set up installs, up front; image download
+reset; run $'1\nn' 0 step_samba
+check 12a "header lists what is installed (image from _SMB_IMAGE), before anything runs" '[[ "$OUT" == *"What Set up installs:"* && "$OUT" == *"container \"samba\""* && "$OUT" == *"image $_SMB_IMAGE, downloaded now"* && "$OUT" == *"/opt/samba"*"root only"* && "$OUT" == *"no dnf packages"* && "$OUT" == *"Start All / Stop All"* && "$OUT" == *"Continue? [Y/n]"* && "$OUT" != *"Tailscale connected"* ]]'
+check 12b "n = back, nothing changed, no checks, nothing written or run" '[ $RC = 0 ] && [[ "$OUT" == *"Cancelled. Nothing changed"* ]] && [ -z "$(RUNLINE)" ] && [ ! -e "$ENVF" ] && ! grep -q "pull\|image" "$DOCKER_LOG"'
+reset; export NO_IMAGE=1; run "$SI"$'\n' 0 step_samba
+check 12c "image missing: 'Downloading Samba image...' then pull, before run" '[[ "$OUT" == *"Downloading Samba image..."* ]] && [ "$(grep -n "^docker pull" "$DOCKER_LOG" | cut -d: -f1)" -lt "$(grep -n "^docker run" "$DOCKER_LOG" | cut -d: -f1)" ] && [[ "$OUT" == *"File sharing set up"* ]]'
+reset; run "$SI"$'\n' 0 step_samba
+check 12d "image present: no download message, no pull" '[[ "$OUT" != *"Downloading"* ]] && ! grep -q "^docker pull" "$DOCKER_LOG"'
+reset; export NO_IMAGE=1 FAIL_PULL=1; run "$SI"$'\n' 0 step_samba
+check 12e "pull fails: own honest error, nothing run, no success" '[ $RC != 0 ] && [[ "$OUT" == *"Could not download"* && "$OUT" != *"File sharing set up"* && "$OUT" != *"NOT RUNNING"* ]] && [ -z "$(RUNLINE)" ]'
+mkset >/dev/null; export NO_IMAGE=1 FAIL_PULL=1; rm -f "$T/c/.pulled"; run $'3\ng\n' 0 step_samba
+check 12f "pull fails during a change: the running share is NOT removed" '[ $RC != 0 ] && [ -d "$T/c/samba" ] && ! grep -q "^docker rm" "$DOCKER_LOG"'
+unset NO_IMAGE FAIL_PULL
+
+# 10 main menu + public-repo hygiene
+check 10a "main menu line 16 reads 'Connect phone (Files app)' with the hint" 'grep -q "16)\${NC} Connect phone (Files app) .*iPhone/Android open server folders over Tailscale" "$SRC" && grep -q "16) run_step \"\[16\] Connect phone (Files app)\" \"_on_server step_samba\"" "$SRC"'
+# The pattern is built at runtime from this machine's own values (federver
+# config, $USER, local FILES_LOCATION), so none of them is ever written in the
+# repo. No values available = SKIP (counted as a pass with a note).
+CFG=${XDG_CONFIG_HOME:-$HOME/.config}/federver/config
+PAT=""
+addpat() { [ -n "$1" ] && PAT="$PAT${PAT:+|}$(printf '%s' "$1" | sed 's/[][\.^$*+?(){}|\/]/\\&/g')"; }
+if [ -r "$CFG" ]; then
+  for k in SERVER_USER SERVER_IP SERVER_HOST_TS; do addpat "$(sed -n "s/^$k=//p" "$CFG" | head -1 | tr -d "\"'")"; done
+fi
+addpat "${USER:-}"
+addpat "$(_env_get FILES_LOCATION "$H/../.env" 2>/dev/null)"
+if [ -n "$PAT" ] && git -C "$H/.." rev-parse >/dev/null 2>&1; then
+  BAD=$(git -C "$H/.." diff main -- setup.sh tests CHANGELOG.md README.md customer-guide.md 2>/dev/null | grep '^+' | grep -E -- "$PAT")
+  check 10b "no user-specific values added vs main (pattern built at runtime)" '[ -z "$BAD" ]'
+else
+  echo "PASS  10b  SKIP: no local config/user values available to check against"; PASS=$((PASS+1))
+fi
+
+echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
+[ "$FAILN" = 0 ]

@@ -1284,33 +1284,27 @@ _storage_mount_source() {
 # stub at the mount point that passes `mountpoint -q` even when the actual disk
 # never mounted (wrong/duplicate fstab UUID, hot-unplug). Docker then fails with
 # "no such device" and silently creates empty dirs on the system disk that look
-# like data loss. Only /mnt/* paths are guarded — internal /home paths never
-# need a separate mount. Returns 0 if safe to start, 1 (with guidance) if not.
+# like data loss. Only /mnt/* paths are guarded - internal /home paths never
+# need a separate mount. The mount point (first two components, /mnt/data) goes
+# to _drive_verdict: ok or empty (a fresh drive) starts; anything else, and "no
+# findmnt to ask", refuses. Returns 0 if safe to start, 1 (with guidance) if not.
 _require_data_mount() {
     local path="$1"
     [[ "$path" == /mnt/* ]] || return 0
     # Mount point is the first two components, e.g. /mnt/data.
-    local mp; mp="/$(echo "${path#/}" | cut -d/ -f1-2)"
-    # Poke the path so an idle (healthy) automount triggers — autofs access is
-    # synchronous, so this blocks until the mount settles or the device-timeout
-    # fails. Retry a few times to ride out a slow spin-up before giving up, so
-    # we don't false-positive and block a start on a disk that is actually fine.
-    local src="" i
-    for i in 1 2 3; do
-        ls "$mp" >/dev/null 2>&1 || true
-        src=$(findmnt -frno SOURCE "$mp" 2>/dev/null)
-        [[ "$src" == /dev/* ]] && break
-        [[ "$i" == 3 ]] || sleep 1
-    done
-    if [[ "$src" != /dev/* ]]; then
-        fail "Data drive is not mounted at $mp (source: ${src:-none})."
-        info "Services bind-mount your photos/music/files from here. Starting now"
-        info "would fail with 'no such device' and create empty folders on the"
-        info "system disk that look like data loss."
-        info "Fix it: ${BOLD}federver → 11 → 2${NC} (Mount USB drive), then retry."
-        return 1
+    local mp v; mp="/$(echo "${path#/}" | cut -d/ -f1-2)"
+    v=$(_drive_verdict "$mp")
+    case "$v" in ok|empty) return 0 ;; esac
+    if [[ "$v" == unknown ]]; then
+        fail "Cannot check whether the data drive is mounted at $mp (findmnt is missing) - not starting."
+    else
+        fail "Data drive is not mounted at $mp (check: $v)."
     fi
-    return 0
+    info "Services bind-mount your photos/music/files from here. Starting now"
+    info "would fail with 'no such device' and create empty folders on the"
+    info "system disk that look like data loss."
+    info "Fix it: ${BOLD}federver → 11 → 2${NC} (Mount USB drive), then retry."
+    return 1
 }
 
 _storage_status() {
@@ -1390,13 +1384,17 @@ _storage_status() {
         mp="/$(echo "${p#/}" | cut -d/ -f1-2)"
         case " $seen_mp " in *" $mp "*) continue ;; esac
         seen_mp+=" $mp"
-        ls "$mp" >/dev/null 2>&1 || true
-        local sc; sc=$(findmnt -frno SOURCE "$mp" 2>/dev/null)
-        if [[ "$sc" != /dev/* ]]; then
-            echo ""
-            warn "$mp is NOT mounted (real disk absent; source: ${sc:-none})."
-            info "Services using it will fail to start. Mount: ${BOLD}federver → 11 → 2${NC}."
-        fi
+        local v; v=$(_drive_verdict "$mp")
+        case "$v" in
+            ok|empty) ;;
+            unknown)
+                echo ""
+                warn "Cannot check whether $mp is mounted (findmnt is missing)." ;;
+            *)
+                echo ""
+                warn "$mp is NOT mounted (real disk absent; check: $v)."
+                info "Services using it will fail to start. Mount: ${BOLD}federver → 11 → 2${NC}." ;;
+        esac
     done
 
     _storage_check_fstab_options
@@ -2078,7 +2076,7 @@ _picker_data_guard() { # navidrome|filebrowser|all
         filebrowser|all) var=FILES_LOCATION; def=/mnt/data ;;
         *) return 0 ;;
     esac
-    ssh "$SERVER_USER@$SERVER_IP" "$(declare -p GREEN RED YELLOW BOLD DIM NC; declare -f _env_get _require_data_mount fail info); p=\$(_env_get $var \"\$HOME/privcloud/.env\" 2>/dev/null); _require_data_mount \"\${p:-$def}\""
+    ssh "$SERVER_USER@$SERVER_IP" "$(declare -p GREEN RED YELLOW BOLD DIM NC _DRIVE_ROOTS; declare -f _env_get _drive_verdict _require_data_mount fail info); p=\$(_env_get $var \"\$HOME/privcloud/.env\" 2>/dev/null); _require_data_mount \"\${p:-$def}\""
 }
 
 # Unified service picker: shows laptop services + server containers in one

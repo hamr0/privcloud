@@ -64,7 +64,7 @@ export PATH="$T/bin:$PATH" FM_ROOT="$T/mnt/usb" SRC_DIR="$T/src"
 mkdir -p "$T/mnt/usb/data" "$T/mnt/usb/empty" "$T/src"; echo f > "$T/mnt/usb/data/f"
 D=$T/mnt/usb/data; E=$T/mnt/usb/empty; M=$T/mnt/usb/nope
 CHECK_DIAG='got=$GOT'
-_DRIVE_ROOTS="$T/mnt"   # the sandbox stands in for /mnt (the production value is checked in R)
+_DRIVE_ROOTS="$T/mnt /mnt"   # the sandbox stands in for /mnt; the real /mnt is for the fake data-drive mount point (production value: R)
 
 # ── P  pins: today's answers, per member and per case ───────────────────────
 # mirror (_mirror_guard -> its reason text; it asks _drive_verdict)
@@ -101,6 +101,9 @@ GOT=$(rq bare);      check P3d "start guard: bare folder -> refused" '[ "$GOT" =
 GOT=$(env PATH="$T/lsonly" "$(command -v bash)" -c "source $T/fn.sh; _require_data_mount /mnt/data >/dev/null 2>&1; echo \$?")
 check P3e "start guard: findmnt absent -> refused" '[ "$GOT" = 1 ]'
 GOT=$(rq none files /home/x/data); check P3f "start guard: a path outside /mnt is not guarded -> allowed" '[ "$GOT" = 0 ]'
+GOT=$(rq ok missing); check P3h "start guard: real mount but the mount point cannot be listed (gone) -> refused (new: the verdict also checks the folder exists)" '[ "$GOT" = 1 ]'
+GOT=$(rq ok empty);   check P3i "start guard: freshly formatted (empty) drive on a real mount -> allowed" '[ "$GOT" = 0 ]'
+OUT=$(env PATH="$T/lsonly" "$(command -v bash)" -c "source $T/fn.sh; BOLD=; NC=; fail() { echo \"\$*\"; }; info() { :; }; _require_data_mount /mnt/data"); check P3j "start guard: findmnt absent says it cannot check (not a wrong 'not mounted')" '[[ "$OUT" == *"Cannot check"*"findmnt is missing"* && "$OUT" != *"not mounted"* ]]'
 OUT=$(FM_MODE=stub _require_data_mount /mnt/data 2>&1); check P3g "start guard: refusal names the mount point and says not mounted" '[[ "$OUT" == *"not mounted at /mnt/data"* ]]'
 
 # Storage -> Status block (_storage_status warns for each /mnt/* data path not on a real device)
@@ -112,7 +115,10 @@ OUT=$(st stub); check P4b "status: autofs stub -> warns once for /mnt/data" '[[ 
 OUT=$(st none); check P4c "status: nothing mounted -> warns" '[[ "$OUT" == *"/mnt/data is NOT mounted"* ]]'
 OUT=$(st bare); check P4d "status: bare folder -> warns" '[[ "$OUT" == *"/mnt/data is NOT mounted"* ]]'
 OUT=$(env PATH="$T/lsonly" FM_MODE=ok "$(command -v bash)" -c "source $T/fn.sh; BOLD=; NC=; DIM=; RED=; YELLOW=; _storage_check_fstab_options() { :; }; SCRIPT_DIR=$T/sd; _storage_status" 2>&1)
-check P4e "status: findmnt absent -> warns (source none)" '[[ "$OUT" == *"/mnt/data is NOT mounted"* ]]'
+check P4e "status: findmnt absent -> a plain 'cannot check' warning (no false NOT mounted claim)" '[[ "$OUT" == *"Cannot check whether /mnt/data is mounted"* && "$OUT" != *"NOT mounted"* ]]'
+
+OUT=$(st ok empty);   check P4f "status: empty drive on a real mount -> no warning" '[[ "$OUT" != *"NOT mounted"* && "$OUT" != *"Cannot check"* ]]'
+OUT=$(st ok missing); check P4g "status: mount point cannot be listed -> NOT mounted" '[[ "$OUT" == *"/mnt/data is NOT mounted"* ]]'
 
 # backup default (_pick_backup_default: candidate must be a dir and `mountpoint -q`)
 bd() { FM_MODE=$1 _pick_backup_default "$SRC_DIR"; }

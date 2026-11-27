@@ -53,9 +53,10 @@ fixes" column folds in the open review-ledger items, so nothing is fixed twice.
 |---|---|---|---|---|---|
 | 1 | QW quick wins | copy-mode question (`_mirror_ask`) not colour-coded: question in yellow, `delete` in red per the colour rules; `federver -> 14 -> 2` (Sync - New) reported stuck around that question (root-cause first) | S / low | each fix has a fail-first test | ☑ code (cf6d270..bf70dde); live check pending |
 | 1b | Mirror safety (found live 2026-11-27: a mirror into a shared `docs/` offered to delete 1,354,744 files of an unrelated backup) | the preview streams its full output to a private list file (`${XDG_STATE_HOME:-~/.local/state}/federver/mirror-preview-<date>.txt`, newest 5 kept) and the screen shows deletions **grouped by top-level folder** (top 5 with counts, whole folders marked); **wipe guard**: a whole top-level folder (holding deleted files) or more than `MIRROR_WIPE_MIN` (1000) files replaces the y/N with typing the exact count; **flush buffered keys** before every question (a leftover Enter answered the prompt); Ctrl-C during the preview kills the dry run and removes the partial list; the progress line shows live to-delete / to-copy counts | S–M / medium | fail-first tests; live re-run of the same upload shows the guard | ☑ code (16bd6c6..7e46788); live check pending |
+| 1c | Mirror confirm follow-ups (found live 2026-11-27) | **one confirmation**: a mirror copy asked `Delete these N files…? [y/N]` and then `Proceed? [y/N]`; ask once, after the summary box (typed count when the wipe guard applies); **symlinked source size**: `From: <path> (0)` because `du -sh` measured the symlink, not the folder it points to | S / low | fail-first tests | ☐ |
 | 2 | 0 test harness `tests/lib.sh` | disk-check flake: capture `tmpd` when it fails | S / low | check counts per suite unchanged | ☐ |
 | 3 | 1 drive-mount verdict | `_MIRROR_DRIVE_ROOTS` test override in the production guard | M / medium | **design review**, then live check on the USB drive | ☐ |
-| 4 | 2 sync-job generator | legacy finish-line patch gap (CRLF), `mktemp` leak in Change copy mode, untested `_mirror_banner` in step_sync, mirror preview not listing empty folders, duplicated `last:` label mapping, exit 24 (decision 1) | L / high | **design review**; atomic write + `.bak`; live mirror run, home and away | ☐ |
+| 4 | 2 sync-job generator | legacy finish-line patch gap (CRLF), `mktemp` leak in Change copy mode, untested `_mirror_banner` in step_sync, mirror preview not listing empty folders, duplicated `last:` label mapping, exit 24 (decision 1), unattended mirror runs get the same count cap as the interactive guard (skip and log `SKIPPED … would delete N files`) | L / high | **design review**; atomic write + `.bak`; live mirror run, home and away | ☐ |
 | 5 | 3 Immich backup | install-time dry-run runs as the user, not root | M / medium | live scheduled run + one one-time run | ☐ |
 | 6 | 5 shared lib `lib/common.sh` | – | M / medium | `.env` stays mode 600; both tools work from the `/usr/local/bin` wrappers | ☐ |
 | 7 | 4 service lifecycle and status | inline `samba-poc` container probe; first live run of `federver -> 16` from the laptop; `federver -> 7` Restart has no data-drive guard (Start does since QW) | M–L / medium | live Status and Start/Stop | ☐ |
@@ -91,7 +92,9 @@ Each module runs the same loop: ~15 min POC → build with tests that fail first
 3. **One shared lib, `lib/common.sh`**, sourced by both tools: the `.env` reader/writer and every helper
    both tools duplicate. The former optional piece 8 is folded into piece 5; there is no `lib/env.sh`.
 4. `privcloud config` **stays** (privcloud-only installs need it) and writes through `env_set`, updating
-   only `UPLOAD_LOCATION` and `DB_DATA_LOCATION`; every other `.env` key is left untouched.
+   only `UPLOAD_LOCATION` and `DB_DATA_LOCATION`; every other `.env` key is left untouched. One
+   exception: it generates `DB_PASSWORD` when that key is missing or still the `.env.example`
+   placeholder (never changes a real one), because `.env.example` tells users to run it for that.
 
 ## Non-goals
 

@@ -5024,8 +5024,8 @@ LOGJSON
 # guard on every run, so _mirror_check_here/_mirror_guard (+ ssh, _shq) are
 # copied into the job script with `declare -f` - cron has no federver functions.
 
-# Prints ok | missing | empty | unmounted for a path on THIS machine. Always
-# returns 0 - callers read the verdict, so a failed ssh/sudo (no output) is never
+# Prints ok | missing | empty | unmounted | unknown (no findmnt to ask) for a
+# path on THIS machine. Always returns 0 - callers read the verdict, so a failed ssh/sudo (no output) is never
 # mistaken for "ok". Under /mnt, /media and /run/media the path must sit on a
 # real mount whose source is a /dev/* device: an autofs/stub mountpoint
 # (source systemd-1) or a bare folder on the system disk is "unmounted".
@@ -5036,6 +5036,7 @@ _mirror_check_here() {
     if [[ -d "$p" && -z "$(ls -A "$p" 2>/dev/null)" ]]; then echo empty; return 0; fi
     for r in ${_MIRROR_DRIVE_ROOTS:-/mnt /media /run/media}; do
         [[ "$p" == "$r"/* ]] || continue
+        command -v findmnt >/dev/null || { echo unknown; return 0; }
         t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null)
         s=$(findmnt -n -o SOURCE -T "$p" 2>/dev/null)
         if [[ -z "$t" || "$t" == / || "$s" != /dev/* ]]; then echo unmounted; return 0; fi
@@ -5044,6 +5045,8 @@ _mirror_check_here() {
 }
 
 # Source guard: _mirror_guard <local|server|sudo> <path>. rc 0 = safe to mirror.
+#   Otherwise sets _mirror_why (source missing | source empty | drive not mounted |
+#   could not check source: no verdict came back, e.g. server unreachable).
 #   server = the path is on the federver box (checked over ssh, same function);
 #   sudo   = same, as root, through _server_sudo_run (needs _SRV_PW).
 _mirror_guard() {
@@ -5055,7 +5058,14 @@ _mirror_guard() {
         sudo)   v=$(_server_sudo_run "$(declare -f _mirror_check_here); _mirror_check_here $(_shq "$p")") || v="" ;;
     esac
     v=$(printf '%s' "$v" | tr -d '\r' | tail -n 1)
-    [[ "$v" == ok ]]
+    case $v in
+        ok)        return 0 ;;
+        missing)   _mirror_why="source missing" ;;
+        empty)     _mirror_why="source empty" ;;
+        unmounted) _mirror_why="drive not mounted" ;;
+        *)         _mirror_why="could not check source" ;;
+    esac
+    return 1
 }
 
 _mirror_refuse() {
@@ -5070,7 +5080,7 @@ _mirror_ask() {
     echo ""
     echo "  Deleted at source → also delete at destination?"
     printf '  Enter = no, append only · type "delete" = mirror: '
-    read -r reply || reply=""
+    IFS= read -r reply || reply=""
     if [[ "$reply" == delete ]]; then
         sync_mode=mirror
     else
@@ -5079,9 +5089,16 @@ _mirror_ask() {
     fi
 }
 
-# Dry-run command for an append-form copy command ("rsync -avh --progress ...").
+# The red "Mode: mirror" line of a copy's summary box (nothing for append).
+_mirror_banner() {
+    if [[ "$sync_mode" == mirror ]]; then
+        echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
+    fi
+}
+
+# Dry-run command for an append-form copy command ("rsync <any flags> ...").
 # --out-format=%o|%n prints "del.|<name>" for every deletion.
-_mirror_dry_cmd() { printf '%s' "rsync -a -n --delete --out-format='%o|%n' ${1#rsync -avh --progress }"; }
+_mirror_dry_cmd() { _rsync_with "$1" "-n --delete --out-format='%o|%n'"; }
 
 # Same command with a flag after "rsync" (--delete, or the literal $DELFLAG).
 _rsync_with() { printf 'rsync %s %s' "$2" "${1#rsync }"; }
@@ -5137,7 +5154,7 @@ _sync_mirror_block() {  # mode loc src_path job_name
         declare -f ssh _shq _mirror_check_here _mirror_guard
         echo "DELFLAG=--delete"
         echo "_mirror_guard $2 $(_shq "$3") || {"
-        echo "    printf '%s: SKIPPED %s - source empty or drive not mounted (mirror refused, nothing deleted)\\n' \"\$(date '+%Y-%m-%d %H:%M:%S')\" $(_shq "$4")"
+        echo "    printf '%s: SKIPPED %s - %s (mirror refused, nothing deleted)\\n' \"\$(date '+%Y-%m-%d %H:%M:%S')\" $(_shq "$4") \"\$_mirror_why\""
         echo "    exit 0"
         echo "}"
     else
@@ -5152,12 +5169,17 @@ _sync_job_mode() {  # script_path -> mirror | append (no MODE= line = legacy = a
     [[ "$m" == mirror ]] && echo mirror || echo append
 }
 
+# One "# Key: value" header line of a job script (first match; empty if none).
+_sync_job_field() {  # script_path key
+    sed -n "s/^# $2: //p" "$1" | head -n 1
+}
+
 # Rewrite a job script's mode in place (also upgrades pre-mirror scripts).
 _sync_job_set_mode() {  # script_path mode
     local sp=$1 mode=$2 dir src name loc blk tmp
-    dir=$(sed -n 's/^# Direction: //p' "$sp" | head -n 1)
-    src=$(sed -n 's/^# Source: //p' "$sp" | head -n 1)
-    name=$(sed -n 's/^# Sync job: //p' "$sp" | head -n 1)
+    dir=$(_sync_job_field "$sp" Direction)
+    src=$(_sync_job_field "$sp" Source)
+    name=$(_sync_job_field "$sp" "Sync job")
     if [[ -z "$src" || -z "$name" ]]; then fail "Job script has no Source/name header - mode not changed."; return 1; fi
     [[ "$dir" == download ]] && loc=server || loc=local
     blk=$(mktemp) && tmp=$(mktemp "$sp.XXXXXX") || return 1
@@ -5208,7 +5230,7 @@ _sync_last_note() {  # job_name
     IFS='|' read -r kind when exitc <<<"$(_sync_last_result "$HOME/.local/share/sync-jobs/$1.log")"
     case "$kind" in
         ok)      echo -e "${GREEN}last: ok${NC}" ;;
-        skipped) echo -e "${YELLOW}last: skipped (source empty)${NC}" ;;
+        skipped) echo -e "${YELLOW}last: skipped${exitc:+ ($exitc)}${NC}" ;;
         fail)    echo -e "${RED}last: failed (exit ${exitc})${NC}" ;;
         running) echo -e "${YELLOW}last: running?${NC}" ;;
         *)       echo -e "${DIM}last: never${NC}" ;;
@@ -5216,7 +5238,8 @@ _sync_last_note() {  # job_name
 }
 
 # Last result of a sync job from its log: "kind|when|exit", kind = ok | fail |
-# skipped (the mirror guard refused) | running (started, no finish line) | never.
+# skipped (the mirror guard refused; the third field is its reason) | running
+# (started, no finish line) | never.
 _sync_last_result() {  # log_path
     local l when exitc
     [[ -f "$1" ]] || { echo "never||"; return 0; }
@@ -5225,7 +5248,10 @@ _sync_last_result() {  # log_path
         when=$(date -d "@$(stat -c %Y "$1")" '+%Y-%m-%d %H:%M' 2>/dev/null) || when="?"
         echo "running|${when}|"; return 0
     fi
-    if [[ "$l" == *": SKIPPED "* ]]; then echo "skipped|${l:0:16}|"; return 0; fi
+    if [[ "$l" == *": SKIPPED "* ]]; then
+        exitc=$(sed -n 's/.*: SKIPPED [^ ]* - \(.*\) (mirror refused.*/\1/p' <<<"$l")
+        echo "skipped|${l:0:16}|${exitc}"; return 0
+    fi
     when=$(grep -oP '\[\K[^\]]+' <<<"$l" | cut -c1-16) || when="?"
     exitc=$(grep -oP 'exit \K[0-9]+' <<<"$l") || exitc=""
     if [[ "$exitc" == 0 ]]; then echo "ok|${when}|0"; else echo "fail|${when}|${exitc}"; fi
@@ -5239,9 +5265,9 @@ _sync_change_mode() {  # job_name
     info "Current copy mode: $(_sync_job_mode "$sp")"
     _mirror_ask
     if [[ "$sync_mode" == mirror ]]; then
-        dir=$(sed -n 's/^# Direction: //p' "$sp" | head -n 1)
-        src=$(sed -n 's/^# Source: //p' "$sp" | head -n 1)
-        dest=$(sed -n 's/^# Destination: //p' "$sp" | head -n 1)
+        dir=$(_sync_job_field "$sp" Direction)
+        src=$(_sync_job_field "$sp" Source)
+        dest=$(_sync_job_field "$sp" Destination)
         [[ "$dir" == download ]] && loc=server || loc=local
         rline=$(grep -m1 '^rsync ' "$sp") || rline=""
         if [[ -z "$rline" ]]; then fail "No rsync line in $sp - mode not changed."; return 1; fi
@@ -5326,7 +5352,9 @@ $(_sync_mirror_block "$mode" "$src_loc" "$src_path" "$job_name")
 echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: ${job_name}"
 ${pre_cmd:+$pre_cmd}
 $(_rsync_with "$rsync_cmd" '$DELFLAG')
-echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: ${job_name} (exit \$?)"
+rc=\$?
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: ${job_name} (exit \$rc)"
+exit \$rc
 SYNCSCRIPT
             chmod +x "$script_path"
 
@@ -5979,7 +6007,7 @@ _sync_show_status() {
             IFS='|' read -r kind when exitc <<<"$(_sync_last_result "$logf")"
             case "$kind" in
                 ok)      status="${GREEN}✓ ok${NC}" ;;
-                skipped) status="${YELLOW}last: skipped (source empty)${NC}" ;;
+                skipped) status="${YELLOW}last: skipped${exitc:+ ($exitc)}${NC}" ;;
                 fail)    status="${RED}✗ exit ${exitc}${NC}" ;;
                 *)       status="${YELLOW}running?${NC}" ;;
             esac
@@ -6368,7 +6396,7 @@ _sync_one_time_backup() {
             echo -e "  ${BOLD}↑ One-time upload: laptop → server${NC}"
             echo -e "  From: $src_path ($src_size)"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
-            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
+            _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             read -p "  Proceed? [y/N] " -n 1 -r
@@ -6426,7 +6454,7 @@ _sync_one_time_backup() {
             echo -e "  ${BOLD}↓ One-time download: server → laptop${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
             echo -e "  To:   $dest_display"
-            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
+            _mirror_banner
             $needs_priv     && echo -e "  ${DIM}Source is root-owned — federver reads it under sudo.${NC}"
             $dst_needs_priv && echo -e "  ${DIM}Destination isn't writable — it's written under local sudo.${NC}"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -6579,7 +6607,7 @@ _sync_one_time_backup() {
             echo -e "  ${BOLD}↪ One-time local copy: laptop → laptop${NC}"
             echo -e "  From: $src_path ($src_size)"
             echo -e "  To:   $dest_display"
-            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
+            _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             read -p "  Proceed? [y/N] " -n 1 -r
@@ -6629,7 +6657,7 @@ _sync_one_time_backup() {
             echo -e "  ${BOLD}⇄ One-time server copy: federver → federver${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
-            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
+            _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             info "Runs with sudo on the server (Immich data is root-owned); you may be prompted for the server password."
 
@@ -6730,7 +6758,7 @@ step_sync() {
             echo -e "  ${BOLD}↑ Upload: laptop → server${NC}"
             echo -e "  From: $local_path ($src_size)"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
-            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
+            _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             # Shell-quote every interpolated path with _shq (printf %q): these
@@ -6770,7 +6798,7 @@ step_sync() {
             echo -e "  ${BOLD}↓ Download: server → laptop${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$server_path"
             echo -e "  To:   $dest_display"
-            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
+            _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             # Shell-quote every path with _shq (see the upload branch): the dest

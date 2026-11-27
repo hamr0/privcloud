@@ -21,8 +21,8 @@ fn() { awk -v n="$1" '
 { grep -E '^(ok|fail|info|warn)\(\)' "$SRC"
   grep -m1 '^ssh()' "$SRC" >/dev/null && awk '/^ssh\(\) \{/{p=1} p{print} p&&/^}/{exit}' "$SRC"
   grep -m1 '^_shq()' "$SRC"
-  for f in _mirror_check_here _mirror_guard _mirror_refuse _mirror_ask _mirror_dry_cmd _rsync_with \
-           _mirror_preview _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_set_mode \
+  for f in _mirror_check_here _mirror_guard _mirror_refuse _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
+           _mirror_preview _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
            _sync_mode_cell _sync_last_note _sync_last_result _sync_change_mode \
            _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _cron_to_english _sync_one_time_backup; do fn "$f"; done; } > "$T/fn.sh"
@@ -34,6 +34,7 @@ cat > "$T/bin/ssh" <<'X'
 #!/bin/bash
 while [ $# -gt 0 ]; do case "$1" in -o|-l|-p|-i) shift 2;; -*) shift;; *) break;; esac; done
 shift
+[ -n "$SSH_DOWN" ] && exit 255
 [ $# -gt 0 ] || exit 0
 exec bash -c "$*"
 X
@@ -98,6 +99,10 @@ mk; run "${ONE}yes\n$Y" LOCALCMD
 check 1e "anything but the exact word is append (\"yes\")" 'copied && extras_kept'
 mk; run "${ONE}Delete\n$Y" LOCALCMD
 check 1f "only lowercase \"delete\" selects mirror (\"Delete\" is append)" 'copied && extras_kept'
+mk; run "${ONE} delete\n$Y" LOCALCMD
+check 1g "padded answer (\" delete\") is not the exact word: append" 'copied && extras_kept'
+mk; run "${ONE}delete \n$Y" LOCALCMD
+check 1h "padded answer (\"delete \") is not the exact word: append" 'copied && extras_kept'
 
 # ── 2  delete + y -> mirror ───────────────────────────────────────────────
 mk; run "${ONE}delete\ny\n$Y" LOCALCMD
@@ -109,6 +114,9 @@ check 2e "success line counts the deletions" '[[ "$OUT" == *"✓ Mirror complete
 mk; for i in 1 2 3 4 5 6 7; do echo x > "$T/d/extra$i"; done
 run "${ONE}delete\ny\n$Y" LOCALCMD
 check 2f "more than 5 deletions: 5 names then '... and M more'" '[[ "$OUT" == *"⚠ 10 files would be deleted"* && "$OUT" == *"... and 5 more"* ]]'
+
+mk; run "" bash -c 'source "$T/fn.sh"; c=$(_mirror_dry_cmd "rsync -az $(_shq "$P_SRC/") $(_shq "$P_DST/")"); bash -c "$c"'
+check 2g "dry-run command works for an rsync line without the standard flag prefix" '[ "$RC" = 0 ] && [[ "$OUT" == *"del.|gone"* ]] && extras_kept'
 
 # ── 3  delete + Enter -> nothing changed ──────────────────────────────────
 mk; run "${ONE}delete\n\n$Y" LOCALCMD
@@ -139,6 +147,9 @@ mk; run "" bash -c 'source "$T/fn.sh"; _mirror_guard server "$P_SRC"'
 check 4i "server-side guard accepts a populated path" '[ "$RC" = 0 ]'
 mk; run "" bash -c 'source "$T/fn.sh"; ssh() { return 255; }; _mirror_guard server "$P_SRC"'
 check 4j "unreachable server = guard fails closed" '[ "$RC" != 0 ]'
+mk; mkdir -p "$T/mnt/usb/data" "$T/lsonly"; echo q > "$T/mnt/usb/data/f"; ln -sf "$(command -v ls)" "$T/lsonly/ls"
+run "" env PATH="$T/lsonly" "$(command -v bash)" -c 'source "$T/fn.sh"; _mirror_check_here "$T/mnt/usb/data"'
+check 4k "no findmnt on a drive path: verdict is unknown (not unmounted), still refused" '[ "$OUT" = unknown ]'
 
 # ── 5  zero deletions ─────────────────────────────────────────────────────
 mk; rm -rf "$T/d"; mkdir "$T/d"
@@ -154,9 +165,9 @@ if [ "$(id -u)" != 0 ]; then
   check 6a "root-owned source: dim info line, append only" '[[ "$OUT" == *"ℹ Needs sudo (tar copy) — append only; mirror isn'"'"'t possible for this copy."* ]]'
   check 6b "no mode question on the tar route" '[[ "$OUT" != *"Deleted at source"* && "$OUT" != *"type \"delete\""* ]]'
   mk; _pl=1; run "2\n\nn" _sync_one_time_backup
-  check 6d "readable source on the rsync route still asks" '[[ "$OUT" == *"Deleted at source"* && "$OUT" != *"Needs sudo"* ]]'
+  check 6c "readable source on the rsync route still asks" '[[ "$OUT" == *"Deleted at source"* && "$OUT" != *"Needs sudo"* ]]'
 else
-  echo "PASS  6x  SKIP: running as root (cannot make an unreadable source)"; PASS=$((PASS+4))
+  echo "PASS  6x  SKIP: running as root (cannot make an unreadable source)"; PASS=$((PASS+3))
 fi
 
 # ── 7  download (rsync over ssh) and server -> server (sudo run) ──────────
@@ -172,6 +183,15 @@ run "4\ndelete\ny\n$Y" LOCALCMD
 check 7d "server -> server: empty source refused" 'extras_kept && [[ "$OUT" == *"Refused."* ]]'
 mk; run "4\n\n$Y" LOCALCMD
 check 7e "server -> server append: no sudo-run copy, nothing deleted" '[[ "$OUT" == *"Append only"* ]] && extras_kept'
+BAN="Mode: mirror - deletes destination files that are gone from the source"
+mk; run "${ONE}delete\ny\n$Y" LOCALCMD
+check 7f "mirror banner on the one-time local copy summary" '[[ "$OUT" == *"$BAN"* ]]'
+mk; _pl=1; run "2\ndelete\ny\n$Y" LOCALCMD
+check 7g "mirror banner on the one-time download summary" '[[ "$OUT" == *"$BAN"* ]]'
+mk; run "4\ndelete\ny\n$Y" LOCALCMD
+check 7h "mirror banner on the one-time server -> server summary" '[[ "$OUT" == *"$BAN"* ]]'
+mk; run "${ONE}\n$Y" LOCALCMD
+check 7i "no mirror banner on an append copy" '[[ "$OUT" != *"$BAN"* ]]'
 
 # ── 8  scheduled jobs ─────────────────────────────────────────────────────
 JOB=$T/home/.local/bin/sync-j1.sh; LOG=$T/home/.local/share/sync-jobs/j1.log
@@ -198,11 +218,12 @@ mkjob mirror "y\n"
 rm -rf "$T/s"; mkdir "$T/s"; echo q > "$T/d/stray"
 bash "$JOB" >/dev/null 2>&1; JRC=$?
 check 8i "empty source: cron run skips - no rsync, nothing deleted" '[ "$JRC" = 0 ] && [ -e "$T/d/stray" ] && [ -e "$T/d/a" ]'
-check 8j "skip is logged in the agreed form" 'grep -Eq "^[0-9-]+ [0-9:]+: SKIPPED j1 - source empty or drive not mounted \(mirror refused, nothing deleted\)$" "$LOG"'
+check 8j "skip is logged in the agreed form" 'grep -Eq "^[0-9-]+ [0-9:]+: SKIPPED j1 - source empty \(mirror refused, nothing deleted\)$" "$LOG"'
 check 8k "skip run writes no rsync output" '! grep -q "sending incremental" "$LOG"'
 rm -rf "$T/s"
 bash "$JOB" >/dev/null 2>&1
 check 8l "missing source: cron run skips too" '[ -e "$T/d/stray" ] && [ "$(grep -c SKIPPED "$LOG")" = 2 ]'
+check 8r "missing source is logged as such, not as empty/unmounted" 'tail -n 1 "$LOG" | grep -Eq ": SKIPPED j1 - source missing \(mirror refused"'
 mk; mkdir -p "$T/mnt/usb/data"; echo q > "$T/mnt/usb/data/f"; export FM_MODE=stub
 cmd="rsync -avh --progress -s $(_shq "$T/mnt/usb/data/") $(_shq "$T/d/")"
 run "2\nj2\ny\n" _sync_execute_or_schedule upload "$T/mnt/usb/data" "$T/d" "$cmd" "" mirror local
@@ -212,10 +233,13 @@ run "2\nj2\ny\n" _sync_execute_or_schedule upload "$T/mnt/usb/data" "$T/d" "$cmd
 echo k > "$T/d/stray"; export FM_MODE=stub
 bash "$T/home/.local/bin/sync-j2.sh" >/dev/null 2>&1
 check 8n "cron run after the drive vanished (stub mount) skips" '[ -e "$T/d/stray" ] && grep -q "SKIPPED j2" "$T/home/.local/share/sync-jobs/j2.log"'
+check 8s "unmounted drive is logged as such" 'grep -Eq ": SKIPPED j2 - drive not mounted \(mirror refused" "$T/home/.local/share/sync-jobs/j2.log"'
 mk; run "2\nj3\ny\n" _sync_execute_or_schedule download "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$SERVER_USER@$SERVER_IP:$T/s/") $(_shq "$T/d/")" "" mirror server
 echo k > "$T/d/stray"; rm -rf "$T/s"; mkdir "$T/s"
 bash "$T/home/.local/bin/sync-j3.sh" >/dev/null 2>&1
 check 8o "download job: the guard checks the SERVER path (over ssh) and skips" '[ -e "$T/d/stray" ] && grep -q "SKIPPED j3" "$T/home/.local/share/sync-jobs/j3.log" && [ "$(sed -n "s/^# Direction: //p" "$T/home/.local/bin/sync-j3.sh")" = download ]'
+SSH_DOWN=1 bash "$T/home/.local/bin/sync-j3.sh" >/dev/null 2>&1; unset SSH_DOWN
+check 8t "unreachable server is logged as a failed check, not as an empty source" '[ -e "$T/d/stray" ] && tail -n 1 "$T/home/.local/share/sync-jobs/j3.log" | grep -Eq ": SKIPPED j3 - could not check source \(mirror refused"'
 mk; run "1\ny\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
 check 8p "Run now with a mirror: preview, confirm, deletes" 'extras_gone && [[ "$OUT" == *"Mirror complete - 3 deleted"* ]]'
 mk; run "1\n\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
@@ -243,7 +267,7 @@ EOF
 chmod +x "$T/home/.local/bin/sync-old.sh"
 echo "30 3 * * * $T/home/.local/bin/sync-old.sh" >> "$CRON_FILE"
 # make j1 (mirror) have a skipped last result, old a clean one
-printf '2026-11-20 03:00:01: SKIPPED j1 - source empty or drive not mounted (mirror refused, nothing deleted)\n' >> "$LOG"
+printf '2026-11-20 03:00:01: SKIPPED j1 - source empty (mirror refused, nothing deleted)\n' >> "$LOG"
 printf '[2026-11-20 03:00:05] Sync finished: old (exit 0)\n' >> "$T/home/.local/share/sync-jobs/old.log"
 OUT=$(status); RC=0
 row() { grep -E "^  $1 " <<<"$OUT" | head -n 1; }
@@ -254,6 +278,12 @@ check 9d "clean last result shown on the legacy row" '[[ "$(row old)" == *"last:
 check 9e "Immich backup row shows append" '[[ "$(row immich-backup)" == *append* ]]'
 check 9f "table has a Copy column" '[[ "$OUT" == *"Name"*"Copy"*"Note"* ]]'
 check 9g "Last runs table also reports the skip" '[[ "$OUT" == *"j1"*"skipped (source empty)"* ]]'
+printf '2026-11-21 03:00:01: SKIPPED j1 - could not check source (mirror refused, nothing deleted)\n' >> "$LOG"
+OUT=$(status)
+check 9m "Status names the real reason of the last skip" "[[ \"\$(row j1)\" == *\"last: skipped (could not check source)\"* ]]"
+printf '2026-11-22 03:00:01: SKIPPED j1 - source empty or drive not mounted (mirror refused, nothing deleted)\n' >> "$LOG"
+OUT=$(status)
+check 9n "a skip logged by an older script keeps its own wording" "[[ \"\$(row j1)\" == *\"last: skipped (source empty or drive not mounted)\"* ]]"
 # systemd-timer job rows too
 mkdir -p "$T/home/.config/systemd/user"
 printf '[Timer]\nOnCalendar=Sat\n' > "$T/home/.config/systemd/user/sync-wk.timer"
@@ -261,8 +291,22 @@ cp "$JOB" "$T/home/.local/bin/sync-wk.sh"
 OUT=$(status)
 check 9h "timer job row shows its mode" '[[ "$(row wk)" == *mirror* ]]'
 rm -rf "$T/home/.config"
+# A REAL generated job script, run for real: a failed rsync must log its own
+# exit code and show as "last: failed (exit N)"; a clean run as "last: ok".
+mk; mkjob append "\n" >/dev/null
+logexit() { grep -oP 'Sync finished: j1 \(exit \K[0-9]+' "$LOG" | tail -n 1; }
+rm -rf "$T/s"
+bash "$JOB" >/dev/null 2>&1; JRC=$?; LE=$(logexit)
+OUT=$(status)
+check 9i "real failed run (missing source) logs a non-zero exit" '[ -n "$LE" ] && [ "$LE" != 0 ]'
+check 9j "Status shows last: failed (exit N) with that same N" '[[ "$(row j1)" == *"last: failed (exit $LE)"* ]]'
+check 9k "the job script exits with the rsync code (a timer unit shows failed)" '[ "$JRC" != 0 ] && [ "$JRC" = "$LE" ]'
+mkdir -p "$T/s"; echo a > "$T/s/a"
+bash "$JOB" >/dev/null 2>&1; JRC=$?
+OUT=$(status)
+check 9l "a clean real run after it: log says exit 0, Status shows last: ok, script exits 0" '[ "$(logexit)" = 0 ] && [ "$JRC" = 0 ] && [[ "$(row j1)" == *"last: ok"* ]]'
 
-# ── 10  Edit job -> Change copy mode ──────────────────────────────────────
+# ── 10 Edit job -> Change copy mode ──────────────────────────────────────
 mk
 mkjob append "\n" >/dev/null
 EDIT() { _sync_edit_job; }

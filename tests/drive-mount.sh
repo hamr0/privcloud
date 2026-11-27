@@ -128,6 +128,39 @@ GOT=$(env PATH="$T/lsonly" SRC_DIR=$SRC_DIR "$(command -v bash)" -c "source $T/f
 check P5e "backup default: findmnt absent -> nothing offered (cannot verify, fail closed)" '[ -z "$GOT" ]'
 mkdir -p "$T/mnt/usb/data" "$T/mnt/usb/empty"; echo f > "$T/mnt/usb/data/f"   # restore the fixtures
 
+# ── A  acceptance: one verdict for one fixture, whoever asks ───────────────
+# Mirror, SMB, the start guard, Storage Status and the backup default each get the
+# same fixture (drive state x folder state) and must accept or refuse as the one
+# verdict says. The first four ask about /mnt/data (faked by the ls stub: LS_DATA);
+# the backup default lists the sandbox drive $T/mnt/usb in the same state.
+cat > "$T/acc.sh" <<X
+source $T/fn.sh
+_DRIVE_ROOTS="$T/mnt /mnt"
+BOLD=; DIM=; RED=; GREEN=; YELLOW=; NC=; SCRIPT_DIR=$T/sd
+_storage_check_fstab_options() { :; }
+printf 'FILES_LOCATION=/mnt/data\nMUSIC_LOCATION=/home/x/m\nUPLOAD_LOCATION=/home/x/u\nDB_DATA_LOCATION=/home/x/db\n' > $T/sd/.env
+v=\$(_drive_verdict /mnt/data)
+m=refuse; _mirror_guard local /mnt/data && m=accept
+c=\$(_smb_folder_check /mnt/data); sm=refuse; [ "\$c" = ok ] && sm=accept
+g=accept; _require_data_mount /mnt/data/media >/dev/null 2>&1 || g=refuse
+o=\$(_storage_status 2>&1); st=accept; case "\$o" in *"NOT mounted"*|*"Cannot check"*) st=refuse;; esac
+b=\$(_pick_backup_default $SRC_DIR); bd=refuse; [ -n "\$b" ] && bd=accept
+echo "verdict=\$v mirror=\$m smb=\$sm start=\$g status=\$st backup=\$bd"
+X
+fixture() { # fm-mode ls-state -> the summary line (findmnt-less when mode is "nofm")
+  rm -rf "$T/mnt/usb"
+  case "$2" in files) mkdir -p "$T/mnt/usb"; echo f > "$T/mnt/usb/f" ;; empty) mkdir -p "$T/mnt/usb" ;; esac
+  if [ "$1" = nofm ]; then LS_DATA=$2 env PATH="$T/lsonly" "$(command -v bash)" "$T/acc.sh" 2>&1 | tail -1
+  else LS_DATA=$2 FM_MODE=$1 FM_ROOT=/mnt/data bash "$T/acc.sh" 2>&1 | tail -1; fi
+}
+GOT=$(fixture ok files);   check A1 "real mount, files: ok -> everyone accepts" '[ "$GOT" = "verdict=ok mirror=accept smb=accept start=accept status=accept backup=accept" ]'
+GOT=$(fixture ok empty);   check A2 "real mount, empty folder: empty -> only the mirror refuses (it would wipe the destination)" '[ "$GOT" = "verdict=empty mirror=refuse smb=accept start=accept status=accept backup=accept" ]'
+GOT=$(fixture ok missing); check A3 "folder gone: missing -> everyone refuses" '[ "$GOT" = "verdict=missing mirror=refuse smb=refuse start=refuse status=refuse backup=refuse" ]'
+GOT=$(fixture bare files); check A4 "bare folder on the system disk: unmounted -> everyone refuses" '[ "$GOT" = "verdict=unmounted mirror=refuse smb=refuse start=refuse status=refuse backup=refuse" ]'
+GOT=$(fixture stub files); check A5 "autofs stub (SOURCE systemd-1): unmounted -> everyone refuses" '[ "$GOT" = "verdict=unmounted mirror=refuse smb=refuse start=refuse status=refuse backup=refuse" ]'
+GOT=$(fixture nofm files); check A6 "no findmnt: unknown -> everyone refuses or only warns (fails closed)" '[ "$GOT" = "verdict=unknown mirror=refuse smb=refuse start=refuse status=refuse backup=refuse" ]'
+mkdir -p "$T/mnt/usb/data" "$T/mnt/usb/empty"; echo f > "$T/mnt/usb/data/f"   # restore the fixtures
+
 # ── V  _drive_verdict: one answer per case ──────────────────────────────────
 vv() { : > "$SLEEP_LOG"; FM_MODE=$1 _drive_verdict "$2"; }
 nsleep() { wc -l < "$SLEEP_LOG"; }
@@ -180,5 +213,8 @@ GOT=$(vv ok "$D"); check V4a "poke: the path is listed with ls -A" 'grep -q -- "
 check R1 "roots list is one plain constant: /mnt /media /run/media" '[ "$(grep -cE "^_DRIVE_ROOTS=\"/mnt /media /run/media\"" "$SRC")" = 1 ]'
 roots_under_env() { printf '%s\necho "$_DRIVE_ROOTS"\n' "$(grep -E '^_DRIVE_ROOTS=' "$SRC")" | env _DRIVE_ROOTS=/evil bash; }
 check R2 "the environment cannot change the production roots (assignment, no :- default)" '[ "$(roots_under_env)" = "/mnt /media /run/media" ]'
+check R3 "no per-feature roots list or env override left (_MIRROR_DRIVE_ROOTS, _SMB_DRIVE_ROOTS)" '[ "$(grep -cE "_MIRROR_DRIVE_ROOTS|_SMB_DRIVE_ROOTS" "$SRC")" = 0 ]'
+src_tests() { grep -cE '"\$s" != /dev/\*|case "\$s" in /dev/\*' "$SRC"; }
+check R4 "the SOURCE /dev/* test lives in _drive_verdict and the standalone disk-check only; no mountpoint -q left" '[ "$(src_tests)" = 2 ] && [ "$(grep -v "^ *#" "$SRC" | grep -c "mountpoint -q")" = 0 ]'
 
 check_total

@@ -38,12 +38,16 @@ check 2d "no stale 0.9.5 fallback left" '! grep -q "0\.9\.5" "$S"'
 # that hops to the right step; Back and junk return 2 (clean back, no DONE banner)
 _on_server() { echo "$1" > "$T/called"; }
 pick() { rm -f "$T/called"; MENU=$(printf '%s\n' "$1" | step_immich 2>&1); RC=$?; CALLED=$(cat "$T/called" 2>/dev/null); }
-ACTIONS="1:step_immich_status:Status 2:step_immich_start:Start 3:step_immich_stop:Stop 4:step_immich_update:Update 5:step_immich_install:Install 6:step_immich_config:Config 7:step_immich_upload:Upload 8:step_immich_fix_gp:Fix_Google 9:step_immich_backup_once:Backup_-_One-time 10:step_immich_backup:Scheduled_-_Set_up 11:_immich_backup_status:Scheduled_-_Status 12:_immich_backup_run:Scheduled_-_Run_now 13:_immich_backup_remove:Scheduled_-_Remove"
+ACTIONS="1:step_immich_status:Status 2:step_immich_update:Update 3:step_immich_install:Install 4:step_immich_config:Config 5:step_immich_upload:Upload 6:step_immich_fix_gp:Fix_Google 7:step_immich_backup_once:Backup_-_One-time 8:step_immich_backup:Scheduled_-_Set_up 9:_immich_backup_status:Scheduled_-_Status 10:_immich_backup_run:Scheduled_-_Run_now 11:_immich_backup_remove:Scheduled_-_Remove"
 for a in $ACTIONS; do
   n=${a%%:*}; rest=${a#*:}; fn=${rest%%:*}; label=${rest#*:}; label=${label//_/ }
   pick "$n"
   check "3-$n" "menu $n -> $fn (label '$label' listed)" '[ "$CALLED" = "$fn" ] && [[ "$MENU" == *"$label"* ]]'
 done
+# D7: federver -> 7 is the only start/stop path; Immich's menu has none and its functions are gone
+check 3e "no Start/Stop item in the Immich menu, and a hint points at federver -> 7" 'pick 1; ! sed -E "s/\x1b\[[0-9;]*m//g" <<<"$MENU" | grep -qE "^ +[0-9]+\) +(Start|Stop)" && [[ "$MENU" == *"federver → 7"* ]]'
+check 3f "step_immich_start / step_immich_stop no longer exist; nothing calls them" '! grep -qE "step_immich_(start|stop)" "$S"'
+check 3g "the submenu is numbered 1..11 contiguously, arrows are ←, arrow column aligned" 'seq=$(sed -E "s/\x1b\[[0-9;]*m//g" <<<"$MENU" | grep -oE "^ +[0-9]+\)" | tr -dc "0-9\n" | paste -sd, -); [ "$seq" = "1,2,3,4,5,6,7,8,9,10,11,0" ] && [[ "$MENU" != *"<-"* ]] && [ "$(sed -E "s/\x1b\[[0-9;]*m//g" <<<"$MENU" | grep "←" | grep -v "Start / Stop" | awk "{print index(\$0,\"←\")}" | sort -u | wc -l)" = 1 ]'
 pick 0;  check 3a "0 = Back: rc 2, nothing run" '[ $RC = 2 ] && [ -z "$CALLED" ]'
 pick x;  check 3b "junk: rc 2, nothing run" '[ $RC = 2 ] && [ -z "$CALLED" ] && [[ "$MENU" == *"Invalid choice"* ]]'
 check 3c "the backup items point straight at the existing scheduled-backup functions (no 'bash setup.sh --run' hop)" 'grep -q "_on_server step_immich_backup ;;" "$S" && grep -q "_on_server _immich_backup_status ;;" "$S" && grep -q "_on_server _immich_backup_run ;;" "$S" && grep -q "_on_server _immich_backup_remove ;;" "$S" && ! grep -q "setup.sh --run" <(extract_fn step_immich "$S")'
@@ -56,7 +60,7 @@ cp "$S" "$SB/copy/setup.sh"; cp "$ROOT/package.json" "$ROOT/docker-compose.yml" 
 mkdir -p "$SB/copy/scripts"; printf '#!/bin/bash\nexit 0\n' > "$SB/copy/scripts/google-takeout-fix.sh"
 for c in docker curl sudo systemctl rsync git; do printf '#!/bin/bash\nexit 0\n' > "$SB/bin/$c"; done
 chmod +x "$SB/bin/"*
-for fn in step_immich_status step_immich_start step_immich_stop step_immich_update step_immich_install step_immich_config step_immich_upload step_immich_fix_gp step_immich_backup_once; do
+for fn in step_immich_status step_immich_update step_immich_install step_immich_config step_immich_upload step_immich_fix_gp step_immich_backup_once; do
   OUT=$(cd "$SB/copy" && HOME=$SB/home PATH="$SB/bin:$PATH" timeout 30 bash ./setup.sh --run "$fn" </dev/null 2>&1)
   check "4-$fn" "--run $fn dispatches (defined, runs its own code)" '[[ "$OUT" != *"is not defined"* ]] && [[ "$OUT" != *"pulling latest"* ]]'
 done

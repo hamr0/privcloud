@@ -3791,39 +3791,36 @@ PersistentKeepalive = 25"
 # Single pass, like the other submenus: run one action, then back to the main menu.
 step_immich() {
     echo ""
-    echo -e "  ${BOLD}1)${NC}  Status                          ${DIM}<- containers, storage, recent errors${NC}"
-    echo -e "  ${BOLD}2)${NC}  Start                           ${DIM}<- bring Immich up, autostart on${NC}"
-    echo -e "  ${BOLD}3)${NC}  Stop                            ${DIM}<- down; stops Docker if nothing else runs${NC}"
-    echo -e "  ${BOLD}4)${NC}  Update                          ${DIM}<- pull new images, apply${NC}"
-    echo -e "  ${BOLD}5)${NC}  Install                         ${DIM}<- check Docker, first-time config, pull images${NC}"
-    echo -e "  ${BOLD}6)${NC}  Config                          ${DIM}<- change the photo storage location${NC}"
+    echo -e "  ${BOLD}1)${NC}  Status                          ${DIM}← containers, storage, recent errors${NC}"
+    echo -e "  ${BOLD}2)${NC}  Update                          ${DIM}← pull new Immich images, apply${NC}"
+    echo -e "  ${BOLD}3)${NC}  Install                         ${DIM}← check Docker, first-time config, pull images${NC}"
+    echo -e "  ${BOLD}4)${NC}  Config                          ${DIM}← change the photo storage location${NC}"
     echo ""
-    echo -e "  ${BOLD}7)${NC}  Upload photos                   ${DIM}<- bulk-upload a folder on the server (Immich CLI)${NC}"
-    echo -e "  ${BOLD}8)${NC}  Fix Google Photos metadata      ${DIM}<- Takeout export: dates and GPS${NC}"
+    echo -e "  ${BOLD}5)${NC}  Upload photos                   ${DIM}← bulk-upload a folder on the server (Immich CLI)${NC}"
+    echo -e "  ${BOLD}6)${NC}  Fix Google Photos metadata      ${DIM}← Takeout export: dates and GPS${NC}"
     echo ""
-    echo -e "  ${BOLD}9)${NC}  Backup - One-time               ${DIM}<- copy photos + database to a drive now${NC}"
-    echo -e "  ${BOLD}10)${NC} Backup - Scheduled - Set up     ${DIM}<- weekly systemd timer, no downtime${NC}"
-    echo -e "  ${BOLD}11)${NC} Backup - Scheduled - Status     ${DIM}<- schedule, next/last run, recent runs${NC}"
-    echo -e "  ${BOLD}12)${NC} Backup - Scheduled - Run now    ${DIM}<- start a backup in the background${NC}"
-    echo -e "  ${BOLD}13)${NC} ${RED}Backup - Scheduled - Remove${NC}    ${DIM}<- delete the schedule (keeps files)${NC}"
+    echo -e "  ${BOLD}7)${NC}  Backup - One-time               ${DIM}← copy photos + database to a drive now${NC}"
+    echo -e "  ${BOLD}8)${NC}  Backup - Scheduled - Set up     ${DIM}← weekly systemd timer, no downtime${NC}"
+    echo -e "  ${BOLD}9)${NC}  Backup - Scheduled - Status     ${DIM}← schedule, next/last run, recent runs${NC}"
+    echo -e "  ${BOLD}10)${NC} Backup - Scheduled - Run now    ${DIM}← start a backup in the background${NC}"
+    echo -e "  ${BOLD}11)${NC} ${RED}Backup - Scheduled - Remove${NC}     ${DIM}← delete the schedule (keeps files)${NC}"
     echo -e "  ${BOLD}0)${NC}  Back"
+    echo -e "  ${DIM}Start / Stop / Restart: federver → 7 (Manage services)${NC}"
     echo ""
     local c
-    read -p "  Choice [0-13]: " c
+    read -p "  Choice [0-11]: " c
     case "$c" in
         1)  _on_server step_immich_status ;;
-        2)  _on_server step_immich_start ;;
-        3)  _on_server step_immich_stop ;;
-        4)  _on_server step_immich_update ;;
-        5)  _on_server step_immich_install ;;
-        6)  _on_server step_immich_config ;;
-        7)  _on_server step_immich_upload ;;
-        8)  _on_server step_immich_fix_gp ;;
-        9)  _on_server step_immich_backup_once ;;
-        10) _on_server step_immich_backup ;;
-        11) _on_server _immich_backup_status ;;
-        12) _on_server _immich_backup_run ;;
-        13) _on_server _immich_backup_remove ;;
+        2)  _on_server step_immich_update ;;
+        3)  _on_server step_immich_install ;;
+        4)  _on_server step_immich_config ;;
+        5)  _on_server step_immich_upload ;;
+        6)  _on_server step_immich_fix_gp ;;
+        7)  _on_server step_immich_backup_once ;;
+        8)  _on_server step_immich_backup ;;
+        9)  _on_server _immich_backup_status ;;
+        10) _on_server _immich_backup_run ;;
+        11) _on_server _immich_backup_remove ;;
         0|"") return 2 ;;
         *)  fail "Invalid choice."; return 2 ;;
     esac
@@ -3831,6 +3828,9 @@ step_immich() {
 
 _IMMICH_ENV="$(dirname "$_FV_SELF")/.env"
 _IMMICH_COMPOSE="$(dirname "$_FV_SELF")/docker-compose.yml"
+# The compose services that are Immich (the file also holds Navidrome, FileBrowser,
+# Watchtower, Uptime Kuma). Install/Update name only these; lifecycle is federver -> 7.
+_IMMICH_SERVICES=(immich-server immich-machine-learning redis database)
 
 # The `privcloud` command is gone (federver -> i replaces it). Older installs
 # left a wrapper behind that now points at a file that no longer exists; remove it.
@@ -3910,19 +3910,20 @@ _immich_ensure_docker() { # step
 }
 
 # Compose gives some services restart: always, and an earlier Stop leaves
-# restart=no. After bringing the stack up, make every container of it
+# restart=no. After bringing Immich up, make each of its containers (only the
+# _IMMICH_SERVICES: a Navidrome stopped on purpose must stay stopped)
 # unless-stopped with the same rule the Services menu's Start applies
 # (_svc_power start: sets the policy, starts, reads both back). The stack is
 # already up, so a failure warns (visibly) and returns 0: it must not abort the
 # caller before it waits for Immich / reports the update.
 _immich_keep_autostart() {
     local ids id rc=0
-    ids="$(_immich_compose ps -aq)" || rc=1
+    ids="$(_immich_compose ps -aq "${_IMMICH_SERVICES[@]}")" || rc=1
     if (( rc == 0 )); then
         for id in $ids; do _svc_power start "$id" || rc=1; done
     fi
     if (( rc )); then
-        warn "Could not set autostart on the containers - they're running now but may not come back after a reboot. Re-run start or use federver -> Manage services -> Start."
+        warn "Could not set autostart on the containers - they're running now but may not come back after a reboot. Use federver -> 7 -> 2 (Start)."
     fi
     return 0
 }
@@ -3965,64 +3966,9 @@ step_immich_install() {
 
     echo ""
     echo -e "  ${BOLD}Pulling images (first time takes a few minutes)...${NC}"
-    _immich_compose pull || { fail "Pulling the images failed."; return 1; }
+    _immich_compose pull "${_IMMICH_SERVICES[@]}" || { fail "Pulling the images failed."; return 1; }
     echo ""
-    ok "Install complete. Next: federver -> i -> Start"
-}
-
-step_immich_start() {
-    _immich_need_env || return 1
-    _immich_ensure_docker "$FUNCNAME" || return 1
-
-    if _immich_up; then
-        ok "Already running."
-        echo ""
-        _immich_urls
-        return 0
-    fi
-
-    _immich_fix_permissions
-
-    _immich_compose up -d || { fail "docker compose up failed."; return 1; }
-    _immich_keep_autostart
-
-    echo ""
-    printf "  Waiting for Immich"
-    local attempts=0
-    while (( attempts < 30 )); do
-        if _immich_up; then
-            echo ""
-            echo ""
-            ok "Immich is running."
-            echo ""
-            _immich_urls
-            echo ""
-            info "Both devices must be on the same WiFi."
-            info "Stop with: federver -> i -> Stop"
-            return 0
-        fi
-        sleep 2
-        attempts=$((attempts + 1))
-        printf "."
-    done
-    echo ""
-    warn "Taking longer than expected. Check: federver -> i -> Status"
-}
-
-step_immich_stop() {
-    _immich_need_env || return 1
-    _immich_ensure_docker "$FUNCNAME" || return 1
-
-    _immich_compose down || { fail "docker compose down failed."; return 1; }
-
-    # Stop the Docker daemon if no other containers are running
-    if [[ -z "$(docker ps -q 2>/dev/null)" ]]; then
-        info "No other containers running. Stopping Docker..."
-        sudo systemctl stop docker docker.socket
-        ok "Docker stopped."
-    fi
-
-    ok "Stopped. Your photos are safe on disk."
+    ok "Install complete. Next: federver -> 7 -> 6 (Deploy) starts Immich"
 }
 
 step_immich_status() {
@@ -4105,7 +4051,7 @@ step_immich_status() {
         if ! $has_containers; then
             warn "No containers running."
             echo ""
-            info "Run: federver -> i -> Start"
+            info "Run: federver -> 7 -> 2 (Start Immich)"
             return 0
         fi
     fi
@@ -4206,7 +4152,7 @@ step_immich_update() {
     before_ml="$(docker images -q "ghcr.io/immich-app/immich-machine-learning:${ver}" 2>/dev/null || echo "")"
 
     info "Checking for updates..."
-    _immich_compose pull --quiet 2>/dev/null || { fail "Could not pull the images. Check the server's internet connection."; return 1; }
+    _immich_compose pull --quiet "${_IMMICH_SERVICES[@]}" 2>/dev/null || { fail "Could not pull the images. Check the server's internet connection."; return 1; }
 
     after_server="$(docker images -q "ghcr.io/immich-app/immich-server:${ver}" 2>/dev/null || echo "")"
     after_ml="$(docker images -q "ghcr.io/immich-app/immich-machine-learning:${ver}" 2>/dev/null || echo "")"
@@ -4229,7 +4175,7 @@ step_immich_update() {
     fi
 
     echo ""
-    _immich_compose up -d || { fail "docker compose up failed."; return 1; }
+    _immich_compose up -d "${_IMMICH_SERVICES[@]}" || { fail "docker compose up failed."; return 1; }
     _immich_keep_autostart
 
     echo ""
@@ -4245,7 +4191,7 @@ step_immich_upload() {
     _immich_docker_group "$FUNCNAME"
 
     if ! _immich_up; then
-        fail "Immich is not running. Start it first: federver -> i -> Start"
+        fail "Immich is not running. Start it first: federver -> 7 -> 2 (Start)"
         return 1
     fi
 
@@ -4521,10 +4467,10 @@ step_immich_backup_once() {
     echo "    1. Clone privcloud, then federver -> i -> Install"
     $do_photos && echo "    2. Point config to the backed-up photos directory"
     if $do_db && $pg_running; then
-        echo "    3. Start Immich (federver -> i -> Start), then load the dump:"
+        echo "    3. Start Immich (federver -> 7 -> 2), then load the dump:"
         echo "         gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres"
     elif $do_db; then
-        echo "    3. Copy db/postgres/ and .env back, then federver -> i -> Start"
+        echo "    3. Copy db/postgres/ and .env back, then federver -> 7 -> 2 (Start)"
     fi
     return 0
 }

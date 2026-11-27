@@ -182,4 +182,48 @@ check 4h "Set up, crontab read fails: refuses before touching anything" '[ $RC =
 fresh; printf '%s\n' "$LEG" > "$CRON_FILE"; go "y\n" _immich_backup_remove
 check 4i "Remove: legacy-cron-only schedule is detected, removed and verified" '[ $RC = 0 ] && [ ! -s "$CRON_FILE" ]'
 
+# ── 5  one generated script, values read at run time (D3, D7) ──────────────
+for odd in 'a|b' 'a&b' 'a\b' 'a b' 'a|&\ b$c'; do
+  fresh; D="$T/drive/$odd"; mkdir -p "$D"
+  go "${D//\\/\\\\}\ny\n1\nn\n" step_immich_backup; runbk   # go() runs printf %b: double the backslash
+  check "5a" "destination '$odd' round-trips: configured dir, conf, and the run lands there" '[ "$(bash "$T/app/run.sh" --run _configured_backup_dir)" = "$D" ] && [ -f "$D/immich/photos/library/u1/a.jpg" ] && ls "$D"/immich/db/immich-db-*.sql.gz >/dev/null 2>&1 && ! grep -q "__BACKUP_DIR__" "$BIN"'
+done
+fresh; setup_sched
+check 5b "conf: 644 (paths only, Status reads it without sudo), script 755" '[ "$(mode "$CONF")" = 644 ] && [ "$(mode "$BIN")" = 755 ] && grep -q "^REPO_DIR=$T/app\$" "$CONF" && grep -q "^BACKUP_DIR=$DEST\$" "$CONF" && grep -q "^RETENTION_DAYS=7\$" "$CONF"'
+mkdir -p "$T/up2/library"; echo moved > "$T/up2/library/m.jpg"
+printf 'UPLOAD_LOCATION=%s/up2\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T" "$T" > "$T/app/.env"
+BEFORE=$(cksum < "$BIN"); runbk
+check 5c ".env UPLOAD_LOCATION changed: the next run uses it, script not regenerated" '[ $RC = 0 ] && [ -f "$DEST/immich/photos/library/m.jpg" ] && [ "$(cksum < "$BIN")" = "$BEFORE" ]'
+printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T" "$T" > "$T/app/.env"
+echo "# tampered" >> "$BIN"; go "\ny\n1\nn\n" step_immich_backup
+check 5d "every Set up regenerates the script (a hand-edit does not survive)" '! grep -q tampered "$BIN" && bash -c "source $T/app/run.sh; _immich_backup_script $CONF $LOG" | cmp -s - "$BIN"'
+check 5e "the installed script has no sed placeholders and parses" '! grep -q "__[A-Z_]*__" "$BIN" && bash -n "$BIN"'
+rm -f "$BIN" "$CONF"
+printf '%s\ny\n1\nn\n' "$DEST" | bash -c "source $T/app/run.sh; _immich_backup_script() { echo 'if then'; }; step_immich_backup" >"$T/o.txt" 2>&1; RC=$?; OUT=$(cat "$T/o.txt")
+check 5f "a generated script that does not parse is never installed" '[ $RC = 1 ] && [ ! -e "$BIN" ] && [ ! -e "$CONF" ] && [[ "$OUT" == *"syntax error"* ]]'
+fresh; setup_sched; FAIL_DUMP=1 runbk
+check 5g "DB dump fails (pg_dumpall exit 1 behind gzip): rc non-zero, logged FAILED, no dump file left" '[ $RC != 0 ] && [[ "$LOGTXT" == *"DB dump FAILED"* ]] && tail -n 1 "$LOG" | grep -q "Backup FAILED" && ! ls "$DEST"/immich/db/immich-db-* >/dev/null 2>&1 && [ -f "$DEST/immich/photos/library/u1/a.jpg" ]'
+runbk
+check 5h "dumps are owner-only (600)" '[ "$(mode "$(ls "$DEST"/immich/db/immich-db-*.sql.gz | head -1)")" = 600 ]'
+rm -f "$CONF"; runbk
+check 5i "config missing at run time: rc 1, logged, nothing copied" '[ $RC = 1 ] && [[ "$LOGTXT" == *"config "*" missing - run Set up again"* ]] && tail -n 1 "$LOG" | grep -q "Backup FAILED (exit 1)"'
+setup_sched
+runbk --mirror; r1=$RC; runbk --scope photos; r2=$RC; runbk --once; r3=$RC
+check 5j "scheduled runs never take mirror/once/scope flags: usage error 64" '[ $r1 = 64 ] && [ $r2 = 64 ] && [ $r3 = 64 ]'
+
+# ── 6  outdated installs (script from before the conf file) ────────────────
+fresh; mkdir -p "$(dirname "$BIN")"
+printf '#!/bin/bash\nBACKUP_DIR="%s"\nUPLOAD_LOCATION="%s/up"\nRETENTION_DAYS=7\n' "$DEST" "$T" > "$BIN"; chmod +x "$BIN"
+printf '[Timer]\nOnCalendar=*-*-* 03:00:00\n' > "$UNITS/immich-backup.timer"
+go "" _immich_backup_status
+check 6a "Status: an installed script with no conf is flagged 'outdated - run Set up again'" '[[ "$OUT" == *"outdated - run Set up again"* ]]'
+check 6b "its destination is still found (baked in the old script), so Set up keeps offering it" '[ "$(bash "$T/app/run.sh" --run _configured_backup_dir)" = "$DEST" ]'
+check 6c "Status does not rewrite root files: script and conf untouched" '[ ! -e "$CONF" ] && ! grep -q "Format: 2" "$BIN"'
+go "\ny\n1\nn\n" step_immich_backup
+check 6d "Set up again (Enter keeps the destination) upgrades it" '[ -r "$CONF" ] && grep -q "^# Format: 2" "$BIN" && [ "$(bash "$T/app/run.sh" --run _configured_backup_dir)" = "$DEST" ]'
+go "" _immich_backup_status
+check 6e "after the upgrade Status is clean" '[[ "$OUT" != *outdated* ]]'
+rm -f "$CONF"; go "" _immich_backup_status
+check 6f "a new-format script whose conf is gone is outdated too" '[[ "$OUT" == *"outdated - run Set up again"* ]]'
+
 check_total

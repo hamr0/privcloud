@@ -5133,13 +5133,14 @@ _mirror_dry_cmd() { _rsync_with "$1" "-n --delete --out-format='%o|%n'"; }
 _rsync_with() { printf 'rsync %s %s' "$2" "${1#rsync }"; }
 
 # Guard + dry run + typed y/N. _mirror_preview <loc> <src> <dest-label> <dry-cmd> <copy|save>
-#   copy: "Delete these N files at the destination?" (skipped when there is nothing to delete)
-#   save: scheduled job, always asks "Save this job as mirror?"
-# rc 0 = go ahead (_mirror_n = files + empty folders that will be deleted); 1 = refused,
-# failed or cancelled - the caller copies / saves nothing.
+#   copy: prints the summary only; the caller asks later with _mirror_confirm
+#   save: scheduled job, asks "Save this job as mirror?" itself
+# rc 0 = go ahead (_mirror_n = files + empty folders that will be deleted, plus
+# _mirror_what / _mirror_want for the question); 1 = refused, failed or cancelled
+# - the caller copies / saves nothing.
 _mirror_preview() {
-    local loc=$1 src=$2 dest=$3 dry=$4 ask=$5 rc=0 nf nd what="" reply="" sdir list
-    _mirror_n=0
+    local loc=$1 src=$2 dest=$3 dry=$4 ask=$5 rc=0 nf nd what="" sdir list
+    _mirror_n=0; _mirror_want=""; _mirror_what=""
     if ! _mirror_guard "$loc" "$src"; then _mirror_refuse "$src"; return 1; fi
     # The dry run reads both trees and can take minutes, so say what is going on
     # and (on a terminal) tick the elapsed seconds on that line. The full output
@@ -5243,29 +5244,55 @@ _mirror_preview() {
         (( ng > 5 )) && echo "    ... and $((ng - 5)) more folders"
         echo "  Full list: $list"
     fi
-    _mirror_flush   # keys typed during the dry run must not answer the question
-    if (( _mirror_n > 0 && (nwhole > 0 || nf > MIRROR_WIPE_MIN) )); then
-        # Wipe guard: a plain y/N is too easy to hit. Type the exact count.
-        local want=$(( nf > 0 ? nf : nd ))
-        if [[ "$ask" == save ]]; then
-            echo -en "  ${RED}Type ${want} to save this job as mirror, Enter = cancel:${NC} "
+    # What the one question will say (asked by _mirror_delete_q): a wipe-sized
+    # deletion needs the exact count typed instead of a y/N.
+    _mirror_what=$what
+    _mirror_want=""
+    (( _mirror_n > 0 && (nwhole > 0 || nf > MIRROR_WIPE_MIN) )) && _mirror_want=$(( nf > 0 ? nf : nd ))
+    # A one-time copy asks after its summary box (_mirror_confirm); a scheduled
+    # job asks here, once, at creation.
+    [[ "$ask" == save ]] && { _mirror_delete_q save; return; }
+    return 0
+}
+
+# The deletion question: typed count when the wipe guard applied, else y/N.
+# Wording follows the mode: copy = "... and copy", save = "... save this job".
+# rc 0 = confirmed; 1 = cancelled (nothing changed).
+_mirror_delete_q() {  # copy|save
+    local reply=""
+    _mirror_flush   # keys typed during the dry run / before the box must not answer it
+    if [[ -n "$_mirror_want" ]]; then
+        if [[ "$1" == save ]]; then
+            echo -en "  ${RED}Type ${_mirror_want} to save this job as mirror, Enter = cancel:${NC} "
         else
-            echo -en "  ${RED}Type ${want} to delete, Enter = cancel:${NC} "
+            echo -en "  ${RED}Type ${_mirror_want} to delete and copy, Enter = cancel:${NC} "
         fi
         read -r reply || reply=""
-        if [[ "$reply" == "$want" ]]; then return 0; fi
+        if [[ "$reply" == "$_mirror_want" ]]; then return 0; fi
         info "Cancelled - nothing changed."
         return 1
     fi
-    if [[ "$ask" == save ]]; then
+    if [[ "$1" == save ]]; then
         printf '  Save this job as mirror? [y/N]: '
     else
-        printf '  Delete these %s at the destination? [y/N]: ' "$what"
+        printf '  Delete these %s and copy? [y/N]: ' "$_mirror_what"
     fi
     read -r reply || reply=""
     if [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]; then return 0; fi
     info "Cancelled - nothing changed."
     return 1
+}
+
+# The single confirmation of a one-time copy, asked right after its summary box.
+# Append (or a mirror with nothing to delete): Proceed? [y/N]. Mirror with
+# deletions: the deletion question from the preview replaces Proceed?.
+# rc 0 = go; 1 = cancelled.
+_mirror_confirm() {
+    if [[ "$sync_mode" == mirror ]] && (( _mirror_n > 0 )); then _mirror_delete_q copy; return; fi
+    _mirror_flush
+    read -p "  Proceed? [y/N] " -n 1 -r
+    echo ""
+    [[ $REPLY =~ ^[Yy]$ ]] || { info "Cancelled."; return 1; }
 }
 
 # MODE=/DELFLAG/guard block of a sync-job script, between markers so
@@ -5429,6 +5456,8 @@ _sync_execute_or_schedule() {
         1)
             if [[ "$mode" == mirror ]]; then
                 _mirror_preview "$src_loc" "$src_path" "$dest_path" "$dry_cmd" copy || return 2
+                # Run now has no summary box: the deletion question is the one question.
+                (( _mirror_n > 0 )) && { _mirror_delete_q copy || return 2; }
             fi
             [[ -n "$pre_cmd" ]] && bash -c "$pre_cmd"
             bash -c "$run_cmd" || { fail "Sync failed."; return 1; }
@@ -6526,9 +6555,7 @@ _sync_one_time_backup() {
             _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-            read -p "  Proceed? [y/N] " -n 1 -r
-            echo ""
-            [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
+            _mirror_confirm || return
 
             ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p $(_shq "$dest_display") && sudo chown $SERVER_USER:$SERVER_USER $(_shq "$dest_display")" || { fail "Could not prepare destination."; return 1; }
             rsync -avh --progress "${mirror_flag[@]}" "$rsync_src" "$SERVER_USER@$SERVER_IP:$dst_path/" || { fail "Backup failed."; return 1; }
@@ -6586,9 +6613,7 @@ _sync_one_time_backup() {
             $dst_needs_priv && echo -e "  ${DIM}Destination isn't writable — it's written under local sudo.${NC}"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-            read -p "  Proceed? [y/N] " -n 1 -r
-            echo ""
-            [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
+            _mirror_confirm || return
 
             # Authorize LOCAL sudo for this one copy, if the destination needs it.
             # Local sudo tickets survive between commands (same controlling terminal
@@ -6737,9 +6762,7 @@ _sync_one_time_backup() {
             _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
-            read -p "  Proceed? [y/N] " -n 1 -r
-            echo ""
-            [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
+            _mirror_confirm || return
 
             mkdir -p "$dst_path" || { fail "Could not create destination."; return 1; }
             rsync -avh --progress "${mirror_flag[@]}" "$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
@@ -6788,9 +6811,7 @@ _sync_one_time_backup() {
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             info "Runs with sudo on the server (Immich data is root-owned); you may be prompted for the server password."
 
-            read -p "  Proceed? [y/N] " -n 1 -r
-            echo ""
-            [[ ! $REPLY =~ ^[Yy]$ ]] && { unset _SRV_PW; info "Cancelled."; return; }
+            _mirror_confirm || { unset _SRV_PW; return; }
 
             if [[ "$sync_mode" == mirror ]]; then
                 _server_sudo_run "exec 2>&1; mkdir -p $(_shq "$dest_display") && $(_rsync_with "$append_cmd" --delete)" || { unset _SRV_PW; fail "Mirror failed."; return 1; }

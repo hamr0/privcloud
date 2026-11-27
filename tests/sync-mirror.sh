@@ -23,7 +23,7 @@ fn() { awk -v n="$1" '
   grep -m1 '^_shq()' "$SRC"
   grep -E '^MIRROR_WIPE_MIN=' "$SRC"
   for f in _mirror_check_here _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
-           _mirror_preview _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
+           _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
            _sync_mode_cell _sync_last_note _sync_last_result _sync_change_mode \
            _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _cron_to_english _sync_one_time_backup; do fn "$f"; done; } > "$T/fn.sh"
@@ -110,7 +110,7 @@ mk; run "${ONE}delete\ny\n$Y" LOCALCMD
 check 2a "delete + y: extras removed, source files copied" 'copied && extras_gone'
 check 2b "preview header names the count and destination" '[[ "$OUT" == *"⚠ 3 files would be deleted at $T/d:"* ]]'
 check 2c "preview shows the folder summary before asking" 'PRE=${OUT%%Delete these*}; [[ "$PRE" == *"(top level)  2 files"* && "$PRE" == *"sub/  1 file"* && "$PRE" == *"Full list: "* ]]'
-check 2d "confirm wording" '[[ "$OUT" == *"Delete these 3 files at the destination? [y/N]: "* ]]'
+check 2d "confirm wording" '[[ "$OUT" == *"Delete these 3 files and copy? [y/N]: "* ]]'
 check 2e "success line counts the deletions" '[[ "$OUT" == *"✓ Mirror complete - 3 deleted, destination matches source."* ]]'
 mk; for i in 1 2 3 4 5 6 7; do echo x > "$T/d/extra$i"; done
 run "${ONE}delete\ny\n$Y" LOCALCMD
@@ -163,7 +163,7 @@ empties_kept() { [ -d "$T/d/e1" ] && [ -d "$T/d/e2" ]; }
 empties_gone() { [ ! -e "$T/d/e1" ] && [ ! -e "$T/d/e2" ] && [ -e "$T/d/sub/b" ]; }
 mkempty; run "${ONE}delete\ny\n$Y" LOCALCMD
 check 5c "only empty folders to remove: warned, not 'Nothing to delete'" '[[ "$OUT" == *"⚠ 2 empty folders would be removed at $T/d:"* && "$OUT" == *"e1/"* && "$OUT" != *"Nothing to delete"* ]]'
-check 5d "empty-folders-only still asks y/N, then removes them" '[[ "$OUT" == *"Delete these 2 empty folders at the destination? [y/N]: "* ]] && empties_gone && [[ "$OUT" == *"Mirror complete - 2 deleted"* ]]'
+check 5d "empty-folders-only still asks y/N, then removes them" '[[ "$OUT" == *"Delete these 2 empty folders and copy? [y/N]: "* ]] && empties_gone && [[ "$OUT" == *"Mirror complete - 2 deleted"* ]]'
 mkempty; run "${ONE}delete\nn\n$Y" LOCALCMD
 check 5e "empty-folders-only + n: nothing removed" 'empties_kept && [[ "$OUT" == *"Cancelled - nothing changed."* ]]'
 mkempty; mkdir "$T/d/e3" "$T/d/e4" "$T/d/e5" "$T/d/e6" "$T/d/e7"
@@ -171,13 +171,42 @@ run "${ONE}delete\nn\n$Y" LOCALCMD
 check 5f "more than 5 empty folders: 5 groups then '... and M more folders'" '[[ "$OUT" == *"⚠ 7 empty folders would be removed"* && "$OUT" == *"... and 2 more folders"* ]]'
 mkempty; rm -rf "$T/d/e2"
 run "${ONE}delete\nn\n$Y" LOCALCMD
-check 5g "one empty folder is singular" '[[ "$OUT" == *"⚠ 1 empty folder would be removed at $T/d:"* && "$OUT" == *"Delete these 1 empty folder at the destination? [y/N]: "* ]]'
+check 5g "one empty folder is singular" '[[ "$OUT" == *"⚠ 1 empty folder would be removed at $T/d:"* && "$OUT" == *"Delete these 1 empty folder and copy? [y/N]: "* ]]'
 mk; mkdir "$T/d/e1" "$T/d/full"; echo f > "$T/d/full/f"
 run "${ONE}delete\n4\n$Y" LOCALCMD   # full/ goes whole: type the count
-check 5h "files and empty folders: file count kept, '(+ N empty folder)' added; a folder holding deleted files is not counted" '[[ "$OUT" == *"⚠ 4 files (+ 1 empty folder) would be deleted at $T/d:"* && "$OUT" == *"Type 4 to delete, Enter = cancel: "* ]] && extras_gone && [ ! -e "$T/d/e1" ] && [ ! -e "$T/d/full" ]'
+check 5h "files and empty folders: file count kept, '(+ N empty folder)' added; a folder holding deleted files is not counted" '[[ "$OUT" == *"⚠ 4 files (+ 1 empty folder) would be deleted at $T/d:"* && "$OUT" == *"Type 4 to delete and copy, Enter = cancel: "* ]] && extras_gone && [ ! -e "$T/d/e1" ] && [ ! -e "$T/d/full" ]'
 mk; rm -rf "$T/d"; mkdir -p "$T/d/sub"; echo a > "$T/d/a"; echo b > "$T/d/sub/b"
 run "${ONE}delete\n$Y" LOCALCMD
 check 5i "nothing at all to delete still says so (no folders either)" '[[ "$OUT" == *"✓ Nothing to delete - destination has no extra files."* && "$OUT" != *"empty folder"* && "$OUT" != *"Delete these"* ]]'
+
+# ── 5b  ONE confirmation per one-time mirror copy, asked after the summary box ──
+# (read -p prints no prompt on a pipe, so a Proceed? read is proved by the answer it consumes.)
+# Input has NO extra answer for a second question: the old flow (delete question
+# + Proceed?) read EOF at Proceed? and cancelled.
+box_then_q() { local a=${OUT%%"$1"*}; [[ "$OUT" == *"$1"* && ( "$a" == *"One-time local copy"* || "$a" == *"One-time download"* || "$a" == *"One-time server copy"* ) ]]; }
+nq() { grep -o '\[y/N\]' <<<"$OUT" | wc -l; }
+mk; run "${ONE}delete\ny\n" LOCALCMD
+check 5ja "local mirror, 3 deletions, ONE y: copies and deletes" 'copied && extras_gone'
+check 5jb "exactly one [y/N], no Proceed?, asked after the summary box" '[ "$(nq)" = 1 ] && [[ "$OUT" != *"Proceed?"* ]] && box_then_q "Delete these 3 files and copy? [y/N]: "'
+check 5jc "the preview (summary, full list) still prints before the box" 'PRE=${OUT%%"One-time local copy"*}; [[ "$PRE" == *"3 files would be deleted"* && "$PRE" == *"Full list: "* ]]'
+mk; run "${ONE}delete\n" LOCALCMD
+check 5jd "Enter at the one question cancels: nothing copied or deleted" '! copied && extras_kept && [[ "$OUT" == *"Cancelled - nothing changed."* ]]'
+mk; mkdir -p "$T/d/full"; echo f > "$T/d/full/f"; run "${ONE}delete\n4\n" LOCALCMD
+check 5jf "wipe guard: typed count is the only question, copy runs" 'box_then_q "Type 4 to delete and copy, Enter = cancel: " && [ "$(nq)" = 0 ] && [[ "$OUT" != *"Proceed?"* ]] && extras_gone && copied'
+mk; mkdir -p "$T/d/full"; echo f > "$T/d/full/f"; run "${ONE}delete\ny\n" LOCALCMD
+check 5jg "wipe guard + y: cancelled" '! copied && extras_kept'
+mk; rm -rf "$T/d"; mkdir "$T/d"; run "${ONE}delete\ny\n" LOCALCMD
+check 5jh "mirror with nothing to delete: only the Proceed? read (one answer), no deletion question" 'copied && [ "$(nq)" = 0 ] && [[ "$OUT" != *"Delete these"* ]]'
+mk; run "${ONE}\ny" LOCALCMD
+check 5ji "append: unchanged, one Proceed? read, no deletion question" 'copied && extras_kept && [[ "$OUT" != *"Delete these"* ]]'
+mk; _pl=1; run "2\ndelete\ny\n" LOCALCMD
+check 5jj "download: one question" 'copied && extras_gone && [ "$(nq)" = 1 ] && [[ "$OUT" != *"Proceed?"* ]]'
+mk; run "4\ndelete\ny\n" LOCALCMD
+check 5jk "server -> server: one question" 'copied && extras_gone && [ "$(nq)" = 1 ] && [[ "$OUT" != *"Proceed?"* ]]'
+mk; run "4\n\ny\n" LOCALCMD
+check 5jl "server -> server append: unchanged, Proceed? answered (not cancelled)" '[[ "$OUT" != *"Cancelled"* ]] && extras_kept'
+mk; run "1\ny\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
+check 5jm "Run now (no box): the deletion question is the only one" 'copied && extras_gone && [ "$(nq)" = 1 ] && [[ "$OUT" != *"Proceed?"* ]]'
 
 # ── 6  tar (sudo) route: no prompt, info line ─────────────────────────────
 if [ "$(id -u)" != 0 ]; then

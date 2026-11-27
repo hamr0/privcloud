@@ -1135,7 +1135,7 @@ When run directly on the server, option 12 opens a server-only submenu instead.
 - **Sync is slow from off-site** — check Syncthing dashboard → peer details. If the connection shows "Relay" it's using Syncthing's public relays (slower, bandwidth-limited). If both peers are on Tailscale, the tailnet connection should be direct — check Tailscale is up on both sides.
 - **Device ID unavailable** — container still starting up or Syncthing 2.x CLI couldn't be read. Wait 10 seconds and re-run option 12 → 2. The helper tries several CLI shapes and falls back to reading `config.xml` directly.
 - **"Remote expects to exchange plain data, but local data is encrypted"** — Folder Type mismatch. One side set `Receive Encrypted`, the other didn't set an encryption password. Either set a password on the trusted side's Sharing tab, or change the untrusted side's Folder Type to `Send & Receive`.
-- **Forgot the GUI password** — stop the container (`federver → 14 → 6`), delete `/opt/syncthing/config/config.xml`, restart. Regenerates clean. Pairings are lost (they lived in config.xml).
+- **Forgot the GUI password** — stop the container (`federver → 12 → 4`), delete `/opt/syncthing/config/config.xml`, restart. Regenerates clean. Pairings are lost (they lived in config.xml).
 
 ---
 

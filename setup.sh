@@ -657,7 +657,7 @@ WRAPPER
     echo ""
     echo -e "  Then run: ${BOLD}federver${NC} (from anywhere)"
     echo -e "  Run step 2 from laptop (not SSH) to set up key auth."
-    echo -e "  Then SSH in and continue with steps 3-11."
+    echo -e "  Then SSH in and continue with Run all (3-7)."
     echo -e "  ${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
@@ -737,7 +737,7 @@ step_docker() {
     warn "IMPORTANT: Log out and SSH back in before continuing!"
     echo -e "     ${BOLD}exit${NC}"
     echo -e "     ${BOLD}ssh $USER@$(hostname -I | awk '{print $1}')${NC}"
-    echo -e "     ${BOLD}cd federver && ./setup.sh${NC}   (then pick step 6)"
+    echo -e "     ${BOLD}cd privcloud && ./setup.sh${NC}   (then pick step 6)"
 }
 
 _fw_defaults() {
@@ -2797,7 +2797,7 @@ _syncthing_install() {
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "  ${YELLOW}NEXT: Pair your devices${NC}"
     echo ""
-    echo -e "  Laptop is already installed (option 14 handled it)."
+    echo -e "  Laptop is already installed (option 12 handled it)."
     echo -e "  For ${BOLD}phones${NC}:"
     echo -e "    Android: install ${BOLD}Syncthing${NC} from F-Droid or Play Store"
     echo -e "    iOS:     install ${BOLD}Möbius Sync${NC} from the App Store"

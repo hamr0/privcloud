@@ -18,14 +18,14 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 { for f in ok fail info warn ssh _shq _tcp_open _is_server _pick_server_endpoint _resolve_server_endpoint \
            _cron_cmd _cron_get _cron_drop _cron_set _cron_add_sync _cron_remove_line _cron_replace_line _cron_to_english \
            _drive_verdict _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
-           _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _confirm_delete \
+           _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _src_size _confirm_delete \
            _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode _sync_mode_cell _sync_last_note _sync_last_result \
            _sync_result_text _sync_change_mode _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _sync_delete_job _sync_job_delete _sync_registry_load _sync_change_schedule _sync_install_timer _sync_remove_timer \
            _sync_rec_load _sync_rec_write _sync_valid_name _sync_default_name _sync_write_launcher _sync_job_run _sync_job_go \
-           _sync_job_cmd _sync_job_import_legacy _sync_import_all_legacy _sync_tokenize _sync_setup_path _sync_run_logged; do
+           _sync_job_cmd _sync_job_import_legacy _sync_import_all_legacy _sync_tokenize _sync_setup_path _sync_run_logged _sync_one_time_backup; do
     extract_fn "$f" "$SRC"; done
-  grep -E '^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_SSH_OPTS=|^_RSYNC_FLAGS=' "$SRC"; } > "$T/fn.sh"
+  grep -E '^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_SSH_OPTS=|^export RSYNC_RSH=|^_RSYNC_FLAGS=' "$SRC"; echo 'SSH_OPTS_OK=1'; } > "$T/fn.sh"
 source "$T/fn.sh"
 type _sync_execute_or_schedule >/dev/null 2>&1 || echo "FAIL  setup: sync functions not found in $SRC"
 NEWDESIGN=; type _sync_job_run >/dev/null 2>&1 && NEWDESIGN=1
@@ -169,5 +169,39 @@ if [ -n "$NEWDESIGN" ]; then
 else
   check 4d "exit 24 today: last: failed (exit 24), job exits 24 (changes with the refactor)" '[ "$JRC" = 24 ] && [[ "$N24" == *"last: failed (exit 24)"* ]]'
 fi
+
+# ── 5  one ssh option set for rsync, and the endpoint pick ───────────────
+check 5a "ssh() and RSYNC_RSH share one option set (ConnectTimeout + keepalives)" '[[ "$_SSH_OPTS" == *ConnectTimeout=8*ServerAliveInterval=15*ServerAliveCountMax=4* && "$RSYNC_RSH" == "ssh $_SSH_OPTS" ]]'
+_tcp_open() { case "$1" in "$LAN") [ -n "$LAN_UP" ];; "$TS") [ -n "$TS_UP" ];; esac; }
+_is_server() { return 1; }
+LAN=10.0.0.5; TS=tail.example; SERVER_IP=$LAN; SERVER_HOST_TS=$TS
+LAN_UP=1 TS_UP=1; EP=$(_pick_server_endpoint); R=$?
+check 5b "endpoint: LAN answers -> the LAN address" '[ "$EP" = "$LAN" ] && [ $R = 0 ]'
+LAN_UP= TS_UP=1; EP=$(_pick_server_endpoint); R=$?
+check 5c "endpoint: LAN down, Tailscale up -> the Tailscale address" '[ "$EP" = "$TS" ] && [ $R = 0 ]'
+LAN_UP= TS_UP=; EP=$(_pick_server_endpoint); R=$?
+check 5d "endpoint: both down -> rc 1 (and the LAN address)" '[ "$EP" = "$LAN" ] && [ $R = 1 ]'
+SERVER_HOST_TS=; LAN_UP=; EP=$(_pick_server_endpoint); R=$?
+check 5e "endpoint: no Tailscale name configured -> the LAN address, no probe needed" '[ "$EP" = "$LAN" ] && [ $R = 0 ]'
+SERVER_HOST_TS=$TS; LAN_UP=; TS_UP=1
+LAN=$LAN TS=$TS run "" bash -c 'source "$T/fn.sh"; _tcp_open() { [ "$1" = "$TS" ]; }; _is_server() { return 1; }; SERVER_IP=$LAN SERVER_HOST_TS=$TS; _resolve_server_endpoint; echo "IP=$SERVER_IP"'
+check 5f "menu: away from home it says so and switches SERVER_IP to Tailscale" '[[ "$OUT" == *"LAN address ($LAN) unreachable — using Tailscale ($TS)."* && "$OUT" == *"IP=$TS" ]]'
+LAN=$LAN TS=$TS run "" bash -c 'source "$T/fn.sh"; _tcp_open() { return 1; }; _is_server() { return 1; }; SERVER_IP=$LAN SERVER_HOST_TS=$TS; _resolve_server_endpoint; echo "rc=$? IP=$SERVER_IP"'
+check 5g "menu: neither answers -> the two warnings, SERVER_IP kept, rc 0" '[[ "$OUT" == *"Neither $LAN nor $TS answered on port 22."* && "$OUT" == *"make sure Tailscale is up"* && "$OUT" == *"rc=0 IP=$LAN" ]]'
+unset -f _tcp_open _is_server; SERVER_IP=h; SERVER_HOST_TS=
+
+# one-time download over the fake ssh: rsync's own ssh gets the options and -s
+_pick_local_path()  { local_path=$T/d; }
+_pick_server_path() { server_path=$T/s; }
+_pick_copy_mode()   { copy_mode=contents; }
+mk; : > "$SSH_LOG"
+run "2\n\ny" _sync_one_time_backup
+TR=$(grep 'rsync --server' "$SSH_LOG")
+check 5h "one-time download: rsync's ssh carries ConnectTimeout + keepalives" '[ -n "$TR" ] && [[ "$TR" == *ConnectTimeout=8*ServerAliveInterval=15* ]] && [ -e "$T/d/a" ]'
+check 5i "one-time download: rsync runs with -s (protect-args)" '[[ "$TR" == *"rsync --server -s"* || "$TR" == *"--server"*" -s"* ]]'
+mk; : > "$SSH_LOG"
+run "2\ndelete\ny\ny" _sync_one_time_backup
+TR=$(grep 'rsync --server' "$SSH_LOG")
+check 5j "mirror preview (dry run) and the copy both use those ssh options" '[ "$(grep -c "rsync --server" "$SSH_LOG")" -ge 2 ] && ! grep "rsync --server" "$SSH_LOG" | grep -vq ConnectTimeout=8 && [ ! -e "$T/d/gone" ]'
 
 check_total

@@ -9,6 +9,7 @@ _fv_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_S
 # rather than aborting (defensive — set -e is enabled later in this file).
 FEDERVER_VERSION="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$(dirname "$_fv_self")/package.json" 2>/dev/null || true)"
 FEDERVER_VERSION="${FEDERVER_VERSION:-0.9.5}"
+_FV_SELF=$_fv_self   # absolute path of this script: written into sync-job launchers
 unset _fv_self
 #
 # HOW TO USE:
@@ -171,8 +172,15 @@ fi
 # the kernel's default connect timeout — a minute-plus "hang" with no feedback.
 # ConnectTimeout fails fast instead; the keepalives drop a frozen roaming link
 # within ~1min rather than freezing the menu. `command ssh` avoids recursion.
+# The same options reach rsync's own ssh through RSYNC_RSH (rsync spawns the real
+# binary, not this function), so every rsync here - one-time copies, previews, jobs -
+# fails fast the same way. _RSYNC_FLAGS is the one flag set of every laptop rsync
+# (-s: the remote shell must not re-split a path with spaces).
+_SSH_OPTS="-o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=4"
+export RSYNC_RSH="ssh $_SSH_OPTS"
+_RSYNC_FLAGS="-avh --progress -s"
 ssh() {
-    command ssh -o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$@"
+    command ssh $_SSH_OPTS "$@"
 }
 
 # True if a TCP connection to host:port completes within 2s. Used to pick a
@@ -455,17 +463,26 @@ _on_laptop() {
 # otherwise switch to the Tailscale fallback so being away from home fails over
 # instead of hanging. No-op on the server itself, and a no-op (beyond the ssh
 # wrapper's fast-fail) when no fallback is configured.
+_pick_server_endpoint() {   # prints the address to use; rc 1 = neither answered (prints SERVER_IP)
+    local ep=$SERVER_IP rc=0
+    if ! _is_server && [[ -n "$SERVER_HOST_TS" && "$SERVER_HOST_TS" != "$SERVER_IP" ]] && ! _tcp_open "$SERVER_IP" 22; then
+        if _tcp_open "$SERVER_HOST_TS" 22; then ep=$SERVER_HOST_TS; else rc=1; fi
+    fi
+    printf '%s' "$ep"
+    return $rc
+}
 _resolve_server_endpoint() {
     _is_server && return 0
-    [[ -z "$SERVER_HOST_TS" || "$SERVER_HOST_TS" == "$SERVER_IP" ]] && return 0
-    _tcp_open "$SERVER_IP" 22 && return 0
-    if _tcp_open "$SERVER_HOST_TS" 22; then
-        info "LAN address ($SERVER_IP) unreachable — using Tailscale ($SERVER_HOST_TS)."
-        SERVER_IP="$SERVER_HOST_TS"
-        return 0
+    local ep rc=0
+    ep=$(_pick_server_endpoint) || rc=$?
+    if (( rc != 0 )); then
+        warn "Neither $SERVER_IP nor $SERVER_HOST_TS answered on port 22."
+        warn "If you're away from home, make sure Tailscale is up on this machine."
+    elif [[ "$ep" != "$SERVER_IP" ]]; then
+        info "LAN address ($SERVER_IP) unreachable — using Tailscale ($ep)."
+        SERVER_IP=$ep
     fi
-    warn "Neither $SERVER_IP nor $SERVER_HOST_TS answered on port 22."
-    warn "If you're away from home, make sure Tailscale is up on this machine."
+    return 0
 }
 
 step_emergency() {
@@ -6591,7 +6608,7 @@ _sync_one_time_backup() {
                 rsync_src="$src_path"
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
-            _mirror_gate local "$src_path" "$dest_display" "rsync -avh --progress $(_shq "$rsync_src") $(_shq "$SERVER_USER@$SERVER_IP:$dst_path/")" || return
+            _mirror_gate local "$src_path" "$dest_display" "rsync $_RSYNC_FLAGS $(_shq "$rsync_src") $(_shq "$SERVER_USER@$SERVER_IP:$dst_path/")" || return
 
             local src_size=$(_src_size "$src_path")
             echo ""
@@ -6605,7 +6622,7 @@ _sync_one_time_backup() {
             _mirror_confirm || return
 
             ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p $(_shq "$dest_display") && sudo chown $SERVER_USER:$SERVER_USER $(_shq "$dest_display")" || { fail "Could not prepare destination."; return 1; }
-            rsync -avh --progress "${mirror_flag[@]}" "$rsync_src" "$SERVER_USER@$SERVER_IP:$dst_path/" || { fail "Backup failed."; return 1; }
+            rsync $_RSYNC_FLAGS "${mirror_flag[@]}" "$rsync_src" "$SERVER_USER@$SERVER_IP:$dst_path/" || { fail "Backup failed."; return 1; }
             ;;
         2)
             echo ""
@@ -6647,7 +6664,7 @@ _sync_one_time_backup() {
                 sync_mode=append
                 info "ℹ Needs sudo (tar copy) — append only; mirror isn't possible for this copy."
             else
-                _mirror_gate server "$src_path" "$dest_display" "rsync -avh --progress $(_shq "$SERVER_USER@$SERVER_IP:$rsync_src") $(_shq "$dst_path/")" || return
+                _mirror_gate server "$src_path" "$dest_display" "rsync $_RSYNC_FLAGS $(_shq "$SERVER_USER@$SERVER_IP:$rsync_src") $(_shq "$dst_path/")" || return
             fi
 
             echo ""
@@ -6776,7 +6793,7 @@ _sync_one_time_backup() {
                     return 1
                 fi
             else
-                rsync -avh --progress "${mirror_flag[@]}" "$SERVER_USER@$SERVER_IP:$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
+                rsync $_RSYNC_FLAGS "${mirror_flag[@]}" "$SERVER_USER@$SERVER_IP:$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
             fi
             ;;
         3)
@@ -6798,7 +6815,7 @@ _sync_one_time_backup() {
                 rsync_src="$src_path"
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
-            _mirror_gate local "$src_path" "$dest_display" "rsync -avh --progress $(_shq "$rsync_src") $(_shq "$dst_path/")" || return
+            _mirror_gate local "$src_path" "$dest_display" "rsync $_RSYNC_FLAGS $(_shq "$rsync_src") $(_shq "$dst_path/")" || return
 
             local src_size=$(_src_size "$src_path")
             echo ""
@@ -6812,7 +6829,7 @@ _sync_one_time_backup() {
             _mirror_confirm || return
 
             mkdir -p "$dst_path" || { fail "Could not create destination."; return 1; }
-            rsync -avh --progress "${mirror_flag[@]}" "$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
+            rsync $_RSYNC_FLAGS "${mirror_flag[@]}" "$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
             ;;
         4)
             echo ""

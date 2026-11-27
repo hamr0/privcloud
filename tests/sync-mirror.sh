@@ -17,7 +17,7 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 CR=$'\033[R]'; CY=$'\033[Y]'   # status() swaps these in for RED/YELLOW
 
 { for f in ok fail info warn ssh _shq; do extract_fn "$f" "$SRC"; done   # ssh may be missing in an old copy: skipped
-  grep -E '^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=' "$SRC"
+  grep -E "^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_RSYNC_FLAGS=" "$SRC"
   for f in _drive_verdict _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
            _mirror_preview _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
            _sync_mode_cell _sync_last_note _sync_last_result _sync_change_mode \

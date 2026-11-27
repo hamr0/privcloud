@@ -104,7 +104,7 @@ Each module runs the same loop: ~15 min POC → build with tests that fail first
    kept, behind the same guard, preview and typed-count confirm as sync.
 6. The Immich backup is the feature that must never regress: every step that touches it ends with a
    live backup run.
-7. **One place starts and stops services** (found live 2026-11-27: `federver -> i -> 3` Stop ran
+7. **One place starts and stops services** (found live 2026-11-27: the old Manage Immich Stop (key `i`, item 3) ran
    `docker compose down` on the whole stack and took Navidrome, FileBrowser, Uptime Kuma and Watchtower
    down too, bypassing `_svc_power`). Manage Immich loses Start and Stop; `federver -> 7` (pick one or
    All, autostart follows the last action) is the only lifecycle path. Immich Update pulls and

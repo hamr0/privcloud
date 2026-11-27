@@ -12,6 +12,8 @@
 
 - **Manage services menu: Restart now says it re-enables autostart.** Option 4 reads `<- pick one or All (re-enables autostart)`, matching Start, since v0.12.0 made Restart set `restart=unless-stopped` just like Start. Label only, no behaviour change.
 
+- **One helper for every Tailscale IPv4 lookup in federver.** Each place that asked `tailscale ip -4` (Status, the RDP info line, the tailnet checks, the connect boxes) had its own copy; they now all call `_ts_ipv4`, which prints the first address and nothing else, and the copies of it shipped to the server with `declare -f` carry it along with `_ts_state`. One visible difference: the laptop's `Laptop already on the tailnet: ...` line now shows only the first address (it could print several) and no longer prints tailscale's stderr. The RDP info line still reads `not connected` when there is no address. `tests/ts-expiry.sh` gained cases 7-11: the first address only with no stderr noise, no address giving an empty result, the RDP line in both states, every `declare -f` list that ships `_ts_state` also shipping `_ts_ipv4`, and each remote payload running in a clean `bash -s` with no `command not found`.
+
 ## v0.12.0 — 2026-10-17
 
 ### Fixed

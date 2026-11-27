@@ -38,8 +38,6 @@ exit 0
 X
 printf '#!/bin/bash\necho "$*" >> "$SLEEP_LOG"\n' > "$T/bin/sleep"
 printf '#!/bin/bash\n:\n' > "$T/bin/lsblk"
-# mountpoint(1) as `mountpoint -q` sees it: an autofs stub counts as a mountpoint.
-printf '#!/bin/bash\n[ "${FM_MODE:-ok}" = ok ] || [ "${FM_MODE:-ok}" = stub ]\n' > "$T/bin/mountpoint"
 cat > "$T/bin/df" <<'X'
 #!/bin/bash
 p="${@: -1}"
@@ -120,11 +118,15 @@ check P4e "status: findmnt absent -> a plain 'cannot check' warning (no false NO
 OUT=$(st ok empty);   check P4f "status: empty drive on a real mount -> no warning" '[[ "$OUT" != *"NOT mounted"* && "$OUT" != *"Cannot check"* ]]'
 OUT=$(st ok missing); check P4g "status: mount point cannot be listed -> NOT mounted" '[[ "$OUT" == *"/mnt/data is NOT mounted"* ]]'
 
-# backup default (_pick_backup_default: candidate must be a dir and `mountpoint -q`)
+# backup default (_pick_backup_default: candidate must be a dir the verdict calls ok or empty)
 bd() { FM_MODE=$1 _pick_backup_default "$SRC_DIR"; }
 GOT=$(bd ok);   check P5a "backup default: real mount offered" '[ "$GOT" = "$T/mnt/usb/privcloud-backup" ]'
-GOT=$(bd bare); check P5b "backup default: bare folder (not a mountpoint) not offered" '[ -z "$GOT" ]'
-GOT=$(bd stub); check P5c "backup default: autofs stub IS offered today (mountpoint -q is fooled; the drift)" '[ -n "$GOT" ]'
+GOT=$(bd bare); check P5b "backup default: bare folder not offered" '[ -z "$GOT" ]'
+GOT=$(bd stub); check P5c "backup default: autofs stub not offered (mountpoint -q used to be fooled by it)" '[ -z "$GOT" ]'
+rmdir "$T/mnt/usb/empty"; rm -rf "$T/mnt/usb/data"; GOT=$(bd ok); check P5d "backup default: a freshly formatted (empty) real drive is offered" '[ "$GOT" = "$T/mnt/usb/privcloud-backup" ]'
+GOT=$(env PATH="$T/lsonly" SRC_DIR=$SRC_DIR "$(command -v bash)" -c "source $T/fn.sh; _DRIVE_ROOTS=$T/mnt; _pick_backup_default $SRC_DIR")
+check P5e "backup default: findmnt absent -> nothing offered (cannot verify, fail closed)" '[ -z "$GOT" ]'
+mkdir -p "$T/mnt/usb/data" "$T/mnt/usb/empty"; echo f > "$T/mnt/usb/data/f"   # restore the fixtures
 
 # ── V  _drive_verdict: one answer per case ──────────────────────────────────
 vv() { : > "$SLEEP_LOG"; FM_MODE=$1 _drive_verdict "$2"; }

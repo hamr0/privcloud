@@ -4150,15 +4150,15 @@ _adguard_blocklist_guide() {
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 }
 
-# Suggest the best external-drive destination for backups: the mounted media
-# drive with the most free space that is NOT on the same filesystem as $1 (the
+# Suggest the best external-drive destination for backups: the really mounted
+# (per _drive_verdict: not an autofs stub) media drive with the most free space that is NOT on the same filesystem as $1 (the
 # source). Echoes "<mountpoint>/privcloud-backup", or nothing if none found.
 _pick_backup_default() {
     local src="$1" src_fs best="" best_avail=0 mp avail fs
     src_fs=$(df -P "$src" 2>/dev/null | awk 'NR==2{print $1}')
     for mp in /run/media/*/* /media/*/* /mnt/*; do
         [ -d "$mp" ] || continue
-        mountpoint -q "$mp" 2>/dev/null || continue
+        case $(_drive_verdict "$mp") in ok|empty) ;; *) continue ;; esac   # a real /dev mount, not an autofs stub
         fs=$(df -P "$mp" 2>/dev/null | awk 'NR==2{print $1}')
         [ -n "$fs" ] && [ "$fs" != "$src_fs" ] || continue
         avail=$(df -P "$mp" 2>/dev/null | awk 'NR==2{print $4}')

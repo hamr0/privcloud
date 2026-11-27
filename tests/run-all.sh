@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run every suite in tests/ (all *.sh except this file), print each suite's
+# Run every suite in tests/ (all *.sh except this file and the shared lib.sh), print each suite's
 # TOTAL line, and exit non-zero if any suite fails. A suite that fails also
 # gets its FAIL lines printed.
 # Run: bash tests/run-all.sh
@@ -7,7 +7,7 @@ H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 self=$(basename "${BASH_SOURCE[0]}")
 bad=0
 for f in "$H"/*.sh; do
-  n=$(basename "$f"); [ "$n" = "$self" ] && continue
+  n=$(basename "$f"); [ "$n" = "$self" ] || [ "$n" = lib.sh ] && continue
   out=$(bash "$f" 2>&1); rc=$?
   total=$(grep -m1 '^TOTAL' <<<"$out")
   printf '%-26s %s\n' "$n" "${total:-(no TOTAL line)}"

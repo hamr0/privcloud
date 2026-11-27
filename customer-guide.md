@@ -161,6 +161,8 @@ cd privcloud
 
 Pick **i** (Manage Immich), then `Install` (checks Docker, images, storage config), then `Start`.
 
+Install, Start and Update never edit `docker-compose.yml` (the repo's copy stays exactly as committed, so `git status` stays clean and later updates pull cleanly). The two Immich data mounts carry the `:Z` label in the committed file: with SELinux Enforcing it relabels them, with SELinux off Docker ignores it. Status only checks the labels are still there when SELinux is Enforcing.
+
 Immich `Start` and `Update` leave every Immich container on restart policy `unless-stopped`, the same as the federver menu's Start: a service compose runs as `always`, or one an earlier Stop left at `no`, is re-armed, so the stack comes back after a reboot unless you stop it yourself. Containers already running are not restarted. If the policy cannot be set the command prints a yellow warning (the containers are already running, so it does not abort) and carries on to the Immich wait or the update message; re-run start or use federver -> Manage services -> Start.
 
 Open http://localhost:2283 in your browser. Create your first account — this becomes the admin.
@@ -414,6 +416,8 @@ iPhone videos (HEVC/H.265) may not play in browsers on Linux. Fix: Administratio
 | `MUSIC_LOCATION` | Music library | Navidrome |
 | `UPLOAD_LOCATION` | Original photos, thumbnails, encoded videos | Immich |
 | `DB_DATA_LOCATION` | PostgreSQL database (faces, search, albums, accounts) | Immich |
+
+Every part of federver reads `.env` the same way: a line must start with the key (a `#KEY=...` comment is ignored), a quoted value runs to its closing quote, and an unquoted value stops at a trailing ` # note`. When federver writes a path that needs it (it contains ` #`, or starts or ends with a space) the value is quoted for you. If a key is missing, the defaults are the ones Deploy writes for `/mnt/data` (`FILES_LOCATION=/mnt/data`, `MEDIA_LOCATION=/mnt/data/media`, `MUSIC_LOCATION=/mnt/data/media/My Music`, `UPLOAD_LOCATION=/mnt/data/immich/upload`, `DB_DATA_LOCATION=/mnt/data/immich/postgres`), which is also what `.env.example` holds.
 
 ### Default layout
 
@@ -1481,6 +1485,8 @@ If services aren't running: `cd ~/privcloud && docker compose up -d`, then check
 6) Change Immich location     <- Immich photos + database
 0) Back
 ```
+
+**Unplugged drives are refused.** Options **4**, **5** and **6** check the new path before creating anything: if it is under `/mnt`, `/media` or `/run/media` and its drive is not really mounted (an unplugged drive, or an automount placeholder), the change stops with `Data drive is not mounted at <drive>` and nothing is created or written to `.env`. This used to make the folder on the system disk and point the service at it, which looked like data loss. A path elsewhere (for example under `/home`) is taken as your choice. `/media/<user>/<drive>/...` paths work like `/mnt/<drive>/...`; a folder that does not exist yet on a mounted drive is judged by its drive.
 
 ### Mounting a USB drive
 

@@ -68,7 +68,7 @@ done
 check 5a "the privcloud script and its standalone installer are gone" '[ ! -e "$ROOT/privcloud" ] && [ ! -e "$ROOT/scripts/install.sh" ]'
 check 5b "no Darwin / get_os / brew-install-Docker branch in setup.sh" '! grep -q "Darwin" "$S" && ! grep -q "get_os" "$S" && ! grep -q "brew install --cask" "$S" && ! grep -q "open -a Docker" "$S"'
 check 5c "no privcloud CLI verbs or ./privcloud in setup.sh" '! grep -qE "privcloud (install|start|stop|status|config|update|upload|fix-gp|backup)\b|\./privcloud|\"\$SCRIPT_DIR/privcloud\"" "$S"'
-LEFT=$(grep -n privcloud "$S" | grep -vE '^[0-9]+:[[:space:]]*#' | sed -E 's#~/privcloud|cd privcloud|hamr0/privcloud|privcloud/|\.privcloud|privcloud_|privcloud-backup|privcloud\.git|\$HOME/privcloud/|/usr/local/bin/privcloud|the old .privcloud. command|Clone privcloud|the privcloud folder##g' | grep privcloud)
+LEFT=$(grep -n privcloud "$S" | grep -vE '^[0-9]+:[[:space:]]*#' | sed -E 's#~/privcloud|cd privcloud|github\.com/[^/]+/privcloud|privcloud/|\.privcloud|privcloud_|privcloud-backup|privcloud\.git|\$HOME/privcloud/|/usr/local/bin/privcloud|the old .privcloud. command|Clone privcloud|the privcloud folder##g' | grep privcloud)
 CHECK_DIAG='left=$LEFT'
 check 5d "'privcloud' in setup.sh only as a path, repo name or comment" '[ -z "$LEFT" ]'
 check 5e "the installer no longer writes a privcloud wrapper" '! grep -q "tee /usr/local/bin/privcloud" "$S" && ! grep -q "exec .*/privcloud " "$S"'

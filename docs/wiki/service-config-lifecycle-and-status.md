@@ -25,7 +25,7 @@ This page covers two pieces of the single-source spec: Piece 5 (`.env` and compo
 ### D4: `patch_selinux`
 
 - privcloud's `patch_selinux` edits a tracked file, although the tracked compose file already carries `:Z`, and setup.sh never calls it even though `step_deploy` runs the same compose file (docs/archive/spec-single-source.md:345).
-- On a non-Enforcing host, `privcloud start` removes `:Z` with `sed -i` and leaves the tree dirty. A dirty compose file could make a later `git pull --ff-only` fail silently; this is marked UNVERIFIED and hypothetical (docs/archive/spec-single-source.md:346).
+- On a non-Enforcing host, `step_immich_start` (federver → i → Start) removes `:Z` with `sed -i` and leaves the tree dirty. A dirty compose file could make a later `git pull --ff-only` fail silently; this is marked UNVERIFIED and hypothetical (docs/archive/spec-single-source.md:346).
 - Design: never edit the tracked compose file. Either keep `:Z` committed and drop `patch_selinux`, or generate a git-ignored `docker-compose.selinux.yml` passed with a second `-f` when SELinux is not Enforcing. The recommendation is to keep `:Z` committed if non-SELinux hosts accept it, otherwise the override file (docs/archive/spec-single-source.md:358).
 
 ### D33: defaults
@@ -37,13 +37,13 @@ This page covers two pieces of the single-source spec: Piece 5 (`.env` and compo
 
 - Pin: `_env_get` in smb-share.sh stays green. Add `env_get`/`env_set` fixtures, three-reader agreement, `env_set` with values containing `|`, `&`, `\`, spaces and `=`, and a check that a commented-out key is not matched (docs/archive/spec-single-source.md:364).
 - Fail-first: make `env_set` unanchored and confirm the commented-key test fails (docs/archive/spec-single-source.md:365).
-- Gaps: nothing covers `cmd_config`, `patch_selinux` or `.env.example` parity (docs/archive/spec-single-source.md:366).
+- Gaps: nothing covers `step_immich_config` (was `cmd_config`), `patch_selinux` or `.env.example` parity (docs/archive/spec-single-source.md:366).
 - Size S to M, risk low to medium. `.env` holds the DB password, so `chmod 600` and `umask 077` behaviour must be kept (docs/archive/spec-single-source.md:367).
 - Acceptance (docs/archive/spec-single-source.md:368-372):
-  - One `env_get`/`env_set`, used by `privcloud config` and `_set_env`.
+  - One `env_get`/`env_set`, used by `step_immich_config` and `_set_env` (done: `_set_env` is the one writer, `_env_get` the one reader).
   - No unanchored `grep KEY .env` remains.
   - `.env.example` has every key `step_deploy` writes and no `DATA_ROOT`.
-  - After `privcloud start` the tracked compose file is unmodified (`git status` clean).
+  - After federver → i → Start the tracked compose file is unmodified (`git status` clean).
 
 ## Piece 4: Service lifecycle and status
 

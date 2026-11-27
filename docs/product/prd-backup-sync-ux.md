@@ -87,7 +87,7 @@ You confirm by *seeing* the shape, not by decoding slashes.
 - Fixes all six flows at once: the four one-time backup directions (`federver` → 14 → 5,
   incl. the new **server → server**) and both scheduled upload/download jobs
   (`federver` → 14 → 2) — so saved cron commands match what the tree showed.
-- **Immich backup** (`privcloud` → 9), a separate program with no folder-vs-contents
+- **Immich backup** (`federver` → i; was `privcloud` → 9), a separate program with no folder-vs-contents
   ambiguity (fixed `privcloud-backup/` layout), gets the same destination tree in its confirm
   for visual consistency. (Its backup model has since grown a one-time/scheduled split and a
   no-downtime path — see [prd-immich-backup](prd-immich-backup.md); the tree-preview UX here is
@@ -100,4 +100,4 @@ You confirm by *seeing* the shape, not by decoding slashes.
 - Single-**file** sources still pass through the callsites' `src/` line, which appends a
   slash to a filename; that path predates this work and is out of scope here.
 - `federver` and `privcloud` are separate scripts; the helper is duplicated in spirit (the
-  Immich tree is hand-written) rather than shared, since `privcloud`'s layout is fixed.
+  Immich tree is hand-written) rather than shared, since `privcloud`'s layout is fixed. (`privcloud` has since been merged into `setup.sh` as federver → i.)

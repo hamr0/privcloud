@@ -11,7 +11,7 @@ Piece 3 of the single-source spec unifies the scheduled Immich backup and the on
 
 ## Problem: two implementations that drifted (D14)
 
-The scheduled script is a heredoc in `setup.sh` (written by `step_immich_backup`). The one-time path is `cmd_backup_once` in `privcloud` (docs/archive/spec-single-source.md:281-281). They differ as follows (docs/archive/spec-single-source.md:283-288):
+The scheduled script is a heredoc in `setup.sh` (written by `step_immich_backup`). The one-time path is `step_immich_backup_once` in `setup.sh` (moved there from the former `privcloud` script) (docs/archive/spec-single-source.md:281-281). They differ as follows (docs/archive/spec-single-source.md:283-288):
 
 | | scheduled script | privcloud one-time |
 |---|---|---|
@@ -35,7 +35,7 @@ The scheduled script is a heredoc in `setup.sh` (written by `step_immich_backup`
 
 ## Problem: baked values (D7)
 
-- `immich-backup.sh` bakes in BACKUP_DIR, UPLOAD_LOCATION and RETENTION_DAYS. The live source for UPLOAD_LOCATION is `.env`, changed by `_storage_change_immich` and `privcloud config`. Neither refreshes the script (docs/archive/spec-single-source.md:300-300).
+- `immich-backup.sh` bakes in BACKUP_DIR, UPLOAD_LOCATION and RETENTION_DAYS. The live source for UPLOAD_LOCATION is `.env`, changed by `_storage_change_immich` and `step_immich_config`. Neither refreshes the script (docs/archive/spec-single-source.md:300-300).
 - Other baked-value rows in the report (wrappers, Syncthing mounts with a "Reapply paths" menu, disk-check, sync job scripts) are low risk or intentional. Job scripts belong to piece 2 (docs/archive/spec-single-source.md:301-301).
 - Failure (code-proven, not verified live): after moving storage, the scheduled backup keeps the old `UPLOAD_LOCATION`. A deleted old path gives a visible rc=1. If the old tree still exists, it backs up stale data and reports "Backup complete" (docs/archive/spec-single-source.md:302-302).
 

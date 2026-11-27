@@ -1,4 +1,4 @@
-# PRD: Immich backup — one-time + scheduled, no downtime (`privcloud` → 9)
+# PRD: Immich backup — one-time + scheduled, no downtime (`federver` → i; was `privcloud` → 9)
 
 Status: **Shipped (v0.9.0).**
 

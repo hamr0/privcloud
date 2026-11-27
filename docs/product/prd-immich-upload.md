@@ -1,11 +1,11 @@
-# PRD: Bulk photo upload into Immich (`privcloud` → 7)
+# PRD: Bulk photo upload into Immich (`federver` → i → Upload; was `privcloud` → 7)
 
 Status: **Shipped (v0.8.8–v0.8.9).**
 
 ## Goal
 
 Let a user bulk-import an existing photo/video collection that already lives **on the
-server** into Immich, from the `privcloud` menu, with:
+server** into Immich, from `federver` → i (Manage Immich; it was the `privcloud` menu before single-source step 5), with:
 
 - no host dependencies to install,
 - the assets landing in the **correct user account** (multi-profile setups must not mix), and
@@ -67,8 +67,8 @@ After the path prompt, ask **Albums vs Flat**:
   HDD source → NVMe Immich storage).
 - **Idempotent.** The CLI hashes files before upload, so re-running skips assets already on
   the server.
-- **Self-updating.** `federver` → i now `git pull`s the server's `privcloud` before launching
-  it, so server-side fixes reach the box.
+- **Self-updating.** `federver` → i `git pull`s the server checkout before running the step, so
+  server-side fixes reach the box.
 
 ## Out of scope / future
 

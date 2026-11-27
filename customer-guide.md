@@ -7,9 +7,9 @@ Your server. Your data. No cloud required.
 ## Table of Contents
 
 - [Why privcloud](#why-privcloud)
-- [Two modes](#two-modes)
+- [How it runs](#how-it-runs)
 - [What you get](#what-you-get)
-- [Getting started (Immich only)](#getting-started-immich-only)
+- [Getting started with Immich](#getting-started-with-immich)
 - [Connecting your phone](#connecting-your-phone)
 - [Understanding the phone app](#understanding-the-phone-app)
 - [Multiple accounts and family setup](#multiple-accounts-and-family-setup)
@@ -27,7 +27,7 @@ Your server. Your data. No cloud required.
 - [Storage and architecture](#storage-and-architecture)
 - [Backup and restore](#backup-and-restore)
 - [Moving to a new machine](#moving-to-a-new-machine)
-- [Day-to-day usage (Immich only)](#day-to-day-usage-immich-only)
+- [Day-to-day usage](#day-to-day-usage-immich)
 - [Troubleshooting (Immich)](#troubleshooting-immich)
 - [Privacy and security](#privacy-and-security)
 - **[Home server setup](#home-server-setup)**
@@ -59,31 +59,29 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 
 ---
 
-## Two modes
+## How it runs
 
-**Immich only** — run `privcloud` on any laptop or desktop. No dedicated server, no setup script. Start when you want to sync, stop when done. Needs Docker, ~4 GB RAM, and storage. Works on Linux, macOS, or WSL.
-
-**Full home server** — a dedicated always-on machine running Immich + music + file management + monitoring + remote access. `federver` handles everything from a fresh Fedora install. Needs a mini PC, Fedora XFCE, and a monitor + keyboard for the very first step (headless after that).
+**One tool, `federver`** — a dedicated always-on machine (the server) running Immich + music + file management + monitoring + remote access, managed from your laptop. `federver` handles everything from a fresh Fedora install, Immich included (**i** → Manage Immich). Needs a mini PC, Fedora XFCE, and a monitor + keyboard for the very first step (headless after that). There is no separate `privcloud` command any more.
 
 ---
 
 ## What you get
 
-### From privcloud (the CLI)
+### From federver → i (Manage Immich)
 
-| Command | What it does |
+| Menu item | What it does |
 |---------|-------------|
-| `install` | Installs Docker, Docker Compose, pulls images, configures storage |
-| `start` | Starts the photo server |
-| `stop` | Stops everything (photos stay on disk) |
-| `status` | Shows diagnostics — containers, health, recent errors |
-| `config` | Change where photos are stored |
-| `update` | Check for updates and apply |
-| `upload` | Bulk upload photos via Immich CLI with API key validation |
-| `fix-gp` | Fix Google Photos Takeout metadata (dates + GPS) |
-| `backup` | Back up photos + database — one-time or scheduled, with no downtime |
+| `Status` | Shows diagnostics — containers, health, recent errors |
+| `Start` | Starts the photo server |
+| `Stop` | Stops everything (photos stay on disk) |
+| `Update` | Check for updates and apply |
+| `Install` | Checks Docker and Compose, first-time storage config, pulls images |
+| `Config` | Change where photos are stored |
+| `Upload photos` | Bulk upload photos via Immich CLI with API key validation |
+| `Fix Google Photos metadata` | Fix Google Photos Takeout metadata (dates + GPS) |
+| `Backup - One-time` / `Backup - Scheduled - Set up / Status / Run now / Remove` | Back up photos + database, with no downtime |
 
-Run `privcloud` with no command for the interactive menu. Pick a number and it runs on a cleared screen; press Enter when it's done and you're back at a fresh main menu — the same clear-screen flow as `federver`, so output never piles up under the menu.
+Every item runs on the server (federver connects over SSH for you), on a cleared screen; press Enter when it's done and you're back at a fresh main menu. For scripts: `./setup.sh --run step_immich_status` (also `_start`, `_stop`, `_update`, `_install`, `_config`, `_upload`, `_fix_gp`, `_backup_once`) on the server.
 
 ### From federver (server setup)
 
@@ -113,7 +111,7 @@ Run `privcloud` with no command for the interactive menu. Pick a number and it r
   13) Manage remote desktop                 ← install, access XFCE via RDP
 
   -- Immich photo management --
-  i)  Immich (privcloud)                    ← start/stop/status/update/backup
+  i)  Manage Immich                         ← status, start/stop, update, upload, backup
 
   -- Tools --
   14) Manage sync and backups               ← sync jobs, Immich backup (DB + photos), disk-space monitor
@@ -145,36 +143,32 @@ Run `privcloud` with no command for the interactive menu. Pick a number and it r
 
 ---
 
-## Getting started (Immich only)
+## Getting started with Immich
 
 ### Requirements
 
-- **Linux, macOS, or WSL** — any modern version
+- **The federver server** (Fedora, Docker installed with step 5)
 - **~4 GB RAM** when running (can be less after initial ML indexing)
 - **Storage** — local drive, external HDD, NAS, whatever you have
 
 ### Install and start
 
 ```bash
-# One-liner install
-curl -fsSL https://raw.githubusercontent.com/hamr0/privcloud/main/scripts/install.sh | bash && privcloud
-
-# Or clone
 git clone https://github.com/hamr0/privcloud.git
 cd privcloud
-privcloud
+./setup.sh
 ```
 
-Pick `install` (handles Docker, images, storage config), then `start`.
+Pick **i** (Manage Immich), then `Install` (checks Docker, images, storage config), then `Start`.
 
-`privcloud start` and `privcloud update` leave every Immich container on restart policy `unless-stopped`, the same as the federver menu's Start: a service compose runs as `always`, or one an earlier Stop left at `no`, is re-armed, so the stack comes back after a reboot unless you stop it yourself. Containers already running are not restarted. If the policy cannot be set the command prints a yellow warning (the containers are already running, so it does not abort) and carries on to the Immich wait or the update message; re-run start or use federver -> Manage services -> Start.
+Immich `Start` and `Update` leave every Immich container on restart policy `unless-stopped`, the same as the federver menu's Start: a service compose runs as `always`, or one an earlier Stop left at `no`, is re-armed, so the stack comes back after a reboot unless you stop it yourself. Containers already running are not restarted. If the policy cannot be set the command prints a yellow warning (the containers are already running, so it does not abort) and carries on to the Immich wait or the update message; re-run start or use federver -> Manage services -> Start.
 
 Open http://localhost:2283 in your browser. Create your first account — this becomes the admin.
 
 ## Connecting your phone
 
 1. Install the Immich app — [iPhone](https://apps.apple.com/app/immich/id1613945652) / [Android](https://play.google.com/store/apps/details?id=app.alextran.immich)
-2. Server URL: `http://<your-computer-ip>:2283` (shown when you run `privcloud start`)
+2. Server URL: `http://<your-computer-ip>:2283` (shown by `federver` → i → Start)
 3. Login with the account you created in the web UI
 4. Go to app settings and enable **auto backup**
 5. Both devices must be on the same WiFi network
@@ -241,9 +235,9 @@ Each Immich account gets its own separate library, timeline, face recognition, a
 
 ### Uploading to the right account
 
-Each API key is tied to the account that created it. When using `privcloud upload`, use the API key for whichever account should own the photos — so a second profile (a separate username with its own key) stays completely separate.
+Each API key is tied to the account that created it. When using `federver` → i → Upload photos, use the API key for whichever account should own the photos — so a second profile (a separate username with its own key) stays completely separate.
 
-A few things about how `privcloud upload` works:
+A few things about how Upload photos works:
 
 - **It runs on the server and reads server-local folders.** Give it a path that exists on the server (e.g. `/mnt/federver/data/amr-pics`), not a path on your laptop.
 - **It copies, never moves.** Your originals are left untouched; Immich keeps its own copy under its storage location. The data ends up stored twice, and the source drive and Immich's drive may differ — make sure the Immich drive has room.
@@ -254,7 +248,7 @@ A few things about how `privcloud upload` works:
 
 ## Migrating from Google Photos
 
-Google Takeout exports your photos with metadata stripped into separate JSON files. The filenames are truncated and inconsistent. privcloud's `fix-gp` command handles all of it.
+Google Takeout exports your photos with metadata stripped into separate JSON files. The filenames are truncated and inconsistent. the `Fix Google Photos metadata` item (`federver` → i → 8) handles all of it.
 
 ### Step 1: Export from Google
 
@@ -266,7 +260,7 @@ Google Takeout exports your photos with metadata stripped into separate JSON fil
 ### Step 2: Fix metadata
 
 ```bash
-privcloud fix-gp
+federver → i → Fix Google Photos metadata
 ```
 
 The script extracts zips, matches each photo to its JSON sidecar, writes dates and GPS back into EXIF, and sets correct file timestamps.
@@ -274,7 +268,7 @@ The script extracts zips, matches each photo to its JSON sidecar, writes dates a
 ### Step 3: Upload
 
 ```bash
-privcloud upload
+federver → i → Upload photos
 ```
 
 Enter your API key (from http://localhost:2283 → Account Settings → API Keys) and the path to the extracted photos. When asked **Albums or Flat**, pick **Flat** — a Takeout export is usually one big dump rather than album folders (choose **Albums** only if you sorted the export into folders you want to keep).
@@ -305,7 +299,7 @@ If your photos are still on your iPhone (not "Optimize Storage"):
 
 1. Go to [icloud.com/photos](https://icloud.com/photos)
 2. Select all, download
-3. Use `privcloud upload` to bulk upload
+3. Use `federver` → i → Upload photos to bulk upload
 
 ### Option C: Mac/Windows export
 
@@ -317,7 +311,7 @@ If your photos are still on your iPhone (not "Optimize Storage"):
 ## Uploading existing photo collections
 
 ```bash
-privcloud upload
+federver → i → Upload photos
 ```
 
 Point it at any folder. It uploads recursively and skips duplicates automatically (by file hash). Run it from multiple sources — Immich won't create duplicate entries.
@@ -468,17 +462,17 @@ Expect ~20-30% overhead on top of your original library for thumbnails and previ
 ### How to backup
 
 ```bash
-privcloud backup
+federver → i   (the Backup items)
 ```
 
-One flat menu — no drill-down — with the one-time backup and the four scheduled actions all at the same level:
+The Manage Immich menu lists the one-time backup and the four scheduled actions at the same level:
 
 ```
-  1) One-time             ← copy to a drive now, no schedule
-  2) Scheduled - Set up   ← weekly systemd timer, no downtime
-  3) Scheduled - Status   ← schedule, next/last run, recent runs
-  4) Scheduled - Run now  ← start a backup in the background
-  5) Scheduled - Remove   ← delete the schedule (keeps files)
+  1) Backup - One-time             ← copy to a drive now, no schedule
+  2) Backup - Scheduled - Set up   ← weekly systemd timer, no downtime
+  3) Backup - Scheduled - Status   ← schedule, next/last run, recent runs
+  4) Backup - Scheduled - Run now  ← start a backup in the background
+  5) Backup - Scheduled - Remove   ← delete the schedule (keeps files)
 ```
 
 **Neither stops the server** — your photos stay online the whole time. Photos are copied live, and the database is dumped while it runs (a consistent snapshot).
@@ -502,16 +496,16 @@ Restore depends on how the database was backed up:
 
 **If your backup has a `postgres/` folder** (database files):
 
-1. `privcloud stop` on old machine
+1. Stop Immich on the old machine (`federver` → i → Stop)
 2. Copy the `photos` and `postgres` directories to the new machine
-3. Clone privcloud, run `privcloud install`
+3. Clone privcloud, run `federver` → i → Install
 4. Point config at the copied directories, make sure `DB_PASSWORD` matches
-5. `privcloud start`
+5. Start Immich (`federver` → i → Start)
 
 **If your backup has `immich-db-*.sql.gz`** (a database dump — what no-downtime and scheduled backups produce; scheduled backups put them under `immich/db/` and photos under `immich/photos/`):
 
-1. Clone privcloud, run `privcloud install`, point config at the copied photos
-2. `privcloud start`
+1. Clone privcloud, run `federver` → i → Install, point config at the copied photos
+2. Start Immich (`federver` → i → Start)
 3. Load the newest dump:
    ```bash
    gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres
@@ -521,12 +515,12 @@ Either way, everything comes back — faces, albums, search, sharing.
 
 ---
 
-## Day-to-day usage (Immich only)
+## Day-to-day usage (Immich)
 
 1. Take photos normally
 2. Open Immich app occasionally — photos sync over WiFi
 3. Browse/organize at http://localhost:2283
-4. `privcloud stop` when done (or leave running)
+4. `federver` → i → Stop when done (or leave running)
 
 ML processing resumes where it left off on next start.
 
@@ -534,9 +528,9 @@ ML processing resumes where it left off on next start.
 
 ## Troubleshooting (Immich)
 
-### "privcloud start" hangs or times out
+### Immich Start hangs or times out
 
-Run `privcloud status` — it now shows container health and recent errors from logs. Common causes:
+Run `federver` → i → Status — it now shows container health and recent errors from logs. Common causes:
 - Port 2283 in use
 - Not enough RAM
 - Docker not running
@@ -559,7 +553,7 @@ Enable transcoding: Administration → Video Transcoding → H.264.
 
 ### Wrong dates
 
-Run `privcloud fix-gp` on Google Takeout exports before uploading. For other sources, check if files have EXIF data.
+Run `federver` → i → Fix Google Photos metadata on Google Takeout exports before uploading. For other sources, check if files have EXIF data.
 
 ### Immich won't start right after a major update
 
@@ -715,7 +709,7 @@ After step 7 (services deploy), configure each service in your browser. Run `fed
    - **iPhone:** [App Store](https://apps.apple.com/app/immich/id1613945652)
    - **Android:** [Play Store](https://play.google.com/store/apps/details?id=app.alextran.immich)
 3. In the app: enter server URL (`http://<server-ip>:2283`), log in, enable auto-upload
-4. If migrating: use `privcloud upload` or `privcloud fix-gp` for Google Takeout
+4. If migrating: use `federver` → i → Upload photos or Fix Google Photos metadata for Google Takeout
 
 ### Navidrome (port 4533)
 
@@ -1280,7 +1274,7 @@ pass show privcloud/ssh/private_key        # SSH key
 ### Daily (automated)
 
 - **Every 5 min** — Disk space heartbeat to Uptime Kuma (alerts if `/` or a data drive exceeds 85%, or a configured data drive is not mounted)
-- **3:00am daily or weekly** — Immich backup (DB + photos, systemd timer, set up via `federver` → 14 → 6 or `privcloud` → 9 → 2)
+- **3:00am daily or weekly** — Immich backup (DB + photos, systemd timer, set up via `federver` → i → Backup - Scheduled - Set up, or `federver` → 14 → 6)
 - **4:00am** — Watchtower checks for container updates
 
 ### Monitoring
@@ -1291,7 +1285,7 @@ pass show privcloud/ssh/private_key        # SSH key
 | Server online | Ping monitor in Uptime Kuma | Type: Ping → server IP |
 | Disk space | Every-5-min cron + Kuma Push | `cat /var/log/disk-check.last` (last run) / `disk-check.log` (alerts) or Uptime Kuma dashboard |
 | Backup status | Last runs table | `federver` → 14 → 1 (or `cat /var/log/immich-backup.log`) |
-| Container errors | `privcloud status` | Shows recent errors per container |
+| Container errors | `federver` → i → Status | Shows recent errors per container |
 
 **Uptime Kuma monitors to add:**
 
@@ -1312,14 +1306,14 @@ Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 
 **Where to look.** Every run overwrites a one-line state file, `/var/log/disk-check.last` (`<date> ok` or `<date> ALERT <msg>`, world-readable so the menu reads it without sudo); alerts and failed pushes are also appended to `/var/log/disk-check.log`. A failed Kuma push (wrong token, Kuma unreachable) is recorded as `ALERT Kuma push failed (curl exit N)`. `federver` → 14 → 1 (Status) shows the disk-check row with its real schedule, last run (`✓ ok`, `⚠ <alert>`, `⚠ stale`) and `not scheduled` if the script exists without a cron line. Uptime Kuma then alerts you via Telegram/email if configured.
 
-**Immich backup (scheduled):** `federver` → 14 → 6 (a set up/change · status · run now · remove submenu) — or `privcloud` → 9, whose flat Backup menu exposes the same actions (`Scheduled - Set up` / `Status` / `Run now` / `Remove`) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention) **plus** a live `rsync` of your photos. Everything lands under `<dest>/immich/` — DB dumps in `<dest>/immich/db/`, photos in `<dest>/immich/photos/` (append-only — it never deletes from the backup). The photo copy backs up your **originals and metadata only**: it skips Immich's own DB-dump folder (`backups/`, already covered by the DB dump above) and the regenerable caches (`thumbs/`, `encoded-video/`) that Immich rebuilds after a restore — so the backup stays lean instead of mirroring tens of GB of throwaway data. `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to the one already configured (re-running Set up and pressing Enter keeps it), else to an external/USB drive, and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c <dest>/immich/db/immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
+**Immich backup (scheduled):** `federver` → 14 → 6 (a set up/change · status · run now · remove submenu) — or `federver` → i, whose flat menu lists the same actions (`Backup - Scheduled - Set up` / `Status` / `Run now` / `Remove`) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention) **plus** a live `rsync` of your photos. Everything lands under `<dest>/immich/` — DB dumps in `<dest>/immich/db/`, photos in `<dest>/immich/photos/` (append-only — it never deletes from the backup). The photo copy backs up your **originals and metadata only**: it skips Immich's own DB-dump folder (`backups/`, already covered by the DB dump above) and the regenerable caches (`thumbs/`, `encoded-video/`) that Immich rebuilds after a restore — so the backup stays lean instead of mirroring tens of GB of throwaway data. `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to the one already configured (re-running Set up and pressing Enter keeps it), else to an external/USB drive, and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c <dest>/immich/db/immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
 
 ### Periodic (manual)
 
 | Task | Command | When |
 |------|---------|------|
 | Check status | `federver` → **s** | Anytime |
-| Update Immich | `privcloud update` | Monthly |
+| Update Immich | `federver` → i → Update | Monthly |
 | Update other containers | `docker compose pull && docker compose up -d` | Monthly |
 | Update Fedora userspace | `sudo dnf upgrade --exclude='kernel*'` | Monthly (or skip — security fixes auto-apply) |
 | Update kernel + reboot | see [Kernel updates](#kernel-updates) | Every 1–2 months, when you're home |
@@ -1346,7 +1340,7 @@ sudo systemctl reboot
 
 # 4. After it comes back, verify
 uname -r                    # should show the new version
-privcloud status            # containers back up?
+federver                    # → i → Status: containers back up?
 federver                    # → s, for full status
 ```
 
@@ -1373,13 +1367,12 @@ ssh <user>@federver
 
 ## Server troubleshooting
 
-### `privcloud` or `federver` command not found / wrong path
+### `federver` command not found / wrong path
 
-The global commands are created by step 1 (Enable SSH). If they point to the wrong path or don't exist:
+The global command is created by step 1 (Enable SSH). If it points to the wrong path or does not exist:
 
 ```bash
-# Check where they point
-cat /usr/local/bin/privcloud
+# Check where it points
 cat /usr/local/bin/federver
 
 # Fix — update to point to your repo location
@@ -1389,15 +1382,9 @@ sudo tee /usr/local/bin/federver > /dev/null <<EOF
 exec $REPO_DIR/setup.sh "\$@"
 EOF
 sudo chmod +x /usr/local/bin/federver
-
-sudo tee /usr/local/bin/privcloud > /dev/null <<EOF
-#!/bin/bash
-exec $REPO_DIR/privcloud "\$@"
-EOF
-sudo chmod +x /usr/local/bin/privcloud
 ```
 
-Or re-run `federver` → step 1 which recreates both wrappers with the correct paths.
+Or re-run `federver` → step 1 which recreates the wrapper with the correct path. (Older installs also have a `/usr/local/bin/privcloud` wrapper; the old `privcloud` command is gone, and step 1, Immich Install and Immich Update remove that wrapper.)
 
 ### Can't SSH into server
 
@@ -1475,7 +1462,7 @@ Pre-v0.5.1 fstab entries used `defaults,nofail`, which silently skipped the moun
 
 If BIOS is set to auto-power-on (F10 → After Power Loss → Power On), the server boots automatically. Fedora auto-logs in, Docker restarts all containers. Nothing to do.
 
-If services aren't running: `cd ~/privcloud && docker compose up -d && privcloud start`
+If services aren't running: `cd ~/privcloud && docker compose up -d`, then check with `federver` → i → Status.
 
 ---
 
@@ -1521,10 +1508,10 @@ This updates `.env` and redeploys FileBrowser automatically.
 
 ### Changing Immich data location
 
-1. Stop Immich: `privcloud stop`
+1. Stop Immich: `federver` → i → Stop
 2. Move files: `sudo rsync -ah --progress /old/immich/ /new/immich/`
 3. Change location: `federver` → **13** → **6** → enter `/new/immich`
-4. Verify: `privcloud status`
+4. Verify: `federver` → i → Status
 
 **Important:** the Postgres database password is baked in when first created. If you copy the database directory, keep the same `DB_PASSWORD` in `.env`. Changing it will cause `password authentication failed`.
 
@@ -1553,7 +1540,7 @@ This updates `.env` and redeploys FileBrowser automatically.
 | Task | Command |
 |------|---------|
 | Server status | `federver` → **s** |
-| Immich management | `privcloud` |
+| Immich management | `federver` → **i** |
 | Upload media/files | FileBrowser → `http://federver:8080` (user `admin`, password: `cat ~/.privcloud/filebrowser.pass`) |
 | Manage storage | `federver` → **13** (mount USB, change paths) |
 | VPN connect/disconnect | `fedvpn start` / `fedvpn stop` (laptop) |
@@ -1564,11 +1551,11 @@ This updates `.env` and redeploys FileBrowser automatically.
 | Show Syncthing Device ID | `federver` → **12** → **2** |
 | Check containers | `docker ps` |
 | View logs | `docker logs <container>` |
-| Update Immich | `privcloud update` |
+| Update Immich | `federver` → **i** → Update |
 | Update all containers | `docker compose pull && docker compose up -d` |
 | Update system | `sudo dnf upgrade` |
 | Remote desktop | RDP client → server IP port 3389 |
-| Backup | `privcloud backup` or `sudo systemctl start immich-backup.service` |
+| Backup | `federver` → **i** → Backup, or `sudo systemctl start immich-backup.service` |
 | Schedule backup | `federver` → **14** → **6** (Manage Immich backup) |
 | Disk alerts | `cat /var/log/disk-check.last` / `disk-check.log` or Uptime Kuma dashboard |
 | Backup to pass | `federver` → **15** (from laptop) |
@@ -1581,8 +1568,7 @@ This updates `.env` and redeploys FileBrowser automatically.
 
 | File | What |
 |------|------|
-| `setup.sh` | Server manager (runs as `federver`) |
-| `privcloud` | Photo manager (runs as `privcloud`) |
+| `setup.sh` | Server and Immich manager (runs as `federver`) |
 | `fedvpn` | WireGuard VPN client for laptop |
 | `docker-compose.yml` | All service definitions |
 | `.env.example` | Config template |

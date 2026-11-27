@@ -18,10 +18,9 @@ For full development and testing standards, see `.claude/memory/AGENT_RULES.md`.
 
 ## Project: privcloud
 
-Self-hosted home server and photo backup. Two tools in one repo:
+Self-hosted home server and photo backup. One tool in one repo (the repo is named `privcloud`, the tool is `federver`):
 
-- `federver` (setup.sh) — Fedora XFCE server setup and management. Handles SSH, Docker, firewall, Tailscale, service deployment, backups, monitoring, file sync.
-- `privcloud` (privcloud) — Immich photo management. Start/stop, status with error checking, updates, backup, upload, Google Photos migration.
+- `federver` (setup.sh) — Fedora XFCE server setup and management. Handles SSH, Docker, firewall, Tailscale, service deployment, backups, monitoring, file sync, and Immich photo management (`federver` → `i` Manage Immich: start/stop, status with error checking, updates, backup, upload, Google Photos migration). The former separate `privcloud` script and command are gone; scripting uses `federver --run <step>`.
 
 **Services:** Immich, Navidrome (music; auto-installs `.nsp` smart playlists), FileBrowser, Watchtower, Uptime Kuma, Tailscale.
 

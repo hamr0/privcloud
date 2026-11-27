@@ -51,13 +51,14 @@ fixes" column folds in the open review-ledger items, so nothing is fixed twice.
 
 | Step | Module | Also fixes (review ledger) | Size / risk | Gate before the next step | Status |
 |---|---|---|---|---|---|
-| 1 | QW quick wins | copy-mode question (`_mirror_ask`) not colour-coded: question in yellow, `delete` in red per the colour rules; `federver -> 14 -> 2` (Sync - New) reported stuck around that question (root-cause first) | S / low | each fix has a fail-first test | ☐ |
+| 1 | QW quick wins | copy-mode question (`_mirror_ask`) not colour-coded: question in yellow, `delete` in red per the colour rules; `federver -> 14 -> 2` (Sync - New) reported stuck around that question (root-cause first) | S / low | each fix has a fail-first test | ☑ code (cf6d270..bf70dde); live check pending |
+| 1b | Mirror safety (found live 2026-11-27: a mirror into a shared `docs/` offered to delete 1,354,744 files of an unrelated backup) | **wipe guard**: refuse, or require typing the exact count, when a mirror would delete a large share of the destination or whole top-level folders the source lacks; **honest preview**: for a mirror, "Destination will look like this" also lists what is already there and would go; **flush buffered keys** before every `y/N` (a leftover Enter answered the prompt); trap so Ctrl-C during the preview removes its temp file | S–M / medium | fail-first tests; live re-run of the same upload shows the guard | ☐ |
 | 2 | 0 test harness `tests/lib.sh` | disk-check flake: capture `tmpd` when it fails | S / low | check counts per suite unchanged | ☐ |
 | 3 | 1 drive-mount verdict | `_MIRROR_DRIVE_ROOTS` test override in the production guard | M / medium | **design review**, then live check on the USB drive | ☐ |
 | 4 | 2 sync-job generator | legacy finish-line patch gap (CRLF), `mktemp` leak in Change copy mode, untested `_mirror_banner` in step_sync, mirror preview not listing empty folders, duplicated `last:` label mapping, exit 24 (decision 1) | L / high | **design review**; atomic write + `.bak`; live mirror run, home and away | ☐ |
 | 5 | 3 Immich backup | install-time dry-run runs as the user, not root | M / medium | live scheduled run + one one-time run | ☐ |
 | 6 | 5 shared lib `lib/common.sh` | – | M / medium | `.env` stays mode 600; both tools work from the `/usr/local/bin` wrappers | ☐ |
-| 7 | 4 service lifecycle and status | inline `samba-poc` container probe; first live run of `federver -> 16` from the laptop | M–L / medium | live Status and Start/Stop | ☐ |
+| 7 | 4 service lifecycle and status | inline `samba-poc` container probe; first live run of `federver -> 16` from the laptop; `federver -> 7` Restart has no data-drive guard (Start does since QW) | M–L / medium | live Status and Start/Stop | ☐ |
 | 8 | 6 uninstall / firewall / confirm helpers | SMB firewall check queries only the default zone | M / low | typed-name confirm and kept `/opt/<service>` config unchanged | ☐ |
 | 9 | 7 menu table and doc checks | findings.md rules duplicated in project memory; docs index filing wiki pages under "Product" | S / low | a test fails on a stale `federver -> N` | ☐ |
 | 10 | Release | – | – | `/branch-review`, then `/release` | ☐ |

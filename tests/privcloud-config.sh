@@ -6,17 +6,15 @@
 # Run: bash tests/privcloud-config.sh   (non-zero on any failure)
 # PRIVCLOUD=<file> tests another copy of the script (fail-first check).
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$H/lib.sh"
 SRC=${PRIVCLOUD:-$H/../privcloud}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
-{ grep -E '^(red|green|yellow|bold)\(\)' "$SRC"
-  for f in env_get env_set cmd_config; do
-    awk -v f="$f" '$0 ~ "^"f"\\(\\)"{p=1} p{print} p&&/^}/{exit}' "$SRC"; done; } > "$T/fn.sh"
+for f in red green yellow bold env_get env_set cmd_config; do extract_fn "$f" "$SRC"; done > "$T/fn.sh"
 source "$T/fn.sh"
 type env_set >/dev/null 2>&1 || echo "FAIL  setup: env_set not found in $SRC (unfixed copy?)"
 ENV_FILE=$T/.env
-PASS=0; FAILN=0
-check() { if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rc=$RC]"; FAILN=$((FAILN+1)); fi; }
+CHECK_DIAG='rc=$RC'
 mode() { stat -c %a "$1"; }
 cfg() { RC=0; ( set -euo pipefail; printf '%s\n' "$1" | cmd_config ) >"$T/out" 2>&1 || RC=$?; }
 others() { grep -vE '^(UPLOAD_LOCATION|DB_DATA_LOCATION)=' "$1"; }
@@ -62,5 +60,4 @@ rm -f "$ENV_FILE"; cfg "$T/first"
 check 4a "fresh .env has the six keys" '[ $RC = 0 ] && [ "$(cut -d= -f1 "$ENV_FILE" | tr "\n" " ")" = "UPLOAD_LOCATION DB_DATA_LOCATION IMMICH_VERSION DB_PASSWORD DB_USERNAME DB_DATABASE_NAME " ]'
 check 4b "fresh .env mode 600, upload dir made" '[ "$(mode "$ENV_FILE")" = 600 ] && [ -d "$T/first" ]'
 
-echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
-[ "$FAILN" = 0 ]
+check_total

@@ -8,15 +8,14 @@
 # Stubbed ssh/docker/syncthing/systemctl: no real server, no network.
 # SETUP_SH=<file> tests another copy of setup.sh (fail-first check).
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$H/lib.sh"
 SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/nolap"
 BOLD= DIM= RED= GREEN= YELLOW= BLUE= NC=
 ok()   { echo "O: $1"; }; fail() { echo "F: $1"; }; info() { echo "I: $1"; }; warn() { echo "W: $1"; }
-for f in _server_probe _syncthing_server_probe _two_sided_gate step_syncthing; do
-  awk -v f="^$f\\\\(\\\\)" '$0 ~ f{p=1} p{print} p&&/^}/{exit}' "$SRC"
-done > "$T/fn.sh"
+for f in _server_probe _syncthing_server_probe _two_sided_gate step_syncthing; do extract_fn "$f" "$SRC"; done > "$T/fn.sh"
 source "$T/fn.sh"
 _is_server() { return 1; }
 _syncthing_install_laptop() { echo "CALLED install-laptop" >> "$T/calls"; }
@@ -47,8 +46,7 @@ mkdir -p "$T/binlap"; cp "$T/bin/syncthing" "$T/binlap/"
 BASEPATH=$PATH
 export PATH="$T/bin:$BASEPATH"; rm -f "$T/bin/syncthing"
 SERVER_USER=tester SERVER_IP=192.0.2.1
-PASS=0; FAILN=0
-check() { if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rc=$RC out='$OUT' calls='$(cat $T/calls 2>/dev/null)']"; FAILN=$((FAILN+1)); fi; }
+CHECK_DIAG="rc=\$RC out='\$OUT' calls='\$(cat \$T/calls 2>/dev/null)'"
 # gate <laptop-installed 0|1> <stdin>; env: DOCKER_DOWN, ST_EXISTS
 gate() {
   rm -f "$T/calls"
@@ -72,5 +70,4 @@ check 6 "running on both: gate passes, shows the unified Laptop/Server status" '
 ST_EXISTS=stopped gate 1 0
 check 7 "stopped on server + laptop installed: gate passes" '[[ "$OUT" == *"── Server ──"* && "$OUT" != *"Install the missing side"* ]]'
 
-echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
-[ "$FAILN" = 0 ]
+check_total

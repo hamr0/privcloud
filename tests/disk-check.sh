@@ -12,7 +12,7 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/log" "$T/tmpd"
 export TMPDIR=$T/tmpd   # mktemp in the installer lands here so leaks are visible
 # Only the generator (up to step_disk_monitor); its heredoc has col-0 '}' lines.
-awk '/^_disk_check_script\(\)/{p=1} /^step_disk_monitor\(\)/{p=0} p' "$SRC" > "$T/gen.sh"
+awk '/^_disk_check_script\(\)/{p=1} p{print} p&&/^DISKEOF/{d=1} d&&/^}/{exit}' "$SRC" > "$T/gen.sh"   # ends at the function's own closing brace
 source "$T/gen.sh"
 cat > "$T/bin/findmnt" <<'X'
 #!/bin/bash
@@ -61,7 +61,7 @@ reset; gen /nonexistent/.env; OUT=$(DISKCHECK_DRYRUN=1 bash "$T/dc.sh" 2>&1); RC
 check 1a "install dry-run, wrong .env path -> rc4 'config not found', no writes/curl" '[ $RC = 4 ] && [[ "$OUT" == *"config not found: /nonexistent/.env"* ]] && [ ! -e $T/log/dc.last ] && [ ! -e $CURL_LOG ]'
 # 1b step_disk_monitor end-to-end with wrong location: refuses, installs nothing
 mkdir -p "$T/copy"
-awk '/^_disk_check_script\(\)/{p=1} /^step_logrotation\(\)/{p=0} p' "$SRC" > "$T/copy/setup.sh"   # no .env beside it
+awk '/^_disk_check_script\(\)/{p=1} p && /^step_/ && !/^step_disk_monitor\(\)/{exit} p{print} /^step_disk_monitor\(\)/{d=1} d&&/^}/{exit}' "$SRC" > "$T/copy/setup.sh"   # ends with step_disk_monitor (or at the next step_* if renamed); no .env beside it
 cat > "$T/step.sh" <<'X'
 info(){ echo "I:$*"; }; warn(){ echo "W:$*"; }; fail(){ echo "F:$*"; }; ok(){ echo "O:$*"; }
 YELLOW= NC= BLUE= BOLD= DIM= GREEN= RED=

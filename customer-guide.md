@@ -680,7 +680,7 @@ federver
 
 If you run `federver` on the server by mistake, it shows a reduced menu with only step 1 (bootstrap), Status, Power, and Emergency restart — and a note to run from the laptop for the full menu. No errors, just a redirect.
 
-**Emergency restart (`e` on the server menu):** if DNS breaks because AdGuard stopped (you can't SSH from the laptop because domain names don't resolve), walk to the server, open a terminal, run `federver`, pick `e`. It restores systemd-resolved as a DNS fallback, starts all containers (compose stack + standalone AdGuard/Syncthing, each with autostart switched back on), and re-disables the stub once AdGuard is back. One action, everything recovers. Confirms with `[Y/n]` before proceeding.
+**Emergency restart (`e` on the server menu):** if DNS breaks because AdGuard stopped (you can't SSH from the laptop because domain names don't resolve), walk to the server, open a terminal, run `federver`, pick `e`. It restores systemd-resolved as a DNS fallback, starts all containers (compose stack + standalone AdGuard/Syncthing/Samba, each with autostart switched back on), and re-disables the stub once AdGuard is back. One action, everything recovers. Confirms with `[Y/n]` before proceeding.
 
 **Steps 3-9 + Extras:** Go through each step:
 

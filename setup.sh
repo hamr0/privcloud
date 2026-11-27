@@ -473,7 +473,7 @@ step_emergency() {
     echo ""
     info "Actions:"
     info "  1. Re-enable systemd-resolved stub (restores local DNS if AdGuard is broken)"
-    info "  2. Start all Docker containers (compose stack + AdGuard + Syncthing)"
+    info "  2. Start all Docker containers (compose stack + AdGuard + Syncthing + Samba)"
     info "  3. Restart systemd-resolved"
     echo ""
     read -p "  Continue? [Y/n] " -n 1 -r
@@ -496,7 +496,7 @@ step_emergency() {
     info "Starting standalone containers..."
     # Per-container rule (autostart follows the action). A standalone one that
     # was never installed is skipped quietly; a real failure is reported.
-    for c in adguard syncthing; do
+    for c in adguard syncthing samba; do
         sudo docker inspect "$c" > /dev/null 2>&1 || continue
         _svc_power start "$c" || warn "Could not start $c."
     done
@@ -7273,7 +7273,7 @@ _smb_env_content() { # user uid gid password   (uses _SMB_NAMES/_SMB_PATHS)
     printf '%s\n' \
         "ACCOUNT_$u=$4" \
         "UID_$u=$2" \
-        "SAMBA_GLOBAL_STANZA=hosts allow = 100.64.0.0/10 127.0.0.1;hosts deny = 0.0.0.0/0;server min protocol = SMB2;server smb encrypt = desired"
+        "SAMBA_GLOBAL_STANZA=hosts allow = 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1;hosts deny = 0.0.0.0/0;server min protocol = SMB2;server smb encrypt = desired"
     for i in "${!_SMB_NAMES[@]}"; do
         printf '%s\n' "SAMBA_VOLUME_CONFIG_s$i=[${_SMB_NAMES[$i]}]; path = /shares/${_SMB_NAMES[$i]}; valid users = $u; guest ok = no; read only = no; browseable = yes; force user = $u$grp; veto files = /lost+found/.Trash-*/; delete veto files = no"
     done
@@ -7298,6 +7298,21 @@ _smb_fw_fix() {
 # after the old container is gone a failure says so loudly.
 _smb_apply() {
     local uid gid envc listc i mounts=() n up=0
+    # Never let docker auto-create a missing bind source: check every folder that
+    # will be shared BEFORE anything is written or removed (the running share
+    # stays as it is). Manage folders drops a removed folder from the list
+    # first, so removing a broken one is not blocked by itself.
+    local bad="" c
+    for i in "${!_SMB_NAMES[@]}"; do
+        c=$(_smb_folder_check "${_SMB_PATHS[$i]}")
+        [[ "$c" == ok ]] || bad+="    ${_SMB_NAMES[$i]} -> ${_SMB_PATHS[$i]}: $(_smb_folder_reason "$c")"$'\n'
+    done
+    if [[ -n "$bad" ]]; then
+        fail "Not applied - these folders are not available:"
+        printf '%s' "$bad"
+        echo -e "  Mount the drive (or restore the folder) and try again, or remove the folder in ${BOLD}Manage folders${NC}. The running share was not touched."
+        return 1
+    fi
     uid=$(id -u); gid=$(id -g)
     envc=$(_smb_env_content "$_SMB_USER" "$uid" "$gid" "$_SMB_PW")
     listc=$(for i in "${!_SMB_NAMES[@]}"; do printf '%s|%s\n' "${_SMB_NAMES[$i]}" "${_SMB_PATHS[$i]}"; done)
@@ -7359,16 +7374,25 @@ _smb_devname() {
     echo "${n:-$1}"
 }
 
-# One line per connected device: "name|shares opened|since HH:MM" (smbstatus -S
-# rows grouped by client IP; a device with two shares is one line).
+# One line per connected device: "name|shares opened|since HH:MM" (or "since
+# Thu 23:50" when the earliest open is not from today). smbstatus -S rows are
+# grouped by client IP (a device with two shares is one line). smbstatus prints
+# its time in UTC with a date, so each one is parsed whole by `date -d` and the
+# earliest picked by epoch, shown in this host's local time.
 _smb_devices() { # docker words
-    local sess ip
+    local sess ip name shares min="" e i sh t fmt=%H:%M
     sess=$(_smb_sessions "$@")
     for ip in $(cut -d'|' -f1 <<<"$sess" | sort -u); do
-        awk -F'|' -v ip="$ip" -v n="$(_smb_devname "$ip")" '
-            $1==ip {sh=sh (sh?", ":"") $2; split($3,a," ")
-                    for (i in a) if (a[i] ~ /^[0-9]+:[0-9]+:[0-9]+$/ && (m==""||a[i]<m)) m=a[i]}
-            END {print n "|" sh "|" substr(m,1,5)}' <<<"$sess"
+        name=$(_smb_devname "$ip"); shares=""; min=""
+        while IFS='|' read -r i sh t; do
+            [[ "$i" == "$ip" ]] || continue
+            shares+="${shares:+, }$sh"
+            e=$(date -d "$t" +%s 2>/dev/null) || continue
+            [[ -z "$min" || "$e" -lt "$min" ]] && min=$e
+        done <<<"$sess"
+        fmt=%H:%M
+        [[ -n "$min" && "$(date -d "@$min" +%F)" != "$(date +%F)" ]] && fmt="%a %H:%M"
+        echo "$name|$shares|${min:+$(date -d "@$min" +"$fmt")}"
     done
 }
 

@@ -116,6 +116,7 @@ esac
 exit 0
 X
 chmod +x "$T/bin/"*
+export TZ=UTC   # smbstatus prints UTC; fixtures below are read as UTC unless a case sets another TZ
 export PATH="$T/bin:$PATH" DOCKER_STATE=$T/c DOCKER_LOG=$T/docker.log SMBSTATUS=$T/smbstatus TMNT=$T/mnt
 PASS=0; FAILN=0
 mk() { local d="$T/c/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _)"; mkdir -p "$d"
@@ -182,7 +183,7 @@ check 3b "one -v mount per folder at /shares/<name>, host net, env-file, autosta
 check 3c "one SAMBA_VOLUME_CONFIG per share, both valid-user restricted, read-write, veto" \
   '[ "$(grep -c "^SAMBA_VOLUME_CONFIG_s" "$ENVF")" = 2 ] && grep -q "^SAMBA_VOLUME_CONFIG_s0=\[docs\]; path = /shares/docs; valid users = testuser; guest ok = no; read only = no" "$ENVF" && grep -q "^SAMBA_VOLUME_CONFIG_s1=\[media\]" "$ENVF" && grep -q "veto files = /lost+found/.Trash-\*/" "$ENVF"'
 check 3d "env + list files are mode 600, list has name|path" '[ "$(stat -c %a "$ENVF")" = 600 ] && [ "$(stat -c %a "$SHF")" = 600 ] && grep -qx "docs|$T/files/docs" "$SHF"'
-check 3e "hosts allow tailnet only, SMB2, runtime uid" 'grep -q "hosts allow = 100.64.0.0/10 127.0.0.1;hosts deny = 0.0.0.0/0;server min protocol = SMB2;server smb encrypt = desired" "$ENVF" && grep -q "^UID_testuser=4242$" "$ENVF" && ! grep -q GROUP_ "$ENVF"'
+check 3e "hosts allow tailnet only, SMB2, runtime uid" 'grep -q "hosts allow = 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1;hosts deny = 0.0.0.0/0;server min protocol = SMB2;server smb encrypt = desired" "$ENVF" && grep -q "^UID_testuser=4242$" "$ENVF" && ! grep -q GROUP_ "$ENVF"'
 check 3f "typed password used; never on docker argv/log" '[ "$(PWOF)" = FakePass0123456x ] && ! grep -qF FakePass0123456x "$DOCKER_LOG"'
 check 3g "connect box: server ip, user, password, iPhone + Android steps" '[[ "$OUT" == *smb://100.99.99.99* && "$OUT" == *"User:      testuser"* && "$OUT" == *FakePass0123456x* && "$OUT" == *iPhone* && "$OUT" == *Android* && "$OUT" == *"Material Files"* ]]'
 reset; run $'1\ny'"$T/files/docs"$'\n\n\n' 0 step_samba
@@ -345,6 +346,50 @@ check 12e "pull fails: own honest error, nothing run, no success" '[ $RC != 0 ] 
 mkset >/dev/null; export NO_IMAGE=1 FAIL_PULL=1; rm -f "$T/c/.pulled"; run $'3\ng\n' 0 step_samba
 check 12f "pull fails during a change: the running share is NOT removed" '[ $RC != 0 ] && [ -d "$T/c/samba" ] && ! grep -q "^docker rm" "$DOCKER_LOG"'
 unset NO_IMAGE FAIL_PULL
+
+# 13 "since": smbstatus prints UTC with a date; shown in the host's local time, earliest by epoch
+reset; mkset >/dev/null
+printf 'docs         14      100.99.99.98  Fri Nov 27 09:31:14 2026 UTC     -            -\n' > "$SMBSTATUS"
+r=$(TZ=Europe/Berlin _smb_devices docker)
+check 13a "single UTC row 09:31:14 -> 10:31 in TZ=Europe/Berlin" '[[ "$r" == *"10:31" ]]'
+YD=$(date -d yesterday +%a)
+printf '%s\n' "docs         14      100.99.99.98  $(date -u -d 'yesterday 23:50' '+%a %b %e %H:%M:%S %Y') UTC     -            -" \
+               "media        15      100.99.99.98  $(date -u -d 'today 08:00' '+%a %b %e %H:%M:%S %Y') UTC     -            -" > "$SMBSTATUS"
+r=$(_smb_devices docker)
+check 13b "yesterday 23:50 + today 08:00: earliest is yesterday's, shown with the weekday" '[ "$r" = "iphone-test|docs, media|$YD 23:50" ]'
+printf '%s\n' "media        15      100.99.99.98  $(date -u -d 'today 08:00' '+%a %b %e %H:%M:%S %Y') UTC     -            -" > "$SMBSTATUS"
+r=$(_smb_devices docker)
+check 13c "only a time from today: plain HH:MM, no weekday" '[ "$r" = "iphone-test|media|08:00" ]'
+rm -f "$SMBSTATUS"
+
+# 14 saved folders are re-checked before anything is removed or run
+mkusb() { reset; run $'1\ny'"$T/files/docs"$'\n'"$T/mnt/usb/data"$'\n\nFakePass0123456x\nFakePass0123456x\n' 0 step_samba; }
+mkusb; export FM_MODE=root; : > "$DOCKER_LOG"; run $'3\ng\n' 0 step_samba
+check 14a "unmounted saved folder + password change: refused, names folder + reason + fix, no rm/run, share untouched" \
+  '[ $RC != 0 ] && [[ "$OUT" == *"data"*"drive not mounted"* && "$OUT" == *"Manage folders"* && "$OUT" != *"Password changed"* ]] && ! grep -q "^docker rm\|^docker run" "$DOCKER_LOG" && [ -d "$T/c/samba" ] && [ "$(PWOF)" = FakePass0123456x ]'
+: > "$DOCKER_LOG"; run $'2\n2\ny\n' 0 step_samba
+check 14b "Manage folders can still remove the broken folder (only the rest is checked)" '[ "$(NSH)" = 1 ] && grep -qx "docs|$T/files/docs" "$SHF" && [ "$(grep -c "^docker run" "$DOCKER_LOG")" = 1 ]'
+mkusb; export FM_MODE=root; : > "$DOCKER_LOG"; run $'2\n1\ny\n' 0 step_samba
+check 14c "removing a good folder while another is broken: refused, config unchanged" '[ $RC != 0 ] && [[ "$OUT" == *"drive not mounted"* ]] && [ "$(NSH)" = 2 ] && ! grep -q "^docker rm\|^docker run" "$DOCKER_LOG"'
+mkusb; run $'7\nsamba\n' 0 step_samba; export FM_MODE=root; : > "$DOCKER_LOG"; run $'1\nyy' 0 step_samba
+check 14d "Reuse in Set up with an unmounted saved folder: refused with message, nothing run" '[ $RC != 0 ] && [[ "$OUT" == *"Saved setup found"* && "$OUT" == *"drive not mounted"* && "$OUT" != *"File sharing set up"* ]] && ! grep -q "^docker run" "$DOCKER_LOG"'
+mkset; rm -rf "$T/files/media"; : > "$DOCKER_LOG"; run $'3\ng\n' 0 step_samba; mkdir -p "$T/files/media"
+check 14e "missing saved folder: refused as 'folder missing'" '[ $RC != 0 ] && [[ "$OUT" == *"media"*"folder missing"* ]] && ! grep -q "^docker rm\|^docker run" "$DOCKER_LOG"'
+unset FM_MODE
+
+# 15 Emergency restart brings samba back too (stubs: nothing real is touched)
+mkset >/dev/null
+eval "$(awk '/^step_emergency\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC")"
+EM=$T/emergency.log; : > "$EM"
+( sudo() { if [ "$1" = docker ]; then command docker "${@:2}"; else echo "sudo $*" >> "$EM"; fi; }
+  sg() { :; }; sleep() { :; }; _svc_power() { echo "power $*" >> "$EM"; }
+  step_emergency <<<"y" >/dev/null 2>&1 )
+check 15a "emergency restart starts samba (only when it exists)" 'grep -qx "power start samba" "$EM"'
+rm -rf "$T/c/samba"; : > "$EM"
+( sudo() { if [ "$1" = docker ]; then command docker "${@:2}"; else echo "sudo $*" >> "$EM"; fi; }
+  sg() { :; }; sleep() { :; }; _svc_power() { echo "power $*" >> "$EM"; }
+  step_emergency <<<"y" >/dev/null 2>&1 )
+check 15b "samba not installed: skipped quietly" '! grep -q samba "$EM"'
 
 # 10 main menu + public-repo hygiene
 check 10a "main menu line 16 reads 'Connect phone (Files app)' with the hint" 'grep -q "16)\${NC} Connect phone (Files app) .*iPhone/Android open server folders over Tailscale" "$SRC" && grep -q "16) run_step \"\[16\] Connect phone (Files app)\" \"_on_server step_samba\"" "$SRC"'

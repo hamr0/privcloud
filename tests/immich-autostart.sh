@@ -20,7 +20,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nIMMICH_VERSION=release\n'
 {
   printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC=\nDRY_RUN=0\n_FV_SELF=%q\n' "$T/app/run.sh"
   for f in ok fail info warn _env_get _shq _svc_sudo_guard _svc_power_body _svc_power _immich_compose _immich_up \
-           _immich_urls _immich_needs_selinux _immich_patch_selinux _immich_fix_permissions _immich_docker_group \
+           _immich_urls _immich_needs_selinux _immich_fix_permissions _immich_docker_group \
            _immich_ensure_docker _immich_keep_autostart _immich_need_env step_immich_start step_immich_update; do
     extract_fn "$f" "$SRC"
   done
@@ -109,5 +109,18 @@ check 4a "update: applied update re-arms every container to unless-stopped" '[ $
 reset; mk web false no; export NOOP_UPDATE=1
 run $RUN step_immich_start
 check 5a "start: a policy that did not stick is caught by the read-back (warned, rc 0)" '[ $RC = 0 ] && [[ "$OUT" == *"Could not set autostart"* ]] && [ "$(st web)" = "true no" ]'
+
+# C: the tracked compose file is never edited, whatever SELinux says (it carries :Z, which docker ignores when SELinux is off)
+printf '#!/bin/bash\necho "${GE_MODE:-Permissive}"\n' > "$T/bin/getenforce"; chmod +x "$T/bin/getenforce"
+cp "$H/../docker-compose.yml" "$T/compose.orig"
+for mode in Enforcing Permissive Disabled; do
+  cp "$T/compose.orig" "$T/app/docker-compose.yml"; reset; mk web false no; export GE_MODE=$mode
+  run $RUN step_immich_start
+  check "6-$mode" "start with SELinux $mode: docker-compose.yml is byte-identical afterwards" '[ $RC = 0 ] && cmp -s "$T/app/docker-compose.yml" "$T/compose.orig" && [ ! -e "$T/app/docker-compose.yml.bak" ]'
+done
+cp "$T/compose.orig" "$T/app/docker-compose.yml"; reset; mk web true always; export GE_MODE=Permissive
+runy $RUN step_immich_update
+check 6u "update with SELinux off: docker-compose.yml is byte-identical afterwards" '[ $RC = 0 ] && cmp -s "$T/app/docker-compose.yml" "$T/compose.orig"'
+check 6z "the committed compose file carries :Z on both Immich bind mounts" '[ "$(grep -c ":Z$" "$H/../docker-compose.yml")" = 2 ]'
 
 check_total

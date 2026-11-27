@@ -3873,20 +3873,10 @@ _immich_urls() {
 }
 _immich_needs_selinux() { command -v getenforce &>/dev/null && [[ "$(getenforce 2>/dev/null)" == Enforcing ]]; }
 
-_immich_patch_selinux() {
-    if _immich_needs_selinux; then
-        sed -i.bak \
-            -e 's|\(\${UPLOAD_LOCATION}:/usr/src/app/upload\)$|\1:Z|' \
-            -e 's|\(\${DB_DATA_LOCATION}:/var/lib/postgresql/data\)$|\1:Z|' \
-            "$_IMMICH_COMPOSE" && rm -f "${_IMMICH_COMPOSE}.bak"
-    else
-        sed -i.bak \
-            -e 's|\(\${UPLOAD_LOCATION}:/usr/src/app/upload\):Z|\1|' \
-            -e 's|\(\${DB_DATA_LOCATION}:/var/lib/postgresql/data\):Z|\1|' \
-            "$_IMMICH_COMPOSE" && rm -f "${_IMMICH_COMPOSE}.bak"
-    fi
-}
 
+# docker-compose.yml is never edited by this script: the two Immich bind mounts carry
+# `:Z` in the tracked file. With SELinux Enforcing that relabels them; with SELinux off
+# docker's relabel step is a no-op (see the CHANGELOG entry), so one file serves both.
 _immich_fix_permissions() {
     local upload_loc db_loc
     upload_loc="$(_env_get UPLOAD_LOCATION "$_IMMICH_ENV")"
@@ -3989,9 +3979,8 @@ step_immich_install() {
         ok "Config: $(_env_get UPLOAD_LOCATION "$_IMMICH_ENV")"
     fi
 
-    _immich_patch_selinux
     _immich_fix_permissions
-    _immich_needs_selinux && ok "SELinux: patched"
+    _immich_needs_selinux && ok "SELinux: Enforcing (the compose file's :Z labels apply)"
 
     echo ""
     echo -e "  ${BOLD}Pulling images (first time takes a few minutes)...${NC}"
@@ -4011,7 +4000,6 @@ step_immich_start() {
         return 0
     fi
 
-    _immich_patch_selinux
     _immich_fix_permissions
 
     _immich_compose up -d || { fail "docker compose up failed."; return 1; }
@@ -4066,9 +4054,9 @@ step_immich_status() {
         se="$(getenforce 2>/dev/null)"
         if [[ "$se" == Enforcing ]]; then
             if grep -q ':Z' "$_IMMICH_COMPOSE" 2>/dev/null; then
-                ok "SELinux:  Enforcing (patched)"
+                ok "SELinux:  Enforcing (:Z labels present in docker-compose.yml)"
             else
-                fail "SELinux:  Enforcing (NOT patched - run: federver -> i -> Install)"
+                fail "SELinux:  Enforcing (docker-compose.yml lost its :Z labels - restore it: git checkout docker-compose.yml)"
             fi
         else
             echo "    SELinux:  $se"

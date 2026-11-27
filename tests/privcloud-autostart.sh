@@ -8,6 +8,7 @@
 # Everything runs in a mktemp sandbox with stubbed docker/sg/curl/id: no real
 # docker, no network. PRIVCLOUD=<file> tests another copy of the script.
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$H/lib.sh"
 SRC=${PRIVCLOUD:-$H/../privcloud}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
@@ -52,11 +53,10 @@ printf '#!/bin/bash\nexit 0\n' > "$T/bin/sleep"
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH" DOCKER_STATE=$T/c DOCKER_LOG=$T/docker.log STATE_UP=$T/up.state STATE_PULLED=$T/pulled.state
 unset PRIVCLOUD_SG_DONE
-PASS=0; FAILN=0
 mk() { local d="$T/c/$1"; mkdir -p "$d"; printf '%s' "$1" > "$d/name"; echo "$2" > "$d/running"; echo "$3" > "$d/policy"; }
 st() { echo "$(cat "$T/c/$1/running") $(cat "$T/c/$1/policy")"; }
 reset() { rm -rf "$T/c" "$STATE_UP" "$STATE_PULLED"; mkdir -p "$T/c"; : > "$DOCKER_LOG"; unset FAIL_UPDATE FAIL_PS; }
-check() { if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rc=$RC out='$OUT']"; FAILN=$((FAILN+1)); fi; }
+CHECK_DIAG="rc=\$RC out='\$OUT'"
 run() { OUT=$("$@" 2>&1 </dev/null); RC=$?; }
 runy() { OUT=$(echo y | "$@" 2>&1); RC=$?; }
 
@@ -87,5 +87,4 @@ reset; mk web true always; mk db false no
 runy "$T/app/privcloud" update
 check 4a "update: applied update re-arms every container to unless-stopped" '[ $RC = 0 ] && [ "$(st web)" = "true unless-stopped" ] && [ "$(st db)" = "true unless-stopped" ] && [[ "$OUT" != *"Could not set autostart"* ]]'
 
-echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
-[ "$FAILN" = 0 ]
+check_total

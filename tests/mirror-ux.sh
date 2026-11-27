@@ -5,14 +5,13 @@
 # SETUP_SH=<file> tests another copy of setup.sh (fail-first check).
 # Real colour codes here (sync-mirror.sh runs with them empty).
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$H/lib.sh"
 SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
-{ grep -E '^(ok|fail|info|warn)\(\)' "$SRC"
-  grep -E '^MIRROR_WIPE_MIN=' "$SRC"
-  for f in _mirror_flush _mirror_ask _mirror_preview _mirror_delete_q; do
-    awk -v f="$f" '$0 ~ "^"f"\\(\\)"{p=1} p{print} p&&/^}/{exit}' "$SRC"; done; } > "$T/fn.sh"
+{ grep -E '^MIRROR_WIPE_MIN=' "$SRC"
+  for f in ok fail info warn _mirror_flush _mirror_ask _mirror_preview _mirror_delete_q; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 # mp = what a one-time copy does: the preview, then (after the box) the one question.
 cat >> "$T/fn.sh" <<'X'
 mp() { _mirror_preview "$@"; local r=$?
@@ -24,8 +23,7 @@ _mirror_guard() { return 0; }
 _mirror_refuse() { :; }
 _server_sudo_run() { bash -c "$1"; }   # "root on the server" = this shell
 mkdir -p "$T/tmp"; export TMPDIR=$T/tmp XDG_STATE_HOME=$T/state
-PASS=0; FAILN=0
-check() { if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [out=$(printf '%q' "${OUT:0:300}")]"; FAILN=$((FAILN+1)); fi; }
+CHECK_DIAG='out=$(printf "%q" "${OUT:0:300}")'
 plain() { sed 's/\x1b\[[0-9;]*m//g' <<<"$1"; }
 
 # 1 copy-mode question colours
@@ -182,5 +180,4 @@ echo "TICK_MS=\$(( (\$(date +%s%N) - S) / 1000000 ))"
 X
 bash "$T/tick.sh" | sed 's/^/      (400k-line tick: /; s/$/)/' | tail -1
 
-echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
-[ "$FAILN" = 0 ]
+check_total

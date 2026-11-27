@@ -5124,19 +5124,24 @@ _rsync_with() { printf 'rsync %s %s' "$2" "${1#rsync }"; }
 # rc 0 = go ahead (_mirror_n = files + empty folders that will be deleted); 1 = refused,
 # failed or cancelled - the caller copies / saves nothing.
 _mirror_preview() {
-    local loc=$1 src=$2 dest=$3 dry=$4 ask=$5 out rc=0 all dels dirs nf nd what="" reply=""
+    local loc=$1 src=$2 dest=$3 dry=$4 ask=$5 rc=0 nf nd what="" reply="" sdir list
     _mirror_n=0
     if ! _mirror_guard "$loc" "$src"; then _mirror_refuse "$src"; return 1; fi
     # The dry run reads both trees and can take minutes, so say what is going on
-    # and (on a terminal) tick the elapsed seconds on that line. Same command,
-    # same rc and same output as before, just run in the background into a temp file.
-    local tmp pid t=0 msg="Checking what a mirror would delete (nothing is copied)"
-    tmp=$(mktemp) || { fail "Could not create a temp file for the preview - nothing changed."; return 1; }
+    # and (on a terminal) tick the elapsed seconds on that line. The full output
+    # streams into a private list file (names can be private), never a shell
+    # variable: a mirror into the wrong folder can list millions of files.
+    sdir=${XDG_STATE_HOME:-$HOME/.local/state}/federver
+    list=$sdir/mirror-preview-$(date +%Y%m%d-%H%M%S).txt
+    if ! ( umask 077; mkdir -p "$sdir" && : > "$list" ) 2>/dev/null; then
+        fail "Could not create the preview list file in $sdir - nothing changed."; return 1
+    fi
+    local pid t=0 msg="Checking what a mirror would delete (nothing is copied)"
     if [[ -t 1 ]]; then printf '  %s...' "$msg"; else echo "  $msg..."; fi
     if [[ "$loc" == sudo ]]; then
-        _server_sudo_run "exec 2>&1; $dry" > "$tmp" &
+        _server_sudo_run "exec 2>&1; $dry" > "$list" &
     else
-        bash -c "$dry" > "$tmp" 2>&1 &
+        bash -c "$dry" > "$list" 2>&1 &
     fi
     pid=$!
     if [[ -t 1 ]]; then
@@ -5147,33 +5152,41 @@ _mirror_preview() {
     fi
     wait "$pid" || rc=$?
     [[ -t 1 ]] && printf '\r\033[K'
-    out=$(cat "$tmp"); rm -f "$tmp"
     if (( rc != 0 )); then
+        rm -f "$list"
         fail "Could not preview the deletions (rsync exit $rc) - nothing changed."
         return 1
     fi
     # Files are listed by name; a directory counts only when no deleted file
     # sits under it (those go with their files) = an empty folder.
-    all=$(printf '%s\n' "$out" | sed -n 's/^del\.|//p')
-    dels=$(printf '%s\n' "$all" | grep -v '/$' || true)
-    dirs=$(printf '%s\n' "$all" | awk '/\/$/ { d[++nd] = $0; next }
-        { p = $0; while ((i = match(p, /\/[^\/]*$/)) > 0) { p = substr(p, 1, i - 1); has[p "/"] = 1 } }
-        END { for (i = 1; i <= nd; i++) if (!(d[i] in has)) print d[i] }')
-    nf=$(printf '%s\n' "$dels" | grep -c . || true)
-    nd=$(printf '%s\n' "$dirs" | grep -c . || true)
+    local counts
+    counts=$(awk '/^del\.\|/ { p = substr($0, 6)
+            if (p ~ /\/$/) { d[++nd] = p; next }
+            nf++
+            while ((i = match(p, /\/[^\/]*$/)) > 0) { p = substr(p, 1, i - 1); if ((p "/") in has) break; has[p "/"] = 1 } }
+        END { for (i = 1; i <= nd; i++) if (!(d[i] in has)) ne++
+              print nf + 0, ne + 0 }' "$list")
+    read -r nf nd <<<"$counts"
     _mirror_n=$((nf + nd))
+    if (( _mirror_n == 0 )); then rm -f "$list"; else
+        local old=()   # keep only the newest 5 lists
+        mapfile -t old < <(ls -1 "$sdir"/mirror-preview-*.txt 2>/dev/null | sort -r | tail -n +6)
+        (( ${#old[@]} )) && rm -f -- "${old[@]}"
+    fi
     [[ "$ask" == save ]] && echo -e "  ${YELLOW}⚠ Every scheduled run will delete destination files that are gone from the source.${NC}"
     if (( nf > 0 )); then
         what="${nf} file$([[ $nf == 1 ]] || echo s)"
         (( nd > 0 )) && what+=" (+ ${nd} empty folder$([[ $nd == 1 ]] || echo s))"
         echo -e "  ${YELLOW}⚠ ${what} would be deleted at ${dest}:${NC}"
-        printf '%s\n' "$dels" | head -n 5 | sed 's/[[:cntrl:]]//g; s/^/    /'
+        sed -n 's/^del\.|//p' "$list" | awk '!/\/$/ && ++n <= 5' | sed 's/[[:cntrl:]]//g; s/^/    /'
         (( nf > 5 )) && echo "    ... and $((nf - 5)) more"
+        echo "  Full list: $list"
     elif (( nd > 0 )); then
         what="${nd} empty folder$([[ $nd == 1 ]] || echo s)"
         echo -e "  ${YELLOW}⚠ ${what} would be removed at ${dest}:${NC}"
-        printf '%s\n' "$dirs" | head -n 5 | sed 's/[[:cntrl:]]//g; s/^/    /'
+        sed -n 's/^del\.|//p' "$list" | awk '/\/$/ && ++n <= 5' | sed 's/[[:cntrl:]]//g; s/^/    /'
         (( nd > 5 )) && echo "    ... and $((nd - 5)) more"
+        echo "  Full list: $list"
     else
         ok "Nothing to delete - destination has no extra files."
         [[ "$ask" == copy ]] && return 0

@@ -10,13 +10,14 @@ T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 { grep -E '^(ok|fail|info|warn)\(\)' "$SRC"
-  for f in _mirror_ask _mirror_preview; do
+  grep -E '^MIRROR_WIPE_MIN=' "$SRC"
+  for f in _mirror_flush _mirror_ask _mirror_preview; do
     awk -v f="$f" '$0 ~ "^"f"\\(\\)"{p=1} p{print} p&&/^}/{exit}' "$SRC"; done; } > "$T/fn.sh"
 source "$T/fn.sh"
 _mirror_guard() { return 0; }
 _mirror_refuse() { :; }
 _server_sudo_run() { bash -c "$1"; }   # "root on the server" = this shell
-mkdir -p "$T/tmp"; export TMPDIR=$T/tmp
+mkdir -p "$T/tmp"; export TMPDIR=$T/tmp XDG_STATE_HOME=$T/state
 PASS=0; FAILN=0
 check() { if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [out=$(printf '%q' "${OUT:0:300}")]"; FAILN=$((FAILN+1)); fi; }
 plain() { sed 's/\x1b\[[0-9;]*m//g' <<<"$1"; }
@@ -41,7 +42,6 @@ for loc in local sudo; do
   check 2c-$loc "$loc: answer y -> rc 0" '[ $RC = 0 ]'
   OUT=$(_mirror_preview $loc /s /d "echo oops; exit 23" copy 2>&1); RC=$?
   check 2d-$loc "$loc: rsync failure keeps rc 1 and the exit code in the message" '[ $RC = 1 ] && [[ "$OUT" == *"Could not preview the deletions (rsync exit 23) - nothing changed."* && "$OUT" != *"would be deleted"* ]]'
-  check 2e-$loc "$loc: temp file removed after success and failure" '[ -z "$(ls -A "$T/tmp")" ]'
 done
 OUT=$(_mirror_preview local /s /d "printf ''" copy 2>&1); RC=$?
 check 2f "nothing to delete: still rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Nothing to delete"* ]]'
@@ -60,6 +60,23 @@ OUT=$RAW
 check 3a "tty: ticker shows elapsed seconds" '[[ "$RAW" == *"1s"* && "$RAW" == *"Checking what a mirror would delete"* ]]'
 check 3b "tty: the ticker line is cleared before the result" '[[ "$RAW" == *$'"'"'\033[K'"'"'* && "$RAW" == *"would be deleted at /d"* ]]'
 check 3c "tty: temp file removed" '[ -z "$(ls -A "$T/tmp")" ]'
+
+# 4 full list goes to a file (not a shell variable); newest 5 kept; path shown
+rm -rf "$T/state"
+OUT=$(echo n | _mirror_preview local /s /d "$LIST" copy 2>&1); RC=$?
+LF=$(ls "$T/state/federver"/mirror-preview-*.txt 2>/dev/null | head -1)
+check 4a "'Full list: <path>' is printed and the file exists" '[ -n "$LF" ] && [[ "$OUT" == *"Full list: $LF"* ]]'
+check 4b "list file holds the dry-run output, mode 600, dir 700" '[ -n "$LF" ] && grep -qx "del.|sub/b" "$LF" && [ "$(stat -c %a "$LF")" = 600 ] && [ "$(stat -c %a "$T/state/federver")" = 700 ]'
+for i in 1 2 3 4 5 6 7 8; do : > "$T/state/federver/mirror-preview-2020010$i-000000.txt"; done
+OUT=$(echo n | _mirror_preview local /s /d "$LIST" copy 2>&1)
+check 4c "only the newest 5 list files are kept" '[ "$(ls "$T/state/federver" | wc -l)" = 5 ] && [ ! -e "$T/state/federver/mirror-preview-20200101-000000.txt" ] && [ -e "$T/state/federver/mirror-preview-20200108-000000.txt" ]'
+OUT=$(_mirror_preview local /s /d "echo oops; exit 23" copy 2>&1)
+check 4d "failed preview leaves no new list file" '[ "$(ls "$T/state/federver" | wc -l)" = 5 ]'
+BIG="awk 'BEGIN{for(i=1;i<=200000;i++) print \"del.|d\" (i%7) \"/f\" i}'"
+S0=$(date +%s.%N); OUT=$(echo n | _mirror_preview local /s /d "$BIG" copy 2>&1); RC=$?; S1=$(date +%s.%N)
+check 4e "200k-line deletion list is counted from the file" '[ $RC = 1 ] && [[ "$(plain "$OUT")" == *"⚠ 200000 files would be deleted at /d:"* ]]'
+check 4f "the preview never holds the whole output in a variable" '! declare -f _mirror_preview | grep -Eq "out=|\$\(cat"'
+echo "      (200k preview took $(awk -v a="$S0" -v b="$S1" 'BEGIN{printf "%.1f", b-a}')s)"
 
 echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
 [ "$FAILN" = 0 ]

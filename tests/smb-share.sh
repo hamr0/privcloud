@@ -6,19 +6,15 @@
 # id/openssl/tailscale/findmnt: no real containers, no sudo, no network. All
 # names and ids are fake. SETUP_SH=<file> tests another copy of setup.sh.
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$H/lib.sh"
 SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/c" "$T/files/docs" "$T/files/media" "$T/files/My Pics" "$T/opt" "$T/mnt/usb/data" "$T/ro"
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
-{ grep -E '^(ok|fail|info|warn)\(\)' "$SRC"
-  grep -m1 '^_shq()' "$SRC"
-  grep -m1 '^_ts_ipv4()' "$SRC"
-  awk '/^_ts_state\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
-  awk '/^_svc_power_body\(\)/{p=1} p{print} /^_ps_autostart\(\)/{q=1} q&&/^}/{exit}' "$SRC"
-  awk '/^_env_get\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
-  awk '/^_container_gone\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
-  awk '/^_confirm_delete\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
+{ for f in ok fail info warn _shq _ts_ipv4 _ts_state _svc_power_body _svc_sudo_guard _svc_power_all_body _svc_power \
+           _svc_power_all _svc_power_remote _svc_power_all_remote _ps_autostart _env_get _container_gone _confirm_delete; do
+    extract_fn "$f" "$SRC"; done
   sed -n '/^# ── SMB file sharing/,/^# ── end SMB/p' "$SRC"; } > "$T/fn.sh"
 source "$T/fn.sh"
 type step_samba >/dev/null 2>&1 || echo "FAIL  setup: step_samba not found in $SRC (older setup.sh?)"
@@ -50,17 +46,8 @@ cat > "$T/bin/ss" <<'X'
 #!/bin/bash
 if [ -n "$LISTEN" ] || [ -e "$DOCKER_STATE/samba/listening" ]; then echo "LISTEN 0 4096 0.0.0.0:445 0.0.0.0:*"; fi
 X
-cat > "$T/bin/findmnt" <<'X'
-#!/bin/bash
-case "$*" in *TARGET*) col=T;; *) col=S;; esac
-case "${FM_MODE:-ok}" in
-  ok)   [ $col = T ] && echo "$TMNT/usb" || echo /dev/sdb1 ;;
-  root) [ $col = T ] && echo / || echo /dev/nvme0n1p2 ;;
-  stub) [ $col = T ] && echo "$TMNT/usb" || echo systemd-1 ;;
-esac
-X
-cat > "$T/bin/firewall-cmd" <<'X'
-#!/bin/bash
+stub_findmnt ok '$TMNT/usb' /dev/sdb1  root / /dev/nvme0n1p2  stub '$TMNT/usb' systemd-1
+stub_firewall_cmd <<'X'
 [ -n "$FW_DOWN" ] && exit 252
 # Zones are modelled: a query without --zone asks the default zone (FW_DEFAULT,
 # public if unset). FW_PORT / FW_SVC = the zone where it is open; "1" = the default zone.
@@ -71,8 +58,7 @@ for a in "$@"; do case "$a" in
   --query-service=samba) [ -n "$FW_SVC" ] && [ "${FW_SVC/#1/$DEF}" = "$Z" ] && { echo yes; exit 0; }; echo no; exit 1 ;;
 esac; done
 X
-cat > "$T/bin/docker" <<'X'
-#!/bin/bash
+stub_docker <<'X'
 C=$DOCKER_STATE
 key() { printf '%s' "$1" | tr -c 'A-Za-z0-9' _; }
 echo "docker $*" >> "$DOCKER_LOG"
@@ -124,13 +110,12 @@ X
 chmod +x "$T/bin/"*
 export TZ=UTC   # smbstatus prints UTC; fixtures below are read as UTC unless a case sets another TZ
 export PATH="$T/bin:$PATH" DOCKER_STATE=$T/c DOCKER_LOG=$T/docker.log SMBSTATUS=$T/smbstatus TMNT=$T/mnt
-PASS=0; FAILN=0
 mk() { local d="$T/c/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _)"; mkdir -p "$d"
   printf '%s' "$1" > "$d/name"; echo "$2" > "$d/running"; echo "$3" > "$d/policy"; : > "$d/mounts"; [ "$2" = true ] && touch "$d/listening"; }
 reset() { rm -rf "$T/c" "$T/opt" "$SMBSTATUS"; mkdir -p "$T/c" "$T/opt"; : > "$DOCKER_LOG"
   unset NO_IMAGE FAIL_PULL SUDO_FAIL LISTEN FW_PORT FW_SVC FW_DEFAULT FW_DOWN FAIL_RUN FAIL_RM NO_LISTEN OPENSSL_FAIL TS_DOWN FAKE_GID FM_MODE
   _SMB_NAMES=(); _SMB_PATHS=(); }
-check() { if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rc=$RC]"; FAILN=$((FAILN+1)); fi; }
+CHECK_DIAG='rc=$RC'
 # run <stdin-text> <hold-seconds> cmd...   (hold keeps stdin open so read -t can time out)
 run() { local in=$1 hold=$2; shift 2; OUT=$( { printf '%s' "$in"; sleep "$hold"; } | "$@" 2>&1); RC=$?; }
 ENVF=$_SMB_DIR/samba.env; SHF=$_SMB_DIR/shares.conf
@@ -522,5 +507,4 @@ else
   echo "PASS  10b  SKIP: no local config/user values available to check against"; PASS=$((PASS+1))
 fi
 
-echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
-[ "$FAILN" = 0 ]
+check_total

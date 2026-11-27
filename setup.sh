@@ -79,7 +79,8 @@ warn() { echo -e "  ${YELLOW}!!${NC} $1"; }
 # read into a variable (_cron_get), build the new text, write it with ONE
 # command (_cron_set), which re-reads and verifies. $1 is "root" (sudo crontab)
 # or "user" (the laptop user's crontab).
-_cron_cmd() { if [[ "$1" == root ]]; then sudo crontab "${@:2}"; else crontab "${@:2}"; fi; }
+# ${_CRON_SUDO_FLAGS} (e.g. -n: never prompt for a password) applies to root reads/writes.
+_cron_cmd() { if [[ "$1" == root ]]; then sudo ${_CRON_SUDO_FLAGS:-} crontab "${@:2}"; else crontab "${@:2}"; fi; }
 
 # Print the current crontab. "No crontab yet" and "no crontab binary" are an
 # empty crontab (exit 0); any other failure (sudo denied, sudo missing, ...) returns 1.
@@ -4973,6 +4974,19 @@ _pick_backup_default() {
     return 0
 }
 
+# The one pattern for "a root cron line that runs the old Immich backup", matched by what
+# the line RUNS (script / db dump / log), so a generically named line still counts.
+_IMMICH_CRON_PAT='immich-backup\.sh|immich-db|immich-backup\.log'
+
+# Print the active (non-comment) root cron lines matching _IMMICH_CRON_PAT. rc 1 = root's
+# crontab could not be read: callers say "unknown", never "none". $1 = n: never prompt for a
+# sudo password (Status). Set up, Status and Remove all read through here.
+_immich_cron_lines() {
+    local cur
+    cur=$(_CRON_SUDO_FLAGS=${1:+-n} _cron_get root) || return 1
+    printf '%s\n' "$cur" | grep -vE '^[[:space:]]*#' | grep -E "$_IMMICH_CRON_PAT" || true
+}
+
 # Echo BACKUP_DIR from the installed backup script, or nothing if not set up.
 _configured_backup_dir() {
     sed -n 's/^BACKUP_DIR="\(.*\)"$/\1/p' /usr/local/bin/immich-backup.sh 2>/dev/null | head -1 | grep -v '^__BACKUP_DIR__$' || true
@@ -5051,11 +5065,12 @@ step_immich_backup() {
     esac
 
     # Tear down the legacy step-8 cron line if it exists, so we don't double-run.
-    local cur new
-    cur=$(_cron_get root) || { fail "Could not read root's crontab - legacy cron entry not touched."; return 1; }
-    if grep -q immich-backup <<<"$cur"; then
+    local cur new cron_lines
+    cron_lines=$(_immich_cron_lines) || { fail "Could not read root's crontab - legacy cron entry not touched."; return 1; }
+    if [[ -n "$cron_lines" ]]; then
         info "Removing legacy cron entry (replaced by systemd timer)..."
-        new=$(_cron_drop "$cur" "" immich-backup)
+        cur=$(_cron_get root) || { fail "Could not read root's crontab - legacy cron entry not touched."; return 1; }
+        new=$(_cron_drop "$cur" E "$_IMMICH_CRON_PAT")
         _cron_set root "$new" || { fail "Could not update root's crontab - legacy cron entry may still be active."; return 1; }
     fi
 
@@ -5239,12 +5254,7 @@ _immich_backup_status() {
         # matched by what they DO (script / db dump / log) so a generically
         # named line still registers. ALL matches are kept (there may be more
         # than one). sudo -n: never prompt, skip if locked.
-        local cronall
-        if cronall=$(sudo -n crontab -l 2>/dev/null); then
-            cron_checked=1
-            cron_matches=$(printf '%s\n' "$cronall" | grep -vE '^[[:space:]]*#' \
-                | grep -E 'immich-backup\.sh|immich-db|immich-backup\.log')
-        fi
+        if cron_matches=$(_immich_cron_lines n); then cron_checked=1; fi
         [ -n "$cron_matches" ] && mechanism="cron"
     fi
 
@@ -5291,7 +5301,7 @@ _immich_backup_status() {
     else
         # Couldn't read root cron without a password — never assert "off" on data
         # we couldn't see.
-        printf "  %-20s %-18s %-16s %-10s ${DIM}%s${NC}\n" "immich-backup" "?" "?" "backup" "root cron unreadable (needs sudo)"
+        printf "  %-20s %-18s %-16s %-10s ${DIM}%s${NC}\n" "immich-backup" "?" "unknown" "backup" "root cron unreadable (needs sudo)"
     fi
 
     # Last runs — same table as the fleet view, but one row PER run (newest last,
@@ -5343,7 +5353,7 @@ _immich_backup_remove() {
     # timer, no script) would bail here as "nothing to remove" while Status still
     # reports it scheduled, leaving a backup running that the user thinks is gone.
     local legacy_cron
-    legacy_cron=$(sudo -n crontab -l 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -E 'immich-backup\.sh|immich-db|immich-backup\.log')
+    legacy_cron=$(_immich_cron_lines) || { fail "Could not read root's crontab (needs sudo) - nothing changed."; return 1; }
     if [ ! -f /etc/systemd/system/immich-backup.timer ] && [ ! -e /usr/local/bin/immich-backup.sh ] && [ -z "$legacy_cron" ]; then
         warn "No scheduled Immich backup to remove."
         return 0
@@ -5390,18 +5400,17 @@ _immich_backup_remove() {
     # Clear any legacy cron line too — match the SAME pattern detection uses (what
     # the line RUNS), not just the literal "immich-backup", so a line that runs an
     # immich-db dump is actually removed instead of detected-but-left-behind.
-    local cron_pat='immich-backup\.sh|immich-db|immich-backup\.log'
     local cur new
     cur=$(_cron_get root) || { fail "Could not read root's crontab - cron line not removed."; return 1; }
-    if grep -qE "$cron_pat" <<<"$cur"; then
-        new=$(_cron_drop "$cur" E "$cron_pat")
+    if grep -qE "$_IMMICH_CRON_PAT" <<<"$cur"; then
+        new=$(_cron_drop "$cur" E "$_IMMICH_CRON_PAT")
         _cron_set root "$new" || { fail "Could not update root's crontab - the cron line may still be active."; return 1; }
     fi
 
     # Verify it's actually gone before claiming success — timer, script, AND any
     # active (non-comment) cron line.
     local cron_left
-    cron_left=$(sudo crontab -l 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -E "$cron_pat")
+    cron_left=$(_immich_cron_lines) || { fail "Removed, but could not re-read root's crontab to confirm."; return 1; }
     if [ -f /etc/systemd/system/immich-backup.timer ] || [ -e /usr/local/bin/immich-backup.sh ] || [ -n "$cron_left" ]; then
         fail "Removal did not complete — the schedule may still be active."
         info "Check it: federver → i → Backup - Scheduled - Status."

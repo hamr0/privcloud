@@ -38,6 +38,7 @@ mkrun
 # ── stubs ──────────────────────────────────────────────────────────────────
 cat > "$T/bin/sudo" <<'X'
 #!/bin/bash
+echo "sudo $*" >> "$T/sudo.log"
 [ -n "$SUDO_FAIL" ] && { echo "sudo: a password is required" >&2; exit 1; }
 while [ $# -gt 0 ]; do case "$1" in -n) shift ;; -v) exit 0 ;; *) break ;; esac; done
 exec "$@"
@@ -158,5 +159,27 @@ check 3i "Status, nothing scheduled and an empty crontab: 'not configured'" '[[ 
 fresh; printf '%s\n' '15 4 * * * /usr/local/bin/immich-backup.sh' '0 5 * * * /usr/local/bin/other.sh' > "$CRON_FILE"
 setup_sched
 check 3j "Set up removes a legacy cron line that runs immich-backup.sh and installs the timer" '[ -e "$UNITS/immich-backup.timer" ] && ! grep -q immich-backup "$CRON_FILE" && grep -q other.sh "$CRON_FILE"'
+
+# ── 4  one legacy-cron pattern, one reader (D20) ───────────────────────────
+LEG='30 2 * * * docker exec immich_postgres pg_dumpall -U postgres | gzip > /x/immich-db-$(date +\%F).sql.gz'
+fresh; printf '%s\n' "$LEG" '0 5 * * * /usr/local/bin/other.sh' > "$CRON_FILE"
+setup_sched
+check 4a "Set up removes a legacy cron line that only runs an immich-db dump (it used to be left: both ran)" '[ -e "$UNITS/immich-backup.timer" ] && ! grep -q immich-db "$CRON_FILE" && grep -q other.sh "$CRON_FILE"'
+fresh; : > "$T/sudo.log"; go "" _immich_backup_status
+check 4b "Status reads root's crontab without a sudo password prompt (sudo -n crontab)" 'grep -q "^sudo -n crontab -l" "$T/sudo.log"'
+fresh; : > "$T/sudo.log"; go "$DEST\ny\n1\nn\n" step_immich_backup
+check 4c "Set up reads it through the same reader (sudo crontab, may prompt)" 'grep -q "^sudo crontab -l" "$T/sudo.log" && ! grep -q "^sudo -n crontab" "$T/sudo.log"'
+fresh; go "" _immich_backup_status
+check 4d "Status, root has no crontab at all: 'not configured' (was misread as unreadable)" '[[ "$OUT" == *"not configured"* && "$OUT" != *"unreadable"* ]]'
+fresh; CRON_FAIL=1 go "" _immich_backup_status
+check 4e "Status, crontab read fails: shown as unknown, never 'none'" '[[ "$OUT" == *"unknown"* && "$OUT" == *"unreadable"* && "$OUT" != *"not configured"* ]]'
+fresh; setup_sched; CRON_FAIL=1 go "y\n" _immich_backup_remove
+check 4f "Remove, crontab read fails: nothing removed, says so, rc 1" '[ $RC = 1 ] && [ -e "$BIN" ] && [ -e "$UNITS/immich-backup.timer" ] && [[ "$OUT" == *"Could not read root"* ]]'
+fresh; CRON_FAIL=1 go "" _immich_backup_remove
+check 4g "Remove with nothing else installed and an unreadable crontab: not 'nothing to remove'" '[ $RC = 1 ] && [[ "$OUT" != *"No scheduled Immich backup"* ]]'
+fresh; CRON_FAIL=1 setup_sched
+check 4h "Set up, crontab read fails: refuses before touching anything" '[ $RC = 1 ] && [ ! -e "$BIN" ] && [ ! -e "$UNITS/immich-backup.timer" ] && [[ "$OUT" == *"Could not read root"* ]]'
+fresh; printf '%s\n' "$LEG" > "$CRON_FILE"; go "y\n" _immich_backup_remove
+check 4i "Remove: legacy-cron-only schedule is detected, removed and verified" '[ $RC = 0 ] && [ ! -s "$CRON_FILE" ]'
 
 check_total

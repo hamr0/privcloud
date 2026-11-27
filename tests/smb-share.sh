@@ -242,7 +242,7 @@ check 5h "Stop -> 'stopped (autostart off)' in status; policy no" '[[ "$OUT" == 
 run $'4\n' 0 step_samba
 check 5i "Start -> running + unless-stopped" 'grep -qx unless-stopped "$T/c/samba/policy" && [ "$(cat "$T/c/samba/running")" = true ]'
 mkset; export SUDO_FAIL=1; run $'5\n' 0 step_samba
-check 5j "Stop with sudo refused: reports failure" '[ $RC != 0 ] && [[ "$OUT" == *"Stop failed"* ]]'
+check 5j "Stop needs no sudo (D10): a refusing sudo does not make it fail" '[ $RC = 0 ] && [[ "$OUT" != *"Stop failed"* ]]'
 mkset; export FW_PORT=1; run $'0\n' 0 step_samba
 check 5k "status flags 445 open on LAN with the fix" '[[ "$OUT" == *"445 open on the LAN"* && "$OUT" == *"--remove-port=445/tcp"* ]]'
 mkset; export FW_DEFAULT=home FW_PORT=1; run $'0\n' 0 step_samba

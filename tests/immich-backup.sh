@@ -22,7 +22,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T
 rw() { sed -e "s|/usr/local/bin/immich-backup.sh|$BIN|g" -e "s|/var/log/immich-backup.log|$LOG|g" \
            -e "s|/etc/systemd/system/|$UNITS/|g" -e "s|/etc/immich-backup.conf|$CONF|g"; }
 fns() { local f; for f in "$@"; do extract_fn "$f" "$SRC" | rw; done; }
-FNS="ok fail info warn _env_get _drive_verdict _backup_dest_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove _immich_docker_group _immich_compose step_immich_backup_once _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
+FNS="ok fail info warn _env_get _env_quote _drive_verdict _backup_dest_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove _immich_docker_group _immich_compose step_immich_backup_once _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
 mkrun() {  # rebuild run.sh from the CURRENT $SRC (functions that do not exist yet are skipped)
   {
     printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC= BLUE=\nDRY_RUN=0\nMIRROR_WIPE_MIN=1000\n_FV_SELF=%q\n' "$T/app/setup.sh"

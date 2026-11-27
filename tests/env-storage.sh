@@ -15,7 +15,7 @@ mkdir -p "$T/bin" "$T/repo" "$T/home" "$T/mnt"
 cd "$T" || exit 1
 export HOME=$T/home
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
-{ for f in ok fail info warn _env_get _set_env _install_smart_playlists _storage_change_music _storage_change_files \
+{ for f in ok fail info warn _env_get _env_quote _set_env _install_smart_playlists _storage_change_music _storage_change_files \
            _storage_change_immich; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 source "$T/fn.sh"
 SCRIPT_DIR=$T/repo
@@ -61,5 +61,57 @@ check P2g "immich: base path -> upload + postgres folders created, both keys wri
 run _storage_change_immich "$T/plain/imm2\nn"
 check P2h "immich: answering n to Continue -> nothing created, .env unchanged" '[ ! -d "$T/plain/imm2" ] && [ "$(_env_get UPLOAD_LOCATION "$SCRIPT_DIR/.env")" = "$T/plain/imm/upload" ]'
 check P2i "_set_env keeps .env at mode 600" 'chmod 600 "$SCRIPT_DIR/.env"; _set_env X y "$SCRIPT_DIR/.env"; [ "$(stat -c %a "$SCRIPT_DIR/.env")" = 600 ]'
+
+# ── E  one .env rule: _env_get, the disk-check's envget and _set_env agree ──
+extract_fn envget "$SRC" > "$T/envget.sh"
+source "$T/envget.sh"
+cat > "$T/agree.env" <<'X'
+# a comment line
+#COMMENTED=hidden
+COMMENTED=real
+PLAIN=/mnt/data
+SPACES=/mnt/data/My Music
+DQ="/a b"
+SQ='/c d'
+EQ=/p?a=b&c=d
+INLINE=/mnt/data   # the usb drive
+QINLINE="/x y" # note
+PADDED = /mnt/padded
+  INDENT=/in/dent
+HASHVAL=/a#b
+ONLYCOMMENT=
+#ONLYHIDDEN=nope
+LOCATION_X=/other
+X
+E_KEYS="COMMENTED PLAIN SPACES DQ SQ EQ INLINE QINLINE PADDED INDENT HASHVAL ONLYCOMMENT ONLYHIDDEN LOCATION LOCATION_X NOPE"
+ENV_FILE=$T/agree.env
+agree=1; diag=
+for k in $E_KEYS; do
+  a=$(_env_get "$k" "$T/agree.env"); b=$(envget "$k")
+  [ "$a" = "$b" ] || { agree=0; diag+=" $k:[$a]!=[$b]"; }
+done
+CHECK_DIAG='$diag'
+check E1 "_env_get and the disk-check's envget return the same for every key of one fixture" '[ $agree = 1 ]'
+check E2 "agreed values: quotes, inline comment, padding, = in value, # inside a word" '[ "$(_env_get DQ "$T/agree.env")" = "/a b" ] && [ "$(_env_get SQ "$T/agree.env")" = "/c d" ] && [ "$(_env_get INLINE "$T/agree.env")" = /mnt/data ] && [ "$(_env_get QINLINE "$T/agree.env")" = "/x y" ] && [ "$(_env_get PADDED "$T/agree.env")" = /mnt/padded ] && [ "$(_env_get INDENT "$T/agree.env")" = /in/dent ] && [ "$(_env_get EQ "$T/agree.env")" = "/p?a=b&c=d" ] && [ "$(_env_get HASHVAL "$T/agree.env")" = "/a#b" ]'
+check E3 "a commented-out key never matches (real line wins; only-commented key is empty)" '[ "$(_env_get COMMENTED "$T/agree.env")" = real ] && [ -z "$(_env_get ONLYHIDDEN "$T/agree.env")" ]'
+check E4 "a key that is only the tail of another (LOCATION) matches nothing" '[ -z "$(_env_get LOCATION "$T/agree.env")" ]'
+
+# _set_env round trip: whatever is written is read back unchanged by both readers
+VALS=('/mnt/data' '/mnt/data/My Music' 'a|b&c\d' 'x=y=z' '/p #1 music' ' lead' 'trail ' '"dq' "it's" '#start' '/a#b' 'p w "q"' 'sp  ace')
+rt=1; diag=
+printf 'RT=old\nOTHER=keep\n' > "$T/rt.env"; ENV_FILE=$T/rt.env
+for v in "${VALS[@]}"; do
+  if _set_env RT "$v" "$T/rt.env"; then
+    a=$(_env_get RT "$T/rt.env"); b=$(envget RT)
+    [ "$a" = "$v" ] && [ "$b" = "$v" ] || { rt=0; diag+=" [$v]->[$a]/[$b]"; }
+  else diag+=" setfail[$v]"; fi
+done
+check E5 "set_env round trip: | & \\ = spaces, ' #', quotes, leading/trailing space all read back identical by both readers" '[ $rt = 1 ] && [ "$(grep -c "^RT=" "$T/rt.env")" = 1 ] && [ "$(_env_get OTHER "$T/rt.env")" = keep ]'
+printf 'RT = old\n' > "$T/rt2.env"; _set_env RT new "$T/rt2.env"
+check E6 "set_env replaces the line _env_get reads (spaced 'KEY = x'), not a second copy" '[ "$(grep -c "RT" "$T/rt2.env")" = 1 ] && [ "$(_env_get RT "$T/rt2.env")" = new ]'
+printf '#RT=hidden\n' > "$T/rt3.env"; _set_env RT new "$T/rt3.env"
+check E7 "set_env leaves a commented-out line alone and appends the real one" '[ "$(head -1 "$T/rt3.env")" = "#RT=hidden" ] && [ "$(_env_get RT "$T/rt3.env")" = new ]'
+NLV=$'a\nb'; BOTHV="x #'\""
+check E8 "set_env refuses a newline and a value with both quote kinds, file untouched" '! _set_env RT "$NLV" "$T/rt3.env" >/dev/null 2>&1 && ! _set_env RT "$BOTHV" "$T/rt3.env" >/dev/null 2>&1 && [ "$(_env_get RT "$T/rt3.env")" = new ]'
 
 check_total

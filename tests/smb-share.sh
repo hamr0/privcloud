@@ -321,7 +321,7 @@ S=$(_smb_summary docker); R=$(_smb_summary_render "$S"); mkdir -p "$T/files/medi
 check 9c "running with a missing folder and a device: (1 ✗ not mounted) · 1 device" '[ "$S" = "running|2|1|1" ] && [[ "$R" == *"(1 ✗ not mounted)"* && "$R" == *"1 device connected"* && "$R" != *"1 devices"* ]]'
 mkset; _svc_power stop samba 2>/dev/null; S=$(_smb_summary docker); R=$(_smb_summary_render "$S")
 check 9d "stopped: red ✗ stopped (autostart off)" '[ "${S%%|*}" = stopped-off ] && [[ "$R" == *"✗ stopped (autostart off)"* ]]'
-check 9e "step_status wires the SMB section (remote gather + local path + render)" '[ "$(grep -c "@@SMB@@" "$SRC")" -ge 2 ] && grep -q "_smb_summary_render" "$SRC" && grep -q "declare -p _DRIVE_ROOTS; declare -f _ts_ipv4 _ts_state _ps_autostart _smb_summary _drive_verdict _smb_folder_check _smb_sessions _smb_devices _smb_devname" "$SRC" && grep -q "@@SMB_DEV_START@@" "$SRC"'
+check 9e "step_status wires the SMB section (remote gather + local path + render)" '[ "$(grep -c "@@SMB@@" "$SRC")" -ge 2 ] && grep -q "_smb_summary_render" "$SRC" && grep -q "declare -p _DRIVE_ROOTS; declare -f _ts_ipv4 _ts_state _ps_autostart _env_get _smb_summary _drive_verdict _smb_folder_check _smb_sessions _smb_devices _smb_devname" "$SRC" && grep -q "@@SMB_DEV_START@@" "$SRC"'
 
 # 9f/9g: run the REAL remote Status payload (its declare -f list + heredoc body, cut out of setup.sh)
 # in a clean `env -i bash -s` with the stub docker, like ts-expiry check 11: a helper missing from the

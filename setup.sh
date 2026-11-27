@@ -1683,17 +1683,36 @@ _storage_unmount() {
     info "Safe to unplug the drive."
 }
 
-# The one .env writer: _set_env KEY VAL FILE. Sets KEY=VAL with a literal match
-# on the whole key (values go through ENVIRON, so | & \ need no escaping),
-# appended when missing, every other line untouched. The temp file is made 0600
+# The value as it must be written so _env_get reads it back unchanged: as is, unless
+# it holds " #" (would read as a comment), starts or ends with a space, or starts with
+# a quote; then it is wrapped in single quotes (double quotes if it holds a '). Fails
+# (rc 1) for a newline, or a value that holds both kinds of quote.
+_env_quote() {
+    local v="$1"
+    [[ "$v" != *$'\n'* ]] || return 1
+    if [[ "$v" == *[[:space:]]"#"* || "$v" == [\"\']* || "$v" == [[:space:]]* || "$v" == *[[:space:]] ]]; then
+        if [[ "$v" != *\'* ]]; then printf "'%s'" "$v"
+        elif [[ "$v" != *\"* ]]; then printf '"%s"' "$v"
+        else return 1; fi
+    else
+        printf '%s' "$v"
+    fi
+}
+
+# The one .env writer: _set_env KEY VAL FILE. Sets KEY=VAL (quoted by _env_quote when
+# needed) on the first line _env_get would read for KEY (same match, so a "KEY = x"
+# line is replaced, not shadowed), appended when missing, every other line untouched.
+# Values go through ENVIRON, so | & \ need no escaping. The temp file is made 0600
 # and replaces FILE, so the result is always 0600 (.env holds the DB password).
 # A missing FILE is created.
 _set_env() {
-    local key="$1" val="$2" file="$3" tmp
+    local key="$1" val file="$3" tmp
+    val=$(_env_quote "$2") || { fail "Cannot write $key: the value has a newline or both quote kinds."; return 1; }
     [[ -e "$file" ]] || ( umask 077; : > "$file" ) || return 1
     tmp="$(umask 077; mktemp "$file.XXXXXX")" || return 1
-    if K="$key" V="$val" awk 'BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; n = length(k) + 1 }
-         !done && substr($0, 1, n) == k "=" { print k "=" v; done = 1; next }
+    if K="$key" V="$val" awk 'BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; n = length(k) }
+         !done { line = $0; sub(/^[ \t]+/, "", line)
+                 if (substr(line, 1, n) == k && substr(line, n + 1) ~ /^[ \t]*=/) { print k "=" v; done = 1; next } }
          { print }
          END { if (!done) print k "=" v }' "$file" > "$tmp"; then
         mv "$tmp" "$file"
@@ -2536,21 +2555,26 @@ step_deploy() {
     step_logrotation
 }
 
-# Read a single KEY from .env without sourcing the file. `source` trips
-# on unquoted values with spaces (e.g. MUSIC_LOCATION=/mnt/data/media/My Music),
-# so we parse one line at a time, strip any surrounding quotes, and
-# preserve spaces verbatim.
+# The one .env reader: _env_get KEY FILE prints KEY's value, nothing when the key or
+# file is missing. It never sources the file (`source` trips on unquoted values with
+# spaces, e.g. MUSIC_LOCATION=/mnt/data/media/My Music). One rule for every reader
+# (the generated disk-check's own envget follows it too; a test holds them equal):
+# the line must START with KEY (spaces around the name and the = are allowed), so a
+# commented-out "#KEY=..." never matches; a quoted value runs to its closing quote;
+# an unquoted one drops a trailing " # comment" and surrounding spaces.
 _env_get() {
-    local key="$1" file="$2"
-    [[ ! -f "$file" ]] && return 0
-    local line value
-    line=$(grep -E "^${key}=" "$file" 2>/dev/null | head -1)
-    [[ -z "$line" ]] && return 0
-    value="${line#${key}=}"
-    # Strip optional surrounding quotes (single or double)
-    value="${value%\"}"; value="${value#\"}"
-    value="${value%\'}"; value="${value#\'}"
-    echo "$value"
+    local key="$1" file="$2" line v
+    [[ -f "$file" ]] || return 0
+    line=$(grep -E "^[[:space:]]*${key}[[:space:]]*=" "$file" 2>/dev/null | head -1)
+    [[ -n "$line" ]] || return 0
+    v="${line#*=}"
+    v="${v#"${v%%[![:space:]]*}"}"
+    case "$v" in
+        \"*) v="${v#\"}"; v="${v%%\"*}" ;;
+        \'*) v="${v#\'}"; v="${v%%\'*}" ;;
+        *) v="${v%%[[:space:]]#*}"; v="${v%"${v##*[![:space:]]}"}" ;;
+    esac
+    printf '%s\n' "$v"
 }
 
 # Populate a `mounts` array (in the caller's scope) with -v bind-mount
@@ -4971,12 +4995,12 @@ _immich_cron_lines() {
     printf '%s\n' "$cur" | grep -vE '^[[:space:]]*#' | grep -E "$_IMMICH_CRON_PAT" || true
 }
 
-# Print the config file the script reads: KEY=VALUE, one per line, values verbatim (no
-# quoting, so any path round-trips; _env_get reads them back). $1 repo dir, $2 backup dir,
-# $3 retention days.
+# Print the config file the script reads: KEY=VALUE, one per line, values as _env_quote
+# writes them (verbatim unless a path needs quotes), so any path round-trips through
+# _env_get. $1 repo dir, $2 backup dir, $3 retention days.
 _immich_backup_conf() {
     printf '# Managed by setup.sh (federver -> i -> Backup - Scheduled - Set up); read by %s at each run.\n' "$_IMMICH_BACKUP_BIN"
-    printf 'REPO_DIR=%s\nBACKUP_DIR=%s\nRETENTION_DAYS=%s\n' "$1" "$2" "$3"
+    printf 'REPO_DIR=%s\nBACKUP_DIR=%s\nRETENTION_DAYS=%s\n' "$(_env_quote "$1")" "$(_env_quote "$2")" "$3"
 }
 
 # _backup_dest_verdict <dir> prints ok when a backup may write to <dir>, else the _drive_verdict
@@ -8179,16 +8203,16 @@ step_status() {
 
     if [[ "$remote" == "true" ]]; then
         local server_info
-        server_info=$( { declare -p _DRIVE_ROOTS; declare -f _ts_ipv4 _ts_state _ps_autostart _smb_summary _drive_verdict _smb_folder_check _smb_sessions _smb_devices _smb_devname; cat <<'REMOTE_STATUS'
+        server_info=$( { declare -p _DRIVE_ROOTS; declare -f _ts_ipv4 _ts_state _ps_autostart _env_get _smb_summary _drive_verdict _smb_folder_check _smb_sessions _smb_devices _smb_devname; cat <<'REMOTE_STATUS'
             echo "@@HOSTNAME@@$(hostname)"
             echo "@@IP@@$(hostname -I | awk '{print $1}')"
             echo "@@TS_STATE@@$(_ts_state)"
             echo "@@UPTIME@@$(uptime -p 2>/dev/null | sed 's/^up //')"
             echo "@@LOAD@@$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null)"
-            echo "@@FILES@@$(grep FILES_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
-            echo "@@MUSIC@@$(grep MUSIC_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
-            echo "@@UPLOAD@@$(grep UPLOAD_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
-            echo "@@DB@@$(grep DB_DATA_LOCATION ~/privcloud/.env 2>/dev/null | cut -d= -f2)"
+            echo "@@FILES@@$(_env_get FILES_LOCATION ~/privcloud/.env)"
+            echo "@@MUSIC@@$(_env_get MUSIC_LOCATION ~/privcloud/.env)"
+            echo "@@UPLOAD@@$(_env_get UPLOAD_LOCATION ~/privcloud/.env)"
+            echo "@@DB@@$(_env_get DB_DATA_LOCATION ~/privcloud/.env)"
             echo "@@MEM_START@@"
             free -h 2>/dev/null | awk '/^Mem:/{print "mem|"$2"|"$3"|"$7} /^Swap:/{print "swap|"$2"|"$3}'
             echo "@@MEM_END@@"
@@ -8232,10 +8256,10 @@ REMOTE_STATUS
         UPTIME=$(uptime -p 2>/dev/null | sed 's/^up //')
         LOAD=$(awk '{print $1", "$2", "$3}' /proc/loadavg 2>/dev/null)
         local SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        FILES=$(grep FILES_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
-        MUSIC=$(grep MUSIC_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
-        UPLOAD=$(grep UPLOAD_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
-        DB=$(grep DB_DATA_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2)
+        FILES=$(_env_get FILES_LOCATION "$SCRIPT_DIR/.env")
+        MUSIC=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env")
+        UPLOAD=$(_env_get UPLOAD_LOCATION "$SCRIPT_DIR/.env")
+        DB=$(_env_get DB_DATA_LOCATION "$SCRIPT_DIR/.env")
         MEM=$(free -h 2>/dev/null | awk '/^Mem:/{print "mem|"$2"|"$3"|"$7} /^Swap:/{print "swap|"$2"|"$3}')
         CONTAINERS=$(_ps_autostart docker 2>/dev/null)
         DSTATS=$(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null)

@@ -12,7 +12,7 @@ SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 GREEN= RED= YELLOW= BOLD= DIM= NC=
-for f in ok fail info warn _env_get _set_env step_immich_config; do extract_fn "$f" "$SRC"; done > "$T/fn.sh"
+for f in ok fail info warn _env_get _env_quote _set_env step_immich_config; do extract_fn "$f" "$SRC"; done > "$T/fn.sh"
 source "$T/fn.sh"
 type _set_env >/dev/null 2>&1 && type step_immich_config >/dev/null 2>&1 || echo "FAIL  setup: _set_env/step_immich_config not found in $SRC (unfixed copy?)"
 ENV_FILE=$T/.env; _IMMICH_ENV=$ENV_FILE

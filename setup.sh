@@ -5093,8 +5093,8 @@ _mirror_refuse() {
 _mirror_ask() {
     local reply=""
     echo ""
-    echo "  Deleted at source → also delete at destination?"
-    printf '  Enter = no, append only · type "delete" = mirror: '
+    echo -e "  ${YELLOW}Deleted at source → also delete at destination?${NC}"
+    echo -en "  Enter = no, ${GREEN}append only${NC} · type \"${RED}delete${NC}\" = ${RED}mirror${NC}: "
     IFS= read -r reply || reply=""
     if [[ "$reply" == delete ]]; then
         sync_mode=mirror

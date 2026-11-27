@@ -5016,12 +5016,254 @@ LOGJSON
     fi
 }
 
+# ── Mirror mode (rsync --delete) for 14 → 2 / 3 / 5 ──────────────────────────
+# Copies are append-only unless the user types "delete" at _mirror_ask. A mirror
+# first passes a source guard (an empty/unmounted source would wipe the
+# destination), then a dry run that lists what would be deleted, then a typed
+# y/N. Scheduled jobs store their mode in the script (MODE=) and repeat the
+# guard on every run, so _mirror_check_here/_mirror_guard (+ ssh, _shq) are
+# copied into the job script with `declare -f` - cron has no federver functions.
+
+# Prints ok | missing | empty | unmounted for a path on THIS machine. Always
+# returns 0 - callers read the verdict, so a failed ssh/sudo (no output) is never
+# mistaken for "ok". Under /mnt, /media and /run/media the path must sit on a
+# real mount whose source is a /dev/* device: an autofs/stub mountpoint
+# (source systemd-1) or a bare folder on the system disk is "unmounted".
+_mirror_check_here() {
+    local p=$1 t s r
+    [[ -e "$p" ]] || { echo missing; return 0; }
+    # Listing first also triggers an idle automount before findmnt looks.
+    if [[ -d "$p" && -z "$(ls -A "$p" 2>/dev/null)" ]]; then echo empty; return 0; fi
+    for r in ${_MIRROR_DRIVE_ROOTS:-/mnt /media /run/media}; do
+        [[ "$p" == "$r"/* ]] || continue
+        t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null)
+        s=$(findmnt -n -o SOURCE -T "$p" 2>/dev/null)
+        if [[ -z "$t" || "$t" == / || "$s" != /dev/* ]]; then echo unmounted; return 0; fi
+    done
+    echo ok
+}
+
+# Source guard: _mirror_guard <local|server|sudo> <path>. rc 0 = safe to mirror.
+#   server = the path is on the federver box (checked over ssh, same function);
+#   sudo   = same, as root, through _server_sudo_run (needs _SRV_PW).
+_mirror_guard() {
+    local loc=$1 p=$2 v=""
+    case $loc in
+        local)  v=$(_mirror_check_here "$p") ;;
+        server) v=$({ declare -f _mirror_check_here; echo "_mirror_check_here $(_shq "$p")"; } \
+                    | ssh "$SERVER_USER@$SERVER_IP" 'bash -s' 2>/dev/null) || v="" ;;
+        sudo)   v=$(_server_sudo_run "$(declare -f _mirror_check_here); _mirror_check_here $(_shq "$p")") || v="" ;;
+    esac
+    v=$(printf '%s' "$v" | tr -d '\r' | tail -n 1)
+    [[ "$v" == ok ]]
+}
+
+_mirror_refuse() {
+    echo -e "  ${RED}✗ Source $1 is empty or its drive isn't mounted - a mirror would delete everything at the destination. Refused.${NC}"
+    info "Check the drive is plugged in and mounted, or press Enter at the copy-mode question for append only."
+}
+
+# The one question. Sets sync_mode=append|mirror; only the exact word "delete"
+# selects mirror.
+_mirror_ask() {
+    local reply=""
+    echo ""
+    echo "  Deleted at source → also delete at destination?"
+    printf '  Enter = no, append only · type "delete" = mirror: '
+    read -r reply || reply=""
+    if [[ "$reply" == delete ]]; then
+        sync_mode=mirror
+    else
+        sync_mode=append
+        ok "Append only - nothing at the destination will be deleted."
+    fi
+}
+
+# Dry-run command for an append-form copy command ("rsync -avh --progress ...").
+# --out-format=%o|%n prints "del.|<name>" for every deletion.
+_mirror_dry_cmd() { printf '%s' "rsync -a -n --delete --out-format='%o|%n' ${1#rsync -avh --progress }"; }
+
+# Same command with a flag after "rsync" (--delete, or the literal $DELFLAG).
+_rsync_with() { printf 'rsync %s %s' "$2" "${1#rsync }"; }
+
+# Guard + dry run + typed y/N. _mirror_preview <loc> <src> <dest-label> <dry-cmd> <copy|save>
+#   copy: "Delete these N files at the destination?" (skipped when N = 0)
+#   save: scheduled job, always asks "Save this job as mirror?"
+# rc 0 = go ahead (_mirror_n = files that will be deleted); 1 = refused,
+# failed or cancelled - the caller copies / saves nothing.
+_mirror_preview() {
+    local loc=$1 src=$2 dest=$3 dry=$4 ask=$5 out rc=0 dels n reply=""
+    _mirror_n=0
+    if ! _mirror_guard "$loc" "$src"; then _mirror_refuse "$src"; return 1; fi
+    if [[ "$loc" == sudo ]]; then
+        out=$(_server_sudo_run "exec 2>&1; $dry") || rc=$?
+    else
+        out=$(bash -c "$dry" 2>&1) || rc=$?
+    fi
+    if (( rc != 0 )); then
+        fail "Could not preview the deletions (rsync exit $rc) - nothing changed."
+        return 1
+    fi
+    # Directories are skipped: their files are listed individually.
+    dels=$(printf '%s\n' "$out" | sed -n 's/^del\.|//p' | grep -v '/$' || true)
+    n=$(printf '%s\n' "$dels" | grep -c . || true)
+    _mirror_n=$n
+    [[ "$ask" == save ]] && echo -e "  ${YELLOW}⚠ Every scheduled run will delete destination files that are gone from the source.${NC}"
+    if (( n > 0 )); then
+        echo -e "  ${YELLOW}⚠ ${n} file$([[ $n == 1 ]] || echo s) would be deleted at ${dest}:${NC}"
+        printf '%s\n' "$dels" | head -n 5 | sed 's/[[:cntrl:]]//g; s/^/    /'
+        (( n > 5 )) && echo "    ... and $((n - 5)) more"
+    else
+        ok "Nothing to delete - destination has no extra files."
+        [[ "$ask" == copy ]] && return 0
+    fi
+    if [[ "$ask" == save ]]; then
+        printf '  Save this job as mirror? [y/N]: '
+    else
+        printf '  Delete these %s file%s at the destination? [y/N]: ' "$n" "$([[ $n == 1 ]] || echo s)"
+    fi
+    read -r reply || reply=""
+    if [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]; then return 0; fi
+    info "Cancelled - nothing changed."
+    return 1
+}
+
+# MODE=/DELFLAG/guard block of a sync-job script, between markers so
+# _sync_job_set_mode (14 → 3) can swap it. Append: just the two assignments.
+_sync_mirror_block() {  # mode loc src_path job_name
+    echo "# >>> copy mode (federver 14 → 3 'Change copy mode' rewrites this block)"
+    echo "MODE=$1"
+    if [[ "$1" == mirror ]]; then
+        declare -f ssh _shq _mirror_check_here _mirror_guard
+        echo "DELFLAG=--delete"
+        echo "_mirror_guard $2 $(_shq "$3") || {"
+        echo "    printf '%s: SKIPPED %s - source empty or drive not mounted (mirror refused, nothing deleted)\\n' \"\$(date '+%Y-%m-%d %H:%M:%S')\" $(_shq "$4")"
+        echo "    exit 0"
+        echo "}"
+    else
+        echo "DELFLAG="
+    fi
+    echo "# <<< copy mode"
+}
+
+_sync_job_mode() {  # script_path -> mirror | append (no MODE= line = legacy = append)
+    local m
+    m=$(sed -n 's/^MODE=//p' "$1" 2>/dev/null | head -n 1)
+    [[ "$m" == mirror ]] && echo mirror || echo append
+}
+
+# Rewrite a job script's mode in place (also upgrades pre-mirror scripts).
+_sync_job_set_mode() {  # script_path mode
+    local sp=$1 mode=$2 dir src name loc blk tmp
+    dir=$(sed -n 's/^# Direction: //p' "$sp" | head -n 1)
+    src=$(sed -n 's/^# Source: //p' "$sp" | head -n 1)
+    name=$(sed -n 's/^# Sync job: //p' "$sp" | head -n 1)
+    if [[ -z "$src" || -z "$name" ]]; then fail "Job script has no Source/name header - mode not changed."; return 1; fi
+    [[ "$dir" == download ]] && loc=server || loc=local
+    blk=$(mktemp) && tmp=$(mktemp "$sp.XXXXXX") || return 1
+    _sync_mirror_block "$mode" "$loc" "$src" "$name" > "$blk"
+    awk -v blk="$blk" '
+        function emit(   l) { while ((getline l < blk) > 0) print l; close(blk); done = 1 }
+        /^# >>> copy mode/ { skip = 1; if (!done) emit(); next }
+        skip && /^# <<< copy mode/ { skip = 0; next }
+        skip { next }
+        !done && /^echo "\[\$\(date/ { emit() }
+        /^rsync / && $0 !~ /\$DELFLAG/ { sub(/^rsync /, "rsync $DELFLAG ") }
+        { print }' "$sp" > "$tmp"
+    chmod --reference="$sp" "$tmp"
+    if bash -n "$tmp" 2>/dev/null && mv "$tmp" "$sp" && [[ "$(_sync_job_mode "$sp")" == "$mode" ]]; then
+        rm -f "$blk"
+        return 0
+    fi
+    rm -f "$blk" "$tmp"
+    fail "Could not rewrite $sp - mode not changed."
+    return 1
+}
+
+# One-time copies: ask the mode and, for a mirror, guard + preview + confirm.
+# rc 0 = go on (sync_mode set; also fills the caller's mirror_flag array with
+# --delete for a mirror), 2 = refused / cancelled (nothing changed).
+_mirror_gate() {  # src_loc src_path dest_label append_cmd
+    mirror_flag=()
+    _mirror_ask
+    [[ "$sync_mode" == mirror ]] || return 0
+    _mirror_preview "$1" "$2" "$3" "$(_mirror_dry_cmd "$4")" copy || return 2
+    mirror_flag=(--delete)
+    return 0
+}
+
+# Status cell for a copy mode, padded to 8: mirror = red (it deletes), append
+# plain, anything else (a monitor) "-".
+_sync_mode_cell() {
+    case "$1" in
+        mirror) printf '%b%-8s%b' "$RED" mirror "$NC" ;;
+        append) printf '%-8s' append ;;
+        *)      printf '%-8s' "-" ;;
+    esac
+}
+
+# "last: ..." note for a Status row, coloured: ok green, skipped yellow, failed red.
+_sync_last_note() {  # job_name
+    local kind when exitc
+    IFS='|' read -r kind when exitc <<<"$(_sync_last_result "$HOME/.local/share/sync-jobs/$1.log")"
+    case "$kind" in
+        ok)      echo -e "${GREEN}last: ok${NC}" ;;
+        skipped) echo -e "${YELLOW}last: skipped (source empty)${NC}" ;;
+        fail)    echo -e "${RED}last: failed (exit ${exitc})${NC}" ;;
+        running) echo -e "${YELLOW}last: running?${NC}" ;;
+        *)       echo -e "${DIM}last: never${NC}" ;;
+    esac
+}
+
+# Last result of a sync job from its log: "kind|when|exit", kind = ok | fail |
+# skipped (the mirror guard refused) | running (started, no finish line) | never.
+_sync_last_result() {  # log_path
+    local l when exitc
+    [[ -f "$1" ]] || { echo "never||"; return 0; }
+    l=$(grep -E 'Sync finished|: SKIPPED ' "$1" 2>/dev/null | tail -n 1) || l=""
+    if [[ -z "$l" ]]; then
+        when=$(date -d "@$(stat -c %Y "$1")" '+%Y-%m-%d %H:%M' 2>/dev/null) || when="?"
+        echo "running|${when}|"; return 0
+    fi
+    if [[ "$l" == *": SKIPPED "* ]]; then echo "skipped|${l:0:16}|"; return 0; fi
+    when=$(grep -oP '\[\K[^\]]+' <<<"$l" | cut -c1-16) || when="?"
+    exitc=$(grep -oP 'exit \K[0-9]+' <<<"$l") || exitc=""
+    if [[ "$exitc" == 0 ]]; then echo "ok|${when}|0"; else echo "fail|${when}|${exitc}"; fi
+}
+
+# 14 → 3 → Change copy mode.
+_sync_change_mode() {  # job_name
+    local job=$1 sp="$HOME/.local/bin/sync-$1.sh" dir loc src dest rline
+    if [[ ! -f "$sp" ]]; then fail "Script not found: $sp"; return 1; fi
+    echo ""
+    info "Current copy mode: $(_sync_job_mode "$sp")"
+    _mirror_ask
+    if [[ "$sync_mode" == mirror ]]; then
+        dir=$(sed -n 's/^# Direction: //p' "$sp" | head -n 1)
+        src=$(sed -n 's/^# Source: //p' "$sp" | head -n 1)
+        dest=$(sed -n 's/^# Destination: //p' "$sp" | head -n 1)
+        [[ "$dir" == download ]] && loc=server || loc=local
+        rline=$(grep -m1 '^rsync ' "$sp") || rline=""
+        if [[ -z "$rline" ]]; then fail "No rsync line in $sp - mode not changed."; return 1; fi
+        _mirror_preview "$loc" "$src" "$dest" "$(_mirror_dry_cmd "${rline/ \$DELFLAG/}")" save || return 2
+    fi
+    _sync_job_set_mode "$sp" "$sync_mode" || return 1
+    ok "'${job}' is now ${sync_mode}."
+}
+
 _sync_execute_or_schedule() {
     local sync_direction="$1"
     local src_path="$2"
     local dest_path="$3"
-    local rsync_cmd="$4"
+    local rsync_cmd="$4"        # append-form: "rsync -avh --progress ..."
     local pre_cmd="$5"
+    local mode="${6:-append}"   # append | mirror (from _mirror_ask)
+    local src_loc="${7:-local}" # where src_path lives: local | server
+    local dry_cmd="" run_cmd="$rsync_cmd"
+    if [[ "$mode" == mirror ]]; then
+        dry_cmd=$(_mirror_dry_cmd "$rsync_cmd")
+        run_cmd=$(_rsync_with "$rsync_cmd" --delete)
+    fi
 
     echo ""
     echo -e "  ${BOLD}1)${NC} Run now"
@@ -5032,10 +5274,17 @@ _sync_execute_or_schedule() {
     case $action in
         0) return 2 ;;
         1)
+            if [[ "$mode" == mirror ]]; then
+                _mirror_preview "$src_loc" "$src_path" "$dest_path" "$dry_cmd" copy || return 2
+            fi
             [[ -n "$pre_cmd" ]] && bash -c "$pre_cmd"
-            bash -c "$rsync_cmd" || { fail "Sync failed."; return 1; }
+            bash -c "$run_cmd" || { fail "Sync failed."; return 1; }
             echo ""
-            ok "Sync complete."
+            if [[ "$mode" == mirror ]]; then
+                ok "Mirror complete - ${_mirror_n} deleted, destination matches source."
+            else
+                ok "Sync complete."
+            fi
             ;;
         2)
             local sched_out sched_kind sched_spec
@@ -5049,6 +5298,10 @@ _sync_execute_or_schedule() {
             [[ "$job_name" == "q" ]] && return
             job_name="${job_name:-$default_name}"
             job_name=$(echo "$job_name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
+
+            if [[ "$mode" == mirror ]]; then
+                _mirror_preview "$src_loc" "$src_path" "$dest_path" "$dry_cmd" save || return 2
+            fi
 
             local script_dir="$HOME/.local/bin"
             local log_dir="$HOME/.local/share/sync-jobs"
@@ -5068,9 +5321,11 @@ exec >>"${log_path}" 2>&1
 SERVER_USER="$SERVER_USER"
 SERVER_IP="$SERVER_IP"
 
+$(_sync_mirror_block "$mode" "$src_loc" "$src_path" "$job_name")
+
 echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: ${job_name}"
 ${pre_cmd:+$pre_cmd}
-$rsync_cmd
+$(_rsync_with "$rsync_cmd" '$DELFLAG')
 echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: ${job_name} (exit \$?)"
 SYNCSCRIPT
             chmod +x "$script_path"
@@ -5092,7 +5347,7 @@ SYNCSCRIPT
             echo ""
             info "Running once now to verify..."
             [[ -n "$pre_cmd" ]] && bash -c "$pre_cmd"
-            bash -c "$rsync_cmd" || { fail "Sync failed on initial run."; return 1; }
+            bash -c "$run_cmd" || { fail "Sync failed on initial run."; return 1; }
             echo ""
             ok "Initial sync complete. Job scheduled."
             ;;
@@ -5339,7 +5594,7 @@ _sync_edit_job() {
     fi
 
     echo ""
-    echo -e "  ${BOLD}${job_name}${NC}  [${sched}] — ${human}  ${DIM}(${job_type})${NC}$($is_paused && echo " ${YELLOW}(paused)${NC}")"
+    echo -e "  ${BOLD}${job_name}${NC}  [${sched}] — ${human}  ${DIM}(${job_type})${NC}$($is_paused && echo " ${YELLOW}(paused)${NC}")  $(_sync_mode_cell "$(_sync_job_mode "$HOME/.local/bin/sync-${job_name}.sh")")"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "    ${BOLD}1)${NC} Change schedule"
     if $is_paused; then
@@ -5350,9 +5605,10 @@ _sync_edit_job() {
     echo -e "    ${BOLD}3)${NC} Run now"
     echo -e "    ${BOLD}4)${NC} View last log"
     echo -e "    ${BOLD}5)${NC} Delete"
+    echo -e "    ${BOLD}6)${NC} Change copy mode"
     echo -e "    ${BOLD}0)${NC} Back"
     echo ""
-    read -p "  Choice [0-5]: " action
+    read -p "  Choice [0-6]: " action
     case $action in
         1) _sync_change_schedule "$job_name" "$old_line" "$job_type" ;;
         2)
@@ -5423,6 +5679,7 @@ _sync_edit_job() {
             rm -f "$script_path" "$log_path"
             ok "Deleted '${job_name}'"
             ;;
+        6) _sync_change_mode "$job_name" ;;
         0) return ;;
         *) fail "Invalid choice." ;;
     esac
@@ -5523,13 +5780,13 @@ _sync_show_status() {
     echo ""
     echo -e "  ${BOLD}Scheduled tasks${NC}"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    printf "  ${BOLD}%-20s %-18s %-16s %-10s %s${NC}\n" "Name" "Schedule" "When" "Type" "Note"
+    printf "  ${BOLD}%-20s %-18s %-16s %-10s %-8s %s${NC}\n" "Name" "Schedule" "When" "Type" "Copy" "Note"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     # Render immich-backup from systemd timer if available, else fall back
     # to the legacy cron line.
     if [[ -n "$server_timer_oncal" ]]; then
-        printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$server_timer_oncal" "systemd" "backup" "(14 → 6)"
+        printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$server_timer_oncal" "systemd" "backup" "append" "(14 → 6)"
     fi
     if [[ -n "$server_crons" ]]; then
         echo "$server_crons" | while IFS= read -r line; do
@@ -5538,12 +5795,12 @@ _sync_show_status() {
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
                 when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$sched" "$when" "backup" "(14 → 6, legacy cron)"
+                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$sched" "$when" "backup" "append" "(14 → 6, legacy cron)"
             elif echo "$line" | grep -q "disk-check"; then
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
                 when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %s\n" "disk-check" "$sched" "$when" "monitor" "(14 → 7)"
+                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "disk-check" "$sched" "$when" "monitor" "-" "(14 → 7)"
             fi
         done
     fi
@@ -5596,7 +5853,7 @@ _sync_show_status() {
                 local when
                 when=$(_cron_to_english "$sched")
                 printf "  %-20s %-18s %-16s %-10s " "$name" "$sched" "$when" "$direction"
-                [[ -n "$status" ]] && echo -e "$status" || echo ""
+                echo -e "$(_sync_mode_cell "$(_sync_job_mode "$script_path")") $(_sync_last_note "$name") $status"
             fi
         done
     fi
@@ -5620,7 +5877,7 @@ _sync_show_status() {
                 [[ -z "$direction" ]] && direction="sync"
             fi
             printf "  %-20s %-18s %-16s %-10s " "$tname" "$oncal" "weekly" "$direction"
-            [[ -n "$status" ]] && echo -e "$status" || echo -e "${DIM}timer${NC}"
+            echo -e "$(_sync_mode_cell "$(_sync_job_mode "$script_path")") $(_sync_last_note "$tname") ${status:-${DIM}timer${NC}}"
         done
     fi
 
@@ -5717,21 +5974,15 @@ _sync_show_status() {
         local logf
         for logf in "$log_dir"/*.log; do
             [[ -f "$logf" ]] || continue
-            local jname when status last_finish exitc
+            local jname when status kind exitc
             jname=$(basename "$logf" .log)
-            last_finish=$(grep "Sync finished" "$logf" 2>/dev/null | tail -n 1)
-            if [[ -n "$last_finish" ]]; then
-                when=$(echo "$last_finish" | grep -oP '\[\K[^\]]+' | cut -c1-16)
-                exitc=$(echo "$last_finish" | grep -oP 'exit \K[0-9]+')
-                if [[ "$exitc" == "0" ]]; then
-                    status="${GREEN}✓ ok${NC}"
-                else
-                    status="${RED}✗ exit ${exitc}${NC}"
-                fi
-            else
-                when=$(date -d "@$(stat -c %Y "$logf")" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?")
-                status="${YELLOW}running?${NC}"
-            fi
+            IFS='|' read -r kind when exitc <<<"$(_sync_last_result "$logf")"
+            case "$kind" in
+                ok)      status="${GREEN}✓ ok${NC}" ;;
+                skipped) status="${YELLOW}last: skipped (source empty)${NC}" ;;
+                fail)    status="${RED}✗ exit ${exitc}${NC}" ;;
+                *)       status="${YELLOW}running?${NC}" ;;
+            esac
             printf "  %-20s %-20s " "$jname" "$when"
             echo -e "$status"
         done
@@ -6062,6 +6313,7 @@ _print_tree_entries() {
 }
 
 _sync_one_time_backup() {
+    local mirror_flag=()
     info "One-time rsync. Pick source and destination; runs once, no schedule."
     info "Run this from your LAPTOP, not over SSH."
     echo ""
@@ -6108,6 +6360,7 @@ _sync_one_time_backup() {
                 rsync_src="$src_path"
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
+            _mirror_gate local "$src_path" "$dest_display" "rsync -avh --progress $(_shq "$rsync_src") $(_shq "$SERVER_USER@$SERVER_IP:$dst_path/")" || return
 
             local src_size=$(du -sh "$src_path" 2>/dev/null | awk '{print $1}')
             echo ""
@@ -6115,6 +6368,7 @@ _sync_one_time_backup() {
             echo -e "  ${BOLD}↑ One-time upload: laptop → server${NC}"
             echo -e "  From: $src_path ($src_size)"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
+            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             read -p "  Proceed? [y/N] " -n 1 -r
@@ -6122,7 +6376,7 @@ _sync_one_time_backup() {
             [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
 
             ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p $(_shq "$dest_display") && sudo chown $SERVER_USER:$SERVER_USER $(_shq "$dest_display")" || { fail "Could not prepare destination."; return 1; }
-            rsync -avh --progress "$rsync_src" "$SERVER_USER@$SERVER_IP:$dst_path/" || { fail "Backup failed."; return 1; }
+            rsync -avh --progress "${mirror_flag[@]}" "$rsync_src" "$SERVER_USER@$SERVER_IP:$dst_path/" || { fail "Backup failed."; return 1; }
             ;;
         2)
             echo ""
@@ -6159,11 +6413,20 @@ _sync_one_time_backup() {
             while [ -n "$_probe" ] && [ "$_probe" != "/" ] && [ ! -e "$_probe" ]; do _probe=$(dirname "$_probe"); done
             [ -n "$_probe" ] && [ ! -w "$_probe" ] && dst_needs_priv=true
 
+            # The sudo copy streams a tar, which can't delete: append only, no question.
+            if $needs_priv || $dst_needs_priv; then
+                sync_mode=append
+                info "ℹ Needs sudo (tar copy) — append only; mirror isn't possible for this copy."
+            else
+                _mirror_gate server "$src_path" "$dest_display" "rsync -avh --progress $(_shq "$SERVER_USER@$SERVER_IP:$rsync_src") $(_shq "$dst_path/")" || return
+            fi
+
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↓ One-time download: server → laptop${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
             echo -e "  To:   $dest_display"
+            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
             $needs_priv     && echo -e "  ${DIM}Source is root-owned — federver reads it under sudo.${NC}"
             $dst_needs_priv && echo -e "  ${DIM}Destination isn't writable — it's written under local sudo.${NC}"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -6286,7 +6549,7 @@ _sync_one_time_backup() {
                     return 1
                 fi
             else
-                rsync -avh --progress "$SERVER_USER@$SERVER_IP:$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
+                rsync -avh --progress "${mirror_flag[@]}" "$SERVER_USER@$SERVER_IP:$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
             fi
             ;;
         3)
@@ -6308,6 +6571,7 @@ _sync_one_time_backup() {
                 rsync_src="$src_path"
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
+            _mirror_gate local "$src_path" "$dest_display" "rsync -avh --progress $(_shq "$rsync_src") $(_shq "$dst_path/")" || return
 
             local src_size=$(du -sh "$src_path" 2>/dev/null | awk '{print $1}')
             echo ""
@@ -6315,6 +6579,7 @@ _sync_one_time_backup() {
             echo -e "  ${BOLD}↪ One-time local copy: laptop → laptop${NC}"
             echo -e "  From: $src_path ($src_size)"
             echo -e "  To:   $dest_display"
+            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             read -p "  Proceed? [y/N] " -n 1 -r
@@ -6322,7 +6587,7 @@ _sync_one_time_backup() {
             [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
 
             mkdir -p "$dst_path" || { fail "Could not create destination."; return 1; }
-            rsync -avh --progress "$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
+            rsync -avh --progress "${mirror_flag[@]}" "$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
             ;;
         4)
             echo ""
@@ -6346,26 +6611,49 @@ _sync_one_time_backup() {
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
 
+            # A mirror's guard, preview and copy all run as root on the server over
+            # non-TTY ssh with ONE password prompt (_server_sudo_run); an append copy
+            # keeps the interactive `ssh -t sudo` below.
+            local append_cmd="rsync -avh --progress $(_shq "$rsync_src") $(_shq "$dst_path/")"
+            _mirror_ask
+            if [[ "$sync_mode" == mirror ]]; then
+                local pw_rc=0
+                _server_sudo_pw_prompt || pw_rc=$?
+                if (( pw_rc == 2 )); then fail "Server unreachable - nothing changed."; return 1; fi
+                if (( pw_rc != 0 )); then fail "Wrong sudo password - nothing changed."; return 1; fi
+                _mirror_preview sudo "$src_path" "$dest_display" "$(_mirror_dry_cmd "$append_cmd")" copy || { unset _SRV_PW; return 2; }
+            fi
+
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}⇄ One-time server copy: federver → federver${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
+            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             info "Runs with sudo on the server (Immich data is root-owned); you may be prompted for the server password."
 
             read -p "  Proceed? [y/N] " -n 1 -r
             echo ""
-            [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
+            [[ ! $REPLY =~ ^[Yy]$ ]] && { unset _SRV_PW; info "Cancelled."; return; }
 
+            if [[ "$sync_mode" == mirror ]]; then
+                _server_sudo_run "exec 2>&1; mkdir -p $(_shq "$dest_display") && $(_rsync_with "$append_cmd" --delete)" || { unset _SRV_PW; fail "Mirror failed."; return 1; }
+                unset _SRV_PW
+            else
             # -t for the interactive sudo password prompt. mkdir the destination
             # first, then copy. Single-quoted paths handle spaces (e.g. "New Backup").
             ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p $(_shq "$dest_display") && sudo rsync -avh --progress $(_shq "$rsync_src") $(_shq "$dst_path/")" || { fail "Backup failed."; return 1; }
+            fi
             ;;
     esac
 
     echo ""
-    ok "Backup complete."
+    if [[ "$sync_mode" == mirror ]]; then
+        ok "Mirror complete - ${_mirror_n} deleted, destination matches source."
+    else
+        ok "Backup complete."
+    fi
 }
 
 step_manage_sync() {
@@ -6434,6 +6722,7 @@ step_sync() {
                 rsync_src="$local_path"
                 dest_display="$server_path/$(basename "$local_path")"
             fi
+            _mirror_ask
 
             src_size=$(du -sh "$local_path" 2>/dev/null | awk '{print $1}')
             echo ""
@@ -6441,6 +6730,7 @@ step_sync() {
             echo -e "  ${BOLD}↑ Upload: laptop → server${NC}"
             echo -e "  From: $local_path ($src_size)"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
+            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             # Shell-quote every interpolated path with _shq (printf %q): these
@@ -6453,7 +6743,7 @@ step_sync() {
             local remote_mkdir="sudo mkdir -p $(_shq "$dest_display") && sudo chown $(_shq "$SERVER_USER:$SERVER_USER") $(_shq "$dest_display")"
             local pre_cmd="ssh -t $(_shq "$SERVER_USER@$SERVER_IP") $(_shq "$remote_mkdir")"
             local rsync_cmd="rsync -avh --progress -s $(_shq "$rsync_src") $(_shq "$SERVER_USER@$SERVER_IP:$server_path/")"
-            _sync_execute_or_schedule "upload" "$local_path" "$dest_display" "$rsync_cmd" "$pre_cmd"
+            _sync_execute_or_schedule "upload" "$local_path" "$dest_display" "$rsync_cmd" "$pre_cmd" "$sync_mode" local
             ;;
 
         2)
@@ -6473,12 +6763,14 @@ step_sync() {
                 rsync_src="$server_path"
                 dest_display="$local_path/$(basename "$server_path")"
             fi
+            _mirror_ask
 
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↓ Download: server → laptop${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$server_path"
             echo -e "  To:   $dest_display"
+            [[ "$sync_mode" == mirror ]] && echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             # Shell-quote every path with _shq (see the upload branch): the dest
@@ -6486,7 +6778,7 @@ step_sync() {
             # source path from being re-split by the server's shell.
             local pre_cmd="sudo mkdir -p $(_shq "$dest_display")"
             local rsync_cmd="rsync -avh --progress -s $(_shq "$SERVER_USER@$SERVER_IP:$rsync_src") $(_shq "$local_path/")"
-            _sync_execute_or_schedule "download" "$server_path" "$dest_display" "$rsync_cmd" "$pre_cmd"
+            _sync_execute_or_schedule "download" "$server_path" "$dest_display" "$rsync_cmd" "$pre_cmd" "$sync_mode" server
             ;;
 
         3)

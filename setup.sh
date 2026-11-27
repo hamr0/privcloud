@@ -959,7 +959,7 @@ _ts_uninstall() {
     echo ""
     echo -e "  ${BOLD}Kept:${NC}"
     echo -e "    ${GREEN}•${NC} Tailscale on your laptop untouched"
-    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "    ${GREEN}•${NC} Core services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     _confirm_delete tailscale || return 0
@@ -1133,7 +1133,7 @@ _ts_uninstall_both() {
     echo ""
     echo -e "  ${BOLD}Kept:${NC}"
     echo -e "    ${GREEN}•${NC} Tailscale on phones untouched (remove via their app settings)"
-    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "    ${GREEN}•${NC} Core services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     (( via_ts )) && warn "You're connected to the server over Tailscale - removing it here will drop that connection."
@@ -2651,7 +2651,7 @@ _syncthing_uninstall() {
     echo -e "    ${GREEN}•${NC} /opt/syncthing/ — device identity (cert.pem/key.pem), config,"
     echo -e "      pairings, folder shares — so a future reinstall keeps the same ID"
     echo -e "    ${GREEN}•${NC} Syncthing on your laptop (systemd user service) untouched"
-    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "    ${GREEN}•${NC} Core services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     _confirm_delete syncthing || return 0
@@ -2977,7 +2977,7 @@ _syncthing_uninstall_both() {
     echo -e "  ${BOLD}Kept:${NC}"
     [[ "$side" != laptop ]] && echo -e "    ${GREEN}•${NC} Server: /opt/syncthing/ (identity, config, pairings)"
     [[ "$side" != server ]] && echo -e "    ${GREEN}•${NC} Laptop: ~/.local/state/syncthing/ (identity, config)"
-    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "    ${GREEN}•${NC} Core services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     _confirm_delete syncthing || return 0
@@ -3163,7 +3163,7 @@ _rdp_uninstall() {
     echo -e "  ${BOLD}Kept:${NC}"
     echo -e "    ${GREEN}•${NC} XFCE desktop packages (xfce4-session, xfwm4, xfce4-panel,"
     echo -e "      xfdesktop) — removing them is more disruptive than it's worth"
-    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "    ${GREEN}•${NC} Core services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     _confirm_delete xrdp || return 0
@@ -3434,7 +3434,7 @@ _wg_uninstall() {
     echo -e "  ${BOLD}Kept:${NC}"
     echo -e "    ${GREEN}•${NC} /etc/wireguard/ — server + peer configs (so you can reinstall"
     echo -e "      without re-generating keys or re-scanning QR codes)"
-    echo -e "    ${GREEN}•${NC} Core privcloud services untouched"
+    echo -e "    ${GREEN}•${NC} Core services untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     _confirm_delete wireguard || return 0
@@ -4344,6 +4344,192 @@ step_immich_fix_gp() {
     bash "$(dirname "$_FV_SELF")/scripts/google-takeout-fix.sh" "$input_path"
 }
 
+# One-time Immich backup to a drive (moved as-is from `privcloud backup` -> 1;
+# step 6 of the single-source plan unifies it with the scheduled backup).
+step_immich_backup_once() {
+    _immich_docker_group "$FUNCNAME"
+
+    local upload_loc db_loc
+    upload_loc="$(_env_get UPLOAD_LOCATION "$_IMMICH_ENV")"
+    db_loc="$(_env_get DB_DATA_LOCATION "$_IMMICH_ENV")"
+
+    if [[ -z "$upload_loc" || -z "$db_loc" ]]; then
+        fail "Not configured yet. Run: federver -> i -> Install"
+        return 1
+    fi
+
+    # What to back up
+    echo "  What to back up:"
+    echo -e "    ${BOLD}1)${NC} Both  ${DIM}<- photos + database (default)${NC}"
+    echo -e "    ${BOLD}2)${NC} Photos only"
+    echo -e "    ${BOLD}3)${NC} Database only"
+    echo -e "    ${BOLD}0)${NC} Back"
+    echo ""
+    local scope
+    read -rp "  Choose [0-3] (default: 1): " scope
+    local do_photos=true do_db=true
+    case "$scope" in
+        2)        do_db=false ;;
+        3)        do_photos=false ;;
+        1|"")     ;;
+        0|q)      return 2 ;;
+        *)        fail "Invalid choice."; return 1 ;;
+    esac
+
+    # Show what we're backing up (size only what we'll copy)
+    local photos_size="-" db_size="-"
+    $do_photos && photos_size="$(set -o pipefail; sudo du -sh --block-size=1G "$upload_loc" 2>/dev/null | awk '{print $1" GB"}' || echo "unknown")"
+    $do_db     && db_size="$(set -o pipefail; sudo du -sh --block-size=1M "$db_loc" 2>/dev/null | awk '{print $1" MB"}' || echo "unknown")"
+    $do_photos && echo "    Photos:   $upload_loc ($photos_size)"
+    $do_db     && echo "    Database: $db_loc ($db_size)"
+    echo ""
+
+    # Get destination
+    local dest
+    read -rp "  Backup destination (e.g. /run/media/$USER/External): " dest
+    dest="${dest/#\~/$HOME}"
+    dest="${dest//\'/}"
+    dest="${dest//\"/}"
+    dest="${dest%/}"
+
+    if [[ -z "$dest" || ! -d "$dest" ]]; then
+        fail "Not a valid directory: $dest"
+        return 1
+    fi
+
+    local backup_dir="$dest/privcloud-backup"
+    local avail
+    avail="$(df -h "$dest" 2>/dev/null | awk 'NR==2{print $4}')"
+    echo ""
+    echo "    Destination: $backup_dir/   (available on drive: $avail)"
+    echo ""
+
+    # No downtime: dump the live DB instead of stopping the stack. Detect whether
+    # postgres is up - if so we dump online; if it's already down we cold-copy the
+    # data dir (also safe). Either way the running state is left untouched.
+    local pg_running=false
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx immich_postgres; then
+        pg_running=true
+    fi
+
+    local confirm
+    read -rp "  Start backup? [Y/n]: " confirm
+    if [[ "$confirm" =~ ^[Nn] ]]; then
+        warn "Cancelled."
+        return 0
+    fi
+
+    # Photo sync mode (only relevant when copying photos)
+    local rsync_delete="" sync_mode
+    if $do_photos; then
+        echo ""
+        echo "  Photo sync mode:"
+        echo -e "    ${BOLD}1)${NC} Append  ${DIM}<- copy new/changed files, keep everything on backup (safe default)${NC}"
+        echo -e "    ${BOLD}2)${NC} Mirror  ${DIM}<- exact copy of source, removes files deleted from source${NC}"
+        echo ""
+        read -rp "  Choose [1/2] (default: 1): " sync_mode
+        if [[ "$sync_mode" == 2 ]]; then
+            rsync_delete="--delete"
+            warn "Mirror mode: files deleted from source will be removed from backup."
+        fi
+    fi
+
+    echo ""
+    mkdir -p "$backup_dir"
+
+    # Photos - live rsync of write-once originals; safe while Immich runs.
+    if $do_photos; then
+        echo -e "  ${BOLD}Copying photos ($photos_size)...${NC}"
+        if command -v rsync &>/dev/null; then
+            if ! sudo rsync -a $rsync_delete --info=progress2 "$upload_loc/" "$backup_dir/photos/"; then
+                fail "Failed to copy photos (rsync error)."
+                return 1
+            fi
+        else
+            sudo cp -a "$upload_loc" "$backup_dir/photos"
+        fi
+        local photos_copied
+        photos_copied="$(sudo du -sh "$backup_dir/photos" 2>/dev/null | awk '{print $1}')"
+        ok "Photos copied ($photos_copied)."
+    fi
+
+    # Database - no downtime. Online pg_dump when running; cold data-dir copy when
+    # already stopped. db_method records which, so the restore hint matches.
+    local db_method=""
+    if $do_db; then
+        if $pg_running; then
+            echo -e "  ${BOLD}Dumping database (online, no downtime)...${NC}"
+            local ts dump
+            ts="$(date +%Y%m%d-%H%M)"
+            dump="$backup_dir/immich-db-$ts.sql.gz"
+            if ( set -o pipefail; docker exec immich_postgres pg_dumpall -U postgres | gzip > "$dump" ); then   # pipefail: a failed dump must not look ok
+                chmod 600 "$dump" 2>/dev/null || true
+                db_method="dump"
+                ok "Database dumped ($(du -sh "$dump" 2>/dev/null | awk '{print $1}')) -> $(basename "$dump")"
+            else
+                rm -f "$dump"   # don't leave a partial/empty dump that looks valid
+                fail "Database dump failed. Is Immich healthy? Try: federver -> i -> Status"
+                return 1
+            fi
+        else
+            warn "Immich is stopped - copying the database files directly (safe while down)."
+            # Defense-in-depth: never cold-copy a live data dir (would be corrupt).
+            if _immich_compose ps --quiet 2>/dev/null | grep -q .; then
+                fail "Some containers are still running - cannot safely cold-copy the database."
+                fail "Start Immich fully for an online dump, or stop it first (federver -> i -> Stop)."
+                return 1
+            fi
+            if command -v rsync &>/dev/null; then
+                if ! sudo rsync -a $rsync_delete --info=progress2 "$db_loc/" "$backup_dir/postgres/"; then
+                    fail "Failed to copy database (rsync error)."
+                    return 1
+                fi
+            else
+                sudo cp -a "$db_loc" "$backup_dir/postgres"
+            fi
+            local db_copied
+            db_copied="$(sudo du -sh "$backup_dir/postgres" 2>/dev/null | awk '{print $1}')"
+            if [[ "$db_copied" == 0 || "$db_copied" == 4.0K ]]; then
+                fail "Database backup appears empty ($db_copied)."
+                return 1
+            fi
+            # Make backup readable without root (postgres files are owned by container user)
+            sudo chown -R "$(id -u):$(id -g)" "$backup_dir/postgres"
+            sudo chmod -R u+rw "$backup_dir/postgres"
+            db_method="datadir"
+            ok "Database copied ($db_copied)."
+        fi
+    fi
+
+    # Copy .env so restore knows the password and config. It holds the DB
+    # password, so keep the backup copy readable only by the owner.
+    if cp "$_IMMICH_ENV" "$backup_dir/.env" 2>/dev/null; then
+        chmod 600 "$backup_dir/.env" 2>/dev/null || true
+    fi
+
+    echo ""
+    ok "Backup complete!"
+    echo "    Location: $backup_dir"
+    $do_photos && echo "    Photos:   $backup_dir/photos"
+    if [[ "$db_method" == dump ]]; then
+        echo "    Database: $backup_dir/immich-db-*.sql.gz (SQL dump)"
+    elif [[ "$db_method" == datadir ]]; then
+        echo "    Database: $backup_dir/postgres (data dir)"
+    fi
+    echo "    Config:   $backup_dir/.env"
+    echo ""
+    echo "  To restore on any machine:"
+    echo "    1. Clone privcloud, then federver -> i -> Install"
+    $do_photos && echo "    2. Point config to the backed-up photos directory"
+    if [[ "$db_method" == dump ]]; then
+        echo "    3. Start Immich (federver -> i -> Start), then load the dump:"
+        echo "         gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres"
+    elif [[ "$db_method" == datadir ]]; then
+        echo "    3. Copy postgres/ and .env back, then federver -> i -> Start"
+    fi
+    return 0
+}
+
 step_adguard() {
     info "AdGuard Home is a network-wide DNS ad & tracker blocker."
     info "Runs in Docker, blocks ads on every device that uses it as DNS."
@@ -4591,7 +4777,7 @@ _adguard_uninstall() {
     echo ""
     echo -e "  ${BOLD}Kept:${NC}"
     echo -e "    ${GREEN}•${NC} /opt/adguard/ — config, filter lists, query log history"
-    echo -e "    ${GREEN}•${NC} Core privcloud services (Immich, Navidrome, etc.) untouched"
+    echo -e "    ${GREEN}•${NC} Core services (Immich, Navidrome, etc.) untouched"
     echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     _confirm_delete adguard || return 0
@@ -4843,7 +5029,7 @@ step_immich_backup() {
 # Full Immich backup: database (online pg_dump) + photo originals (live rsync).
 # Neither step stops the stack — pg_dumpall is transactionally consistent and
 # UPLOAD_LOCATION holds write-once originals, so both are safe while Immich runs.
-# Managed by setup.sh (federver → Immich backup) and privcloud → backup → scheduled.
+# Managed by setup.sh (federver → i → Backup - Scheduled, or 14 → 6).
 BACKUP_DIR="__BACKUP_DIR__"
 UPLOAD_LOCATION="__UPLOAD_LOCATION__"
 RETENTION_DAYS=__RETENTION__
@@ -4962,7 +5148,7 @@ TIMEREOF
     fi
 
     echo ""
-    info "Manage it anytime:  privcloud → 9  (Scheduled - Status / Run now / Remove)"
+    info "Manage it anytime:  federver → i  (Backup - Scheduled: Status / Run now / Remove)"
     info "View log:           tail /var/log/immich-backup.log"
 }
 
@@ -4971,7 +5157,7 @@ TIMEREOF
 _immich_backup_run() {
     if [ ! -x /usr/local/bin/immich-backup.sh ]; then
         warn "No scheduled Immich backup is configured yet."
-        info "Set one up first: privcloud → 9 → 2  (or federver → 14 → 6)."
+        info "Set one up first: federver → i → Backup - Scheduled - Set up  (or federver → 14 → 6)."
         return 0
     fi
     if ! sudo -v; then
@@ -5098,10 +5284,10 @@ _immich_backup_status() {
     if [ "$mechanism" != "timer" ] && [ "$mechanism" != "cron" ]; then
         echo ""
         if [ "$cron_checked" -eq 1 ]; then
-            info "Re-enable:  Backup → Scheduled - Set up  (privcloud → 9 → 2, or federver → 14 → 6)."
+            info "Re-enable:  Backup → Scheduled - Set up  (federver → i → Backup - Scheduled - Set up, or federver → 14 → 6)."
         else
             info "Verify by hand:  sudo crontab -l | grep -i immich"
-            info "Set up the schedule:  Backup → Scheduled - Set up  (privcloud → 9 → 2, or federver → 14 → 6)."
+            info "Set up the schedule:  Backup → Scheduled - Set up  (federver → i → Backup - Scheduled - Set up, or federver → 14 → 6)."
         fi
     fi
 
@@ -5181,16 +5367,16 @@ _immich_backup_remove() {
     cron_left=$(sudo crontab -l 2>/dev/null | grep -vE '^[[:space:]]*#' | grep -E "$cron_pat")
     if [ -f /etc/systemd/system/immich-backup.timer ] || [ -e /usr/local/bin/immich-backup.sh ] || [ -n "$cron_left" ]; then
         fail "Removal did not complete — the schedule may still be active."
-        info "Check it: privcloud → 9 → 3 (Scheduled - Status)."
+        info "Check it: federver → i → Backup - Scheduled - Status."
         return 1
     fi
     ok "Scheduled Immich backup removed. Backup files left intact."
 }
 
 # Management submenu for the scheduled backup, used by federver → 14 → 6.
-# (privcloud's Backup menu was flattened in v0.9.13 — it calls step_immich_backup
-# / _immich_backup_status / _immich_backup_run / _immich_backup_remove directly
-# rather than going through this submenu, but drives the same single schedule.)
+# (federver → i lists the same four actions flat and calls step_immich_backup /
+# _immich_backup_status / _immich_backup_run / _immich_backup_remove directly;
+# both drive the same single schedule.)
 # `|| true` on each action: a step returning 2 (Back) must not abort under set -e.
 step_immich_backup_menu() {
     echo ""

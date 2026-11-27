@@ -142,5 +142,35 @@ check 8a "Ctrl-C: 'Cancelled - nothing changed.' and rc 1" '[[ "$RAW" == *"Cance
 check 8b "Ctrl-C: the dry run is killed and no list file is left" '! pgrep -f "sleep 31.7" >/dev/null && [ -z "$(ls "$T/state/federver"/*.txt 2>/dev/null)" ]'
 check 8c "Ctrl-C: the caller's own INT trap is restored" '[[ "$RAW" == *"trap -- '"'"'echo OLDTRAP'"'"' SIGINT"* ]]'
 
+# 9 live counts on the progress line (terminal only), read from the list file as it grows
+cat > "$T/live.sh" <<X
+source "$T/fn.sh"
+_mirror_guard() { return 0; }
+_mirror_refuse() { :; }
+export XDG_STATE_HOME="$T/state"
+echo n | _mirror_preview local /s /d "sleep 0.3; for r in 1 2 3 4; do for i in 1 2 3; do echo del.\\|d\\\$r\\\$i; echo send\\|c\\\$r\\\$i; done; sleep 1; done" copy
+X
+RAW=$(timeout 20 script -qec "bash $T/live.sh" /dev/null 2>&1; true)
+check 9a "tty: progress line shows 'N to delete' and 'M to copy so far'" '[[ "$RAW" =~ [0-9]s\ ·\ [0-9,]+\ to\ delete\ ·\ [0-9,]+\ to\ copy\ so\ far ]]'
+check 9b "tty: the counts grow while the dry run is still going" '[ "$(grep -o "[0-9,]* to delete ·" <<<"$RAW" | sort -u | wc -l)" -ge 2 ]'
+cat > "$T/live2.sh" <<X
+source "$T/fn.sh"
+_mirror_guard() { return 0; }
+_mirror_refuse() { :; }
+export XDG_STATE_HOME="$T/state"
+echo n | _mirror_preview local /s /d "sleep 2.5; echo 'del.|a'" copy
+X
+RAW2=$(timeout 20 script -qec "bash $T/live2.sh" /dev/null 2>&1; true)
+check 9c "tty: seconds only until rsync prints its first line" '[[ "$RAW2" == *"... 1s"$'"'"'\r'"'"'* && "$RAW2" == *"... 2s"$'"'"'\r'"'"'* ]]'
+OUT=$(echo n | _mirror_preview local /s /d "$LIST" copy 2>&1)
+check 9d "no terminal: no ticker, no live counts" '[[ "$OUT" != *" to copy so far"* ]]'
+cat > "$T/tick.sh" <<X
+awk 'BEGIN{for(i=1;i<=200000;i++){print "del.|d" (i%7) "/f" i; print "send|s" i}}' > "$T/big.txt"
+S=\$(date +%s%N)
+awk '/^del\\.\\|/ { d++; next } /^(send|recv)\\|/ { c++ } END { print d + 0, c + 0 }' "$T/big.txt"
+echo "TICK_MS=\$(( (\$(date +%s%N) - S) / 1000000 ))"
+X
+bash "$T/tick.sh" | sed 's/^/      (400k-line tick: /; s/$/)/' | tail -1
+
 echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
 [ "$FAILN" = 0 ]

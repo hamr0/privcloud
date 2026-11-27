@@ -5150,7 +5150,7 @@ _mirror_preview() {
     if ! ( umask 077; mkdir -p "$sdir" && : > "$list" ) 2>/dev/null; then
         fail "Could not create the preview list file in $sdir - nothing changed."; return 1
     fi
-    local pid t=0 msg="Checking what a mirror would delete (nothing is copied)"
+    local pid t=0 nd nc live msg="Checking what a mirror would delete (nothing is copied)"
     if [[ -t 1 ]]; then printf '  %s...' "$msg"; else echo "  $msg..."; fi
     if [[ "$loc" == sudo ]]; then
         _server_sudo_run "exec 2>&1; $dry" > "$list" &
@@ -5166,7 +5166,15 @@ _mirror_preview() {
     if [[ -t 1 ]]; then
         while kill -0 "$pid" 2>/dev/null; do
             sleep 1; t=$((t + 1))
-            printf '\r\033[K  %s... %ds' "$msg" "$t"
+            # what rsync has found so far, read from the list file (one awk pass)
+            read -r nd nc < <(awk '/^del\.\|/ { d++; next } /^(send|recv)\|/ { c++ }
+                END { print d + 0, c + 0 }' "$list")
+            live=""
+            if (( nd + nc > 0 )); then
+                live=" · $(sed -E ':a;s/([0-9])([0-9]{3})($|,)/\1,\2\3/;ta' <<<"$nd") to delete"
+                live+=" · $(sed -E ':a;s/([0-9])([0-9]{3})($|,)/\1,\2\3/;ta' <<<"$nc") to copy so far"
+            fi
+            printf '\r\033[K  %s... %ds%s' "$msg" "$t" "$live"
         done
     fi
     wait "$pid" || rc=$?

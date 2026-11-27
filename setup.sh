@@ -210,7 +210,7 @@ _svc_power_body() { # action quoted-container-word
         *) return 1 ;;
     esac
     printf '%s\n' "c=$2" \
-        "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }" \
+        "$(_svc_sudo_guard)" \
         "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
         "sudo docker inspect \"\$c\" >/dev/null 2>&1 || { echo \"no such container: \$c\" >&2; exit 3; }" \
         "sudo docker update --restart=$p \"\$c\" >/dev/null || { echo \"\$c: could not set restart policy $p\" >&2; exit 4; }" \
@@ -218,6 +218,8 @@ _svc_power_body() { # action quoted-container-word
         "s=\$(sudo docker inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' \"\$c\" 2>/dev/null)" \
         "[ \"\$s\" = \"$run $p\" ] || { echo \"\$c: expected '$run $p', found '\$s'\" >&2; exit 6; }"
 }
+# The sudo-refused guard both bodies start with (exit 7), one text for both.
+_svc_sudo_guard() { echo "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }"; }
 # Same rule for every container on the host: start and stop = all (incl. exited
 # ones, so a stopped-on-its-own unless-stopped container gets restart=no and
 # stays down after a daemon start); restart = the running ones only. Standalone ones (adguard, syncthing) are
@@ -226,7 +228,7 @@ _svc_power_all_body() { # action
     local list="docker ps -a --format '{{.Names}}'"
     [[ "$1" == restart ]] && list="docker ps --format '{{.Names}}'"
     printf '%s\n' \
-        "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }" \
+        "$(_svc_sudo_guard)" \
         "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
         "rc=0; for n in \$(sudo $list); do (" \
         "$(_svc_power_body "$1" '"$n"')" \
@@ -471,7 +473,7 @@ step_emergency() {
     echo ""
     info "Actions:"
     info "  1. Re-enable systemd-resolved stub (restores local DNS if AdGuard is broken)"
-    info "  2. Start all Docker containers (compose stack + AdGuard + Syncthing)"
+    info "  2. Start all Docker containers (compose stack + AdGuard + Syncthing + Samba)"
     info "  3. Restart systemd-resolved"
     echo ""
     read -p "  Continue? [Y/n] " -n 1 -r
@@ -494,7 +496,7 @@ step_emergency() {
     info "Starting standalone containers..."
     # Per-container rule (autostart follows the action). A standalone one that
     # was never installed is skipped quietly; a real failure is reported.
-    for c in adguard syncthing; do
+    for c in adguard syncthing samba; do
         sudo docker inspect "$c" > /dev/null 2>&1 || continue
         _svc_power start "$c" || warn "Could not start $c."
     done
@@ -575,6 +577,7 @@ _show_laptop_menu() {
     echo -e "  ${BOLD}11)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
     echo -e "  ${BOLD}12)${NC} Manage Syncthing                    ${DIM}← real-time bidirectional file sync${NC}"
     echo -e "  ${BOLD}13)${NC} Manage remote desktop               ${DIM}← install, access XFCE via RDP${NC}"
+    echo -e "  ${BOLD}16)${NC} Connect phone (Files app)           ${DIM}← iPhone/Android open server folders over Tailscale${NC}"
     echo ""
     echo -e "  ${DIM}-- Immich photo management --${NC}"
     echo -e "  ${BOLD}i)${NC}  Immich (privcloud)                  ${DIM}← start/stop/status/update/backup${NC}"
@@ -801,11 +804,15 @@ step_firewall() {
     esac
 }
 
+# First Tailscale IPv4 of this node (empty when none; stderr silenced). The one
+# place that asks tailscale for the address; shipped to the server with `declare -f`.
+_ts_ipv4() { tailscale ip -4 2>/dev/null | head -1; }
+
 # One-line Tailscale record: "<BackendState> <key-expiry date|disabled|-> <days left|-> <ip|->".
 # BackendState is the only reliable "up AND logged in" signal: after the node
 # key expires, tailscaled stays active and `tailscale status` / `tailscale ip`
 # can still succeed, but the state is NeedsLogin. Self-contained (no jq) so it
-# can be shipped to the server with `declare -f _ts_state`.
+# can be shipped to the server with `declare -f _ts_ipv4 _ts_state`.
 _ts_state() {
     type -P tailscale &>/dev/null || { echo "NotInstalled - - -"; return; }
     local js state exp days="-" ip self=0
@@ -823,7 +830,7 @@ _ts_state() {
     else
         exp=-           # no Self (logged out / fresh): key state unknown
     fi
-    ip=$(tailscale ip -4 2>/dev/null | head -1)
+    ip=$(_ts_ipv4)
     echo "${state:-Stopped} $exp $days ${ip:--}"
 }
 
@@ -831,7 +838,7 @@ _ts_state() {
 _ts_ip() { cut -d' ' -f4 <<<"$1"; }
 
 # True only when a _ts_state record is Running (up AND logged in). With no
-# argument, checks the local _ts_state. Prefer this over `tailscale ip -4`,
+# argument, checks the local _ts_state. Prefer this over `tailscale ip`,
 # which still prints a stale IP after the node key expires.
 _ts_running() {
     local rec
@@ -983,7 +990,7 @@ _ts_install() {
 
     local ts_ip
     if _ts_running; then
-        ts_ip=$(tailscale ip -4 2>/dev/null | head -1)
+        ts_ip=$(_ts_ipv4)
         ok "Tailscale connected! IP: $ts_ip"
         echo ""
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1028,7 +1035,7 @@ _ts_install_laptop() {
     # Bring the laptop up on the tailnet if it isn't already
     if _ts_running; then
         local laptop_ts_ip
-        laptop_ts_ip=$(tailscale ip -4)
+        laptop_ts_ip=$(_ts_ipv4)
         ok "Laptop already on the tailnet: $laptop_ts_ip"
     else
         echo ""
@@ -1155,7 +1162,7 @@ step_tailscale() {
     # install, or manage the one side that exists); it never installs on its own.
     local lap_state="" srv_state="" g=0
     command -v tailscale &>/dev/null && lap_state="installed ($(_ts_state | cut -d' ' -f1))"
-    srv_state=$(_server_probe "$(declare -f _ts_state); if type -P tailscale >/dev/null; then echo \"installed (\$(_ts_state | cut -d' ' -f1))\"; fi")
+    srv_state=$(_server_probe "$(declare -f _ts_ipv4 _ts_state); if type -P tailscale >/dev/null; then echo \"installed (\$(_ts_state | cut -d' ' -f1))\"; fi")
     _two_sided_gate "Tailscale" "$lap_state" "$srv_state" _ts_install_laptop "_ts_server_step" _ts_uninstall_both || g=$?
     (( g == 10 )) || return $g
 
@@ -1166,7 +1173,7 @@ step_tailscale() {
 
     echo -e "  ${BOLD}── Server ──${NC}"
     local srv_out srv_ts srv_host
-    srv_out=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_state); _ts_state; hostname" 2>/dev/null) \
+    srv_out=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_ipv4 _ts_state); _ts_state; hostname" 2>/dev/null) \
         || srv_out="Unreachable - - -"
     srv_ts=$(head -1 <<<"$srv_out"); srv_host=$(sed -n 2p <<<"$srv_out")
     _ts_print_state "$srv_ts" server
@@ -1876,7 +1883,7 @@ _services_status() {
     local IP HOST TS_IP="" has_adguard=0
     IP=$(hostname -I | awk '{print $1}')
     HOST=$(hostname)
-    _ts_running && TS_IP=$(tailscale ip -4 2>/dev/null | head -1)
+    _ts_running && TS_IP=$(_ts_ipv4)
     echo "$all_names" | grep -q '^adguard$' && has_adguard=1
     local has_syncthing=0
     echo "$all_names" | grep -q '^syncthing$' && echo "$CONTAINERS" | grep '^syncthing|Up' -q && has_syncthing=1
@@ -2091,7 +2098,7 @@ _unified_service_picker() {
     # ── 3. Extract Tailscale server state ──
     local ts_server="disconnected"
     local ts_server_raw
-    ts_server_raw=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_state); _ts_state" 2>/dev/null) || true
+    ts_server_raw=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_ipv4 _ts_state); _ts_state" 2>/dev/null) || true
     case "$ts_server_raw" in
         Running*)    ts_server="connected" ;;
         NeedsLogin*) ts_server="logged out" ;;
@@ -3203,7 +3210,7 @@ XRDPEOF
 
     IP=$(hostname -I | awk '{print $1}')
     local ts_ip
-    ts_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
+    ts_ip=$(_ts_ipv4); ts_ip=${ts_ip:-not connected}
 
     echo ""
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -3766,7 +3773,7 @@ step_adguard() {
     # missing, surface that BEFORE touching the system, not at the end.
     if command -v tailscale &>/dev/null; then
         ts_rec=$(_ts_state)
-        _ts_running "$ts_rec" && TS_IP=$(tailscale ip -4 2>/dev/null | head -1)
+        _ts_running "$ts_rec" && TS_IP=$(_ts_ipv4)
     fi
     if [[ -z "$TS_IP" && "$DRY_RUN" != "1" ]]; then
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -4763,7 +4770,7 @@ DISKEOF
 # root-only 0700, so -x is false for the non-root user running this step.
 _disk_check_existing_note() {
     if [ -e /usr/local/bin/disk-check.sh ]; then
-        warn "A previously installed disk-check is still active and unchanged - it may be outdated."
+        warn "A previously installed disk-check is still installed and unchanged - it may be outdated."
         info "Re-run federver -> 14 -> 7 from the privcloud folder to replace it."
     else
         info "No disk-check is installed - nothing installed."
@@ -5009,12 +5016,297 @@ LOGJSON
     fi
 }
 
+# ── Mirror mode (rsync --delete) for 14 → 2 / 3 / 5 ──────────────────────────
+# Copies are append-only unless the user types "delete" at _mirror_ask. A mirror
+# first passes a source guard (an empty/unmounted source would wipe the
+# destination), then a dry run that lists what would be deleted, then a typed
+# y/N. Scheduled jobs store their mode in the script (MODE=) and repeat the
+# guard on every run, so _mirror_check_here/_mirror_guard (+ ssh, _shq) are
+# copied into the job script with `declare -f` - cron has no federver functions.
+
+# Prints ok | missing | empty | unmounted | unknown (no findmnt to ask) for a
+# path on THIS machine. Always returns 0 - callers read the verdict, so a failed ssh/sudo (no output) is never
+# mistaken for "ok". Under /mnt, /media and /run/media the path must sit on a
+# real mount whose source is a /dev/* device: an autofs/stub mountpoint
+# (source systemd-1) or a bare folder on the system disk is "unmounted".
+_mirror_check_here() {
+    local p=$1 t s r
+    [[ -e "$p" ]] || { echo missing; return 0; }
+    # Listing first also triggers an idle automount before findmnt looks.
+    if [[ -d "$p" && -z "$(ls -A "$p" 2>/dev/null)" ]]; then echo empty; return 0; fi
+    for r in ${_MIRROR_DRIVE_ROOTS:-/mnt /media /run/media}; do
+        [[ "$p" == "$r"/* ]] || continue
+        command -v findmnt >/dev/null || { echo unknown; return 0; }
+        t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null)
+        s=$(findmnt -n -o SOURCE -T "$p" 2>/dev/null)
+        if [[ -z "$t" || "$t" == / || "$s" != /dev/* ]]; then echo unmounted; return 0; fi
+    done
+    echo ok
+}
+
+# Source guard: _mirror_guard <local|server|sudo> <path>. rc 0 = safe to mirror.
+#   Otherwise sets _mirror_why (source missing | source empty | drive not mounted |
+#   could not check source: no verdict came back, e.g. server unreachable).
+#   server = the path is on the federver box (checked over ssh, same function);
+#   sudo   = same, as root, through _server_sudo_run (needs _SRV_PW).
+_mirror_guard() {
+    local loc=$1 p=$2 v=""
+    case $loc in
+        local)  v=$(_mirror_check_here "$p") ;;
+        server) v=$({ declare -f _mirror_check_here; echo "_mirror_check_here $(_shq "$p")"; } \
+                    | ssh "$SERVER_USER@$SERVER_IP" 'bash -s' 2>/dev/null) || v="" ;;
+        sudo)   v=$(_server_sudo_run "$(declare -f _mirror_check_here); _mirror_check_here $(_shq "$p")") || v="" ;;
+    esac
+    v=$(printf '%s' "$v" | tr -d '\r' | tail -n 1)
+    case $v in
+        ok)        return 0 ;;
+        missing)   _mirror_why="source missing" ;;
+        empty)     _mirror_why="source empty" ;;
+        unmounted) _mirror_why="drive not mounted" ;;
+        *)         _mirror_why="could not check source" ;;
+    esac
+    return 1
+}
+
+_mirror_refuse() {
+    echo -e "  ${RED}✗ Source $1 is empty or its drive isn't mounted - a mirror would delete everything at the destination. Refused.${NC}"
+    info "Check the drive is plugged in and mounted, or press Enter at the copy-mode question for append only."
+}
+
+# The one question. Sets sync_mode=append|mirror; only the exact word "delete"
+# selects mirror.
+_mirror_ask() {
+    local reply=""
+    echo ""
+    echo "  Deleted at source → also delete at destination?"
+    printf '  Enter = no, append only · type "delete" = mirror: '
+    IFS= read -r reply || reply=""
+    if [[ "$reply" == delete ]]; then
+        sync_mode=mirror
+    else
+        sync_mode=append
+        ok "Append only - nothing at the destination will be deleted."
+    fi
+}
+
+# The red "Mode: mirror" line of a copy's summary box (nothing for append).
+_mirror_banner() {
+    if [[ "$sync_mode" == mirror ]]; then
+        echo -e "  ${RED}Mode: mirror - deletes destination files that are gone from the source${NC}"
+    fi
+}
+
+# Dry-run command for an append-form copy command ("rsync <any flags> ...").
+# --out-format=%o|%n prints "del.|<name>" for every deletion.
+_mirror_dry_cmd() { _rsync_with "$1" "-n --delete --out-format='%o|%n'"; }
+
+# Same command with a flag after "rsync" (--delete, or the literal $DELFLAG).
+_rsync_with() { printf 'rsync %s %s' "$2" "${1#rsync }"; }
+
+# Guard + dry run + typed y/N. _mirror_preview <loc> <src> <dest-label> <dry-cmd> <copy|save>
+#   copy: "Delete these N files at the destination?" (skipped when there is nothing to delete)
+#   save: scheduled job, always asks "Save this job as mirror?"
+# rc 0 = go ahead (_mirror_n = files + empty folders that will be deleted); 1 = refused,
+# failed or cancelled - the caller copies / saves nothing.
+_mirror_preview() {
+    local loc=$1 src=$2 dest=$3 dry=$4 ask=$5 out rc=0 all dels dirs nf nd what="" reply=""
+    _mirror_n=0
+    if ! _mirror_guard "$loc" "$src"; then _mirror_refuse "$src"; return 1; fi
+    if [[ "$loc" == sudo ]]; then
+        out=$(_server_sudo_run "exec 2>&1; $dry") || rc=$?
+    else
+        out=$(bash -c "$dry" 2>&1) || rc=$?
+    fi
+    if (( rc != 0 )); then
+        fail "Could not preview the deletions (rsync exit $rc) - nothing changed."
+        return 1
+    fi
+    # Files are listed by name; a directory counts only when no deleted file
+    # sits under it (those go with their files) = an empty folder.
+    all=$(printf '%s\n' "$out" | sed -n 's/^del\.|//p')
+    dels=$(printf '%s\n' "$all" | grep -v '/$' || true)
+    dirs=$(printf '%s\n' "$all" | awk '/\/$/ { d[++nd] = $0; next }
+        { p = $0; while ((i = match(p, /\/[^\/]*$/)) > 0) { p = substr(p, 1, i - 1); has[p "/"] = 1 } }
+        END { for (i = 1; i <= nd; i++) if (!(d[i] in has)) print d[i] }')
+    nf=$(printf '%s\n' "$dels" | grep -c . || true)
+    nd=$(printf '%s\n' "$dirs" | grep -c . || true)
+    _mirror_n=$((nf + nd))
+    [[ "$ask" == save ]] && echo -e "  ${YELLOW}⚠ Every scheduled run will delete destination files that are gone from the source.${NC}"
+    if (( nf > 0 )); then
+        what="${nf} file$([[ $nf == 1 ]] || echo s)"
+        (( nd > 0 )) && what+=" (+ ${nd} empty folder$([[ $nd == 1 ]] || echo s))"
+        echo -e "  ${YELLOW}⚠ ${what} would be deleted at ${dest}:${NC}"
+        printf '%s\n' "$dels" | head -n 5 | sed 's/[[:cntrl:]]//g; s/^/    /'
+        (( nf > 5 )) && echo "    ... and $((nf - 5)) more"
+    elif (( nd > 0 )); then
+        what="${nd} empty folder$([[ $nd == 1 ]] || echo s)"
+        echo -e "  ${YELLOW}⚠ ${what} would be removed at ${dest}:${NC}"
+        printf '%s\n' "$dirs" | head -n 5 | sed 's/[[:cntrl:]]//g; s/^/    /'
+        (( nd > 5 )) && echo "    ... and $((nd - 5)) more"
+    else
+        ok "Nothing to delete - destination has no extra files."
+        [[ "$ask" == copy ]] && return 0
+    fi
+    if [[ "$ask" == save ]]; then
+        printf '  Save this job as mirror? [y/N]: '
+    else
+        printf '  Delete these %s at the destination? [y/N]: ' "$what"
+    fi
+    read -r reply || reply=""
+    if [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]; then return 0; fi
+    info "Cancelled - nothing changed."
+    return 1
+}
+
+# MODE=/DELFLAG/guard block of a sync-job script, between markers so
+# _sync_job_set_mode (14 → 3) can swap it. Append: just the two assignments.
+_sync_mirror_block() {  # mode loc src_path job_name
+    echo "# >>> copy mode (federver 14 → 3 'Change copy mode' rewrites this block)"
+    echo "MODE=$1"
+    if [[ "$1" == mirror ]]; then
+        declare -f ssh _shq _mirror_check_here _mirror_guard
+        echo "DELFLAG=--delete"
+        echo "_mirror_guard $2 $(_shq "$3") || {"
+        echo "    printf '%s: SKIPPED %s - %s (mirror refused, nothing deleted)\\n' \"\$(date '+%Y-%m-%d %H:%M:%S')\" $(_shq "$4") \"\$_mirror_why\""
+        echo "    exit 0"
+        echo "}"
+    else
+        echo "DELFLAG="
+    fi
+    echo "# <<< copy mode"
+}
+
+_sync_job_mode() {  # script_path -> mirror | append (no MODE= line = legacy = append)
+    local m
+    m=$(sed -n 's/^MODE=//p' "$1" 2>/dev/null | head -n 1)
+    [[ "$m" == mirror ]] && echo mirror || echo append
+}
+
+# One "# Key: value" header line of a job script (first match; empty if none).
+_sync_job_field() {  # script_path key
+    sed -n "s/^# $2: //p" "$1" | head -n 1
+}
+
+# Rewrite a job script's mode in place (also upgrades pre-mirror scripts).
+_sync_job_set_mode() {  # script_path mode
+    local sp=$1 mode=$2 dir src name loc blk tmp
+    dir=$(_sync_job_field "$sp" Direction)
+    src=$(_sync_job_field "$sp" Source)
+    name=$(_sync_job_field "$sp" "Sync job")
+    if [[ -z "$src" || -z "$name" ]]; then fail "Job script has no Source/name header - mode not changed."; return 1; fi
+    [[ "$dir" == download ]] && loc=server || loc=local
+    blk=$(mktemp) && tmp=$(mktemp "$sp.XXXXXX") || return 1
+    _sync_mirror_block "$mode" "$loc" "$src" "$name" > "$blk"
+    awk -v blk="$blk" '
+        function emit(   l) { while ((getline l < blk) > 0) print l; close(blk); done = 1 }
+        /^# >>> copy mode/ { skip = 1; if (!done) emit(); next }
+        skip && /^# <<< copy mode/ { skip = 0; next }
+        skip { next }
+        !done && /^echo "\[\$\(date/ { emit() }
+        /^rsync / && $0 !~ /\$DELFLAG/ { sub(/^rsync /, "rsync $DELFLAG ") }
+        # Old finish line logged "(exit $?)" = the date substitution (always 0):
+        # capture the rsync code first, log it, and exit with it.
+        /^echo ".*Sync finished: .*\(exit \$\?\)"$/ {
+            sub(/\(exit \$\?\)/, "(exit $rc)"); print "rc=$?"; print; print "exit $rc"; next }
+        { print }' "$sp" > "$tmp"
+    chmod --reference="$sp" "$tmp"
+    if bash -n "$tmp" 2>/dev/null && mv "$tmp" "$sp" && [[ "$(_sync_job_mode "$sp")" == "$mode" ]]; then
+        rm -f "$blk"
+        return 0
+    fi
+    rm -f "$blk" "$tmp"
+    fail "Could not rewrite $sp - mode not changed."
+    return 1
+}
+
+# One-time copies: ask the mode and, for a mirror, guard + preview + confirm.
+# rc 0 = go on (sync_mode set; also fills the caller's mirror_flag array with
+# --delete for a mirror), 2 = refused / cancelled (nothing changed).
+_mirror_gate() {  # src_loc src_path dest_label append_cmd
+    mirror_flag=()
+    _mirror_ask
+    [[ "$sync_mode" == mirror ]] || return 0
+    _mirror_preview "$1" "$2" "$3" "$(_mirror_dry_cmd "$4")" copy || return 2
+    mirror_flag=(--delete)
+    return 0
+}
+
+# Status cell for a copy mode, padded to 8: mirror = red (it deletes), append
+# plain, anything else (a monitor) "-".
+_sync_mode_cell() {
+    case "$1" in
+        mirror) printf '%b%-8s%b' "$RED" mirror "$NC" ;;
+        append) printf '%-8s' append ;;
+        *)      printf '%-8s' "-" ;;
+    esac
+}
+
+# "last: ..." note for a Status row, coloured: ok green, skipped yellow, failed red.
+_sync_last_note() {  # job_name
+    local kind when exitc
+    IFS='|' read -r kind when exitc <<<"$(_sync_last_result "$HOME/.local/share/sync-jobs/$1.log")"
+    case "$kind" in
+        ok)      echo -e "${GREEN}last: ok${NC}" ;;
+        skipped) echo -e "${YELLOW}last: skipped${exitc:+ ($exitc)}${NC}" ;;
+        fail)    echo -e "${RED}last: failed (exit ${exitc})${NC}" ;;
+        running) echo -e "${YELLOW}last: running?${NC}" ;;
+        *)       echo -e "${DIM}last: never${NC}" ;;
+    esac
+}
+
+# Last result of a sync job from its log: "kind|when|exit", kind = ok | fail |
+# skipped (the mirror guard refused; the third field is its reason) | running
+# (started, no finish line) | never.
+_sync_last_result() {  # log_path
+    local l when exitc
+    [[ -f "$1" ]] || { echo "never||"; return 0; }
+    l=$(grep -E 'Sync finished|: SKIPPED ' "$1" 2>/dev/null | tail -n 1) || l=""
+    if [[ -z "$l" ]]; then
+        when=$(date -d "@$(stat -c %Y "$1")" '+%Y-%m-%d %H:%M' 2>/dev/null) || when="?"
+        echo "running|${when}|"; return 0
+    fi
+    if [[ "$l" == *": SKIPPED "* ]]; then
+        exitc=$(sed -n 's/.*: SKIPPED [^ ]* - \(.*\) (mirror refused.*/\1/p' <<<"$l")
+        echo "skipped|${l:0:16}|${exitc}"; return 0
+    fi
+    when=$(grep -oP '\[\K[^\]]+' <<<"$l" | cut -c1-16) || when="?"
+    exitc=$(grep -oP 'exit \K[0-9]+' <<<"$l") || exitc=""
+    if [[ "$exitc" == 0 ]]; then echo "ok|${when}|0"; else echo "fail|${when}|${exitc}"; fi
+}
+
+# 14 → 3 → Change copy mode.
+_sync_change_mode() {  # job_name
+    local job=$1 sp="$HOME/.local/bin/sync-$1.sh" dir loc src dest rline
+    if [[ ! -f "$sp" ]]; then fail "Script not found: $sp"; return 1; fi
+    echo ""
+    info "Current copy mode: $(_sync_job_mode "$sp")"
+    _mirror_ask
+    if [[ "$sync_mode" == mirror ]]; then
+        dir=$(_sync_job_field "$sp" Direction)
+        src=$(_sync_job_field "$sp" Source)
+        dest=$(_sync_job_field "$sp" Destination)
+        [[ "$dir" == download ]] && loc=server || loc=local
+        rline=$(grep -m1 '^rsync ' "$sp") || rline=""
+        if [[ -z "$rline" ]]; then fail "No rsync line in $sp - mode not changed."; return 1; fi
+        _mirror_preview "$loc" "$src" "$dest" "$(_mirror_dry_cmd "${rline/ \$DELFLAG/}")" save || return 2
+    fi
+    _sync_job_set_mode "$sp" "$sync_mode" || return 1
+    ok "'${job}' is now ${sync_mode}."
+}
+
 _sync_execute_or_schedule() {
     local sync_direction="$1"
     local src_path="$2"
     local dest_path="$3"
-    local rsync_cmd="$4"
+    local rsync_cmd="$4"        # append-form: "rsync -avh --progress ..."
     local pre_cmd="$5"
+    local mode="${6:-append}"   # append | mirror (from _mirror_ask)
+    local src_loc="${7:-local}" # where src_path lives: local | server
+    local dry_cmd="" run_cmd="$rsync_cmd"
+    if [[ "$mode" == mirror ]]; then
+        dry_cmd=$(_mirror_dry_cmd "$rsync_cmd")
+        run_cmd=$(_rsync_with "$rsync_cmd" --delete)
+    fi
 
     echo ""
     echo -e "  ${BOLD}1)${NC} Run now"
@@ -5025,10 +5317,17 @@ _sync_execute_or_schedule() {
     case $action in
         0) return 2 ;;
         1)
+            if [[ "$mode" == mirror ]]; then
+                _mirror_preview "$src_loc" "$src_path" "$dest_path" "$dry_cmd" copy || return 2
+            fi
             [[ -n "$pre_cmd" ]] && bash -c "$pre_cmd"
-            bash -c "$rsync_cmd" || { fail "Sync failed."; return 1; }
+            bash -c "$run_cmd" || { fail "Sync failed."; return 1; }
             echo ""
-            ok "Sync complete."
+            if [[ "$mode" == mirror ]]; then
+                ok "Mirror complete - ${_mirror_n} deleted, destination matches source."
+            else
+                ok "Sync complete."
+            fi
             ;;
         2)
             local sched_out sched_kind sched_spec
@@ -5042,6 +5341,10 @@ _sync_execute_or_schedule() {
             [[ "$job_name" == "q" ]] && return
             job_name="${job_name:-$default_name}"
             job_name=$(echo "$job_name" | tr ' ' '-' | tr '[:upper:]' '[:lower:]')
+
+            if [[ "$mode" == mirror ]]; then
+                _mirror_preview "$src_loc" "$src_path" "$dest_path" "$dry_cmd" save || return 2
+            fi
 
             local script_dir="$HOME/.local/bin"
             local log_dir="$HOME/.local/share/sync-jobs"
@@ -5061,10 +5364,14 @@ exec >>"${log_path}" 2>&1
 SERVER_USER="$SERVER_USER"
 SERVER_IP="$SERVER_IP"
 
+$(_sync_mirror_block "$mode" "$src_loc" "$src_path" "$job_name")
+
 echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: ${job_name}"
 ${pre_cmd:+$pre_cmd}
-$rsync_cmd
-echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: ${job_name} (exit \$?)"
+$(_rsync_with "$rsync_cmd" '$DELFLAG')
+rc=\$?
+echo "[\$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: ${job_name} (exit \$rc)"
+exit \$rc
 SYNCSCRIPT
             chmod +x "$script_path"
 
@@ -5085,7 +5392,7 @@ SYNCSCRIPT
             echo ""
             info "Running once now to verify..."
             [[ -n "$pre_cmd" ]] && bash -c "$pre_cmd"
-            bash -c "$rsync_cmd" || { fail "Sync failed on initial run."; return 1; }
+            bash -c "$run_cmd" || { fail "Sync failed on initial run."; return 1; }
             echo ""
             ok "Initial sync complete. Job scheduled."
             ;;
@@ -5332,7 +5639,7 @@ _sync_edit_job() {
     fi
 
     echo ""
-    echo -e "  ${BOLD}${job_name}${NC}  [${sched}] — ${human}  ${DIM}(${job_type})${NC}$($is_paused && echo " ${YELLOW}(paused)${NC}")"
+    echo -e "  ${BOLD}${job_name}${NC}  [${sched}] — ${human}  ${DIM}(${job_type})${NC}$($is_paused && echo " ${YELLOW}(paused)${NC}")  $(_sync_mode_cell "$(_sync_job_mode "$HOME/.local/bin/sync-${job_name}.sh")")"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "    ${BOLD}1)${NC} Change schedule"
     if $is_paused; then
@@ -5343,9 +5650,10 @@ _sync_edit_job() {
     echo -e "    ${BOLD}3)${NC} Run now"
     echo -e "    ${BOLD}4)${NC} View last log"
     echo -e "    ${BOLD}5)${NC} Delete"
+    echo -e "    ${BOLD}6)${NC} Change copy mode"
     echo -e "    ${BOLD}0)${NC} Back"
     echo ""
-    read -p "  Choice [0-5]: " action
+    read -p "  Choice [0-6]: " action
     case $action in
         1) _sync_change_schedule "$job_name" "$old_line" "$job_type" ;;
         2)
@@ -5416,6 +5724,7 @@ _sync_edit_job() {
             rm -f "$script_path" "$log_path"
             ok "Deleted '${job_name}'"
             ;;
+        6) _sync_change_mode "$job_name" ;;
         0) return ;;
         *) fail "Invalid choice." ;;
     esac
@@ -5516,13 +5825,13 @@ _sync_show_status() {
     echo ""
     echo -e "  ${BOLD}Scheduled tasks${NC}"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    printf "  ${BOLD}%-20s %-18s %-16s %-10s %s${NC}\n" "Name" "Schedule" "When" "Type" "Note"
+    printf "  ${BOLD}%-20s %-18s %-16s %-10s %-8s %s${NC}\n" "Name" "Schedule" "When" "Type" "Copy" "Note"
     echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
     # Render immich-backup from systemd timer if available, else fall back
     # to the legacy cron line.
     if [[ -n "$server_timer_oncal" ]]; then
-        printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$server_timer_oncal" "systemd" "backup" "(14 → 6)"
+        printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$server_timer_oncal" "systemd" "backup" "append" "(14 → 6)"
     fi
     if [[ -n "$server_crons" ]]; then
         echo "$server_crons" | while IFS= read -r line; do
@@ -5531,12 +5840,12 @@ _sync_show_status() {
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
                 when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$sched" "$when" "backup" "(14 → 6, legacy cron)"
+                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$sched" "$when" "backup" "append" "(14 → 6, legacy cron)"
             elif echo "$line" | grep -q "disk-check"; then
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
                 when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %s\n" "disk-check" "$sched" "$when" "monitor" "(14 → 7)"
+                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "disk-check" "$sched" "$when" "monitor" "-" "(14 → 7)"
             fi
         done
     fi
@@ -5589,7 +5898,7 @@ _sync_show_status() {
                 local when
                 when=$(_cron_to_english "$sched")
                 printf "  %-20s %-18s %-16s %-10s " "$name" "$sched" "$when" "$direction"
-                [[ -n "$status" ]] && echo -e "$status" || echo ""
+                echo -e "$(_sync_mode_cell "$(_sync_job_mode "$script_path")") $(_sync_last_note "$name") $status"
             fi
         done
     fi
@@ -5613,7 +5922,7 @@ _sync_show_status() {
                 [[ -z "$direction" ]] && direction="sync"
             fi
             printf "  %-20s %-18s %-16s %-10s " "$tname" "$oncal" "weekly" "$direction"
-            [[ -n "$status" ]] && echo -e "$status" || echo -e "${DIM}timer${NC}"
+            echo -e "$(_sync_mode_cell "$(_sync_job_mode "$script_path")") $(_sync_last_note "$tname") ${status:-${DIM}timer${NC}}"
         done
     fi
 
@@ -5710,21 +6019,15 @@ _sync_show_status() {
         local logf
         for logf in "$log_dir"/*.log; do
             [[ -f "$logf" ]] || continue
-            local jname when status last_finish exitc
+            local jname when status kind exitc
             jname=$(basename "$logf" .log)
-            last_finish=$(grep "Sync finished" "$logf" 2>/dev/null | tail -n 1)
-            if [[ -n "$last_finish" ]]; then
-                when=$(echo "$last_finish" | grep -oP '\[\K[^\]]+' | cut -c1-16)
-                exitc=$(echo "$last_finish" | grep -oP 'exit \K[0-9]+')
-                if [[ "$exitc" == "0" ]]; then
-                    status="${GREEN}✓ ok${NC}"
-                else
-                    status="${RED}✗ exit ${exitc}${NC}"
-                fi
-            else
-                when=$(date -d "@$(stat -c %Y "$logf")" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "?")
-                status="${YELLOW}running?${NC}"
-            fi
+            IFS='|' read -r kind when exitc <<<"$(_sync_last_result "$logf")"
+            case "$kind" in
+                ok)      status="${GREEN}✓ ok${NC}" ;;
+                skipped) status="${YELLOW}last: skipped${exitc:+ ($exitc)}${NC}" ;;
+                fail)    status="${RED}✗ exit ${exitc}${NC}" ;;
+                *)       status="${YELLOW}running?${NC}" ;;
+            esac
             printf "  %-20s %-20s " "$jname" "$when"
             echo -e "$status"
         done
@@ -6055,6 +6358,7 @@ _print_tree_entries() {
 }
 
 _sync_one_time_backup() {
+    local mirror_flag=()
     info "One-time rsync. Pick source and destination; runs once, no schedule."
     info "Run this from your LAPTOP, not over SSH."
     echo ""
@@ -6101,6 +6405,7 @@ _sync_one_time_backup() {
                 rsync_src="$src_path"
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
+            _mirror_gate local "$src_path" "$dest_display" "rsync -avh --progress $(_shq "$rsync_src") $(_shq "$SERVER_USER@$SERVER_IP:$dst_path/")" || return
 
             local src_size=$(du -sh "$src_path" 2>/dev/null | awk '{print $1}')
             echo ""
@@ -6108,6 +6413,7 @@ _sync_one_time_backup() {
             echo -e "  ${BOLD}↑ One-time upload: laptop → server${NC}"
             echo -e "  From: $src_path ($src_size)"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
+            _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             read -p "  Proceed? [y/N] " -n 1 -r
@@ -6115,7 +6421,7 @@ _sync_one_time_backup() {
             [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
 
             ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p $(_shq "$dest_display") && sudo chown $SERVER_USER:$SERVER_USER $(_shq "$dest_display")" || { fail "Could not prepare destination."; return 1; }
-            rsync -avh --progress "$rsync_src" "$SERVER_USER@$SERVER_IP:$dst_path/" || { fail "Backup failed."; return 1; }
+            rsync -avh --progress "${mirror_flag[@]}" "$rsync_src" "$SERVER_USER@$SERVER_IP:$dst_path/" || { fail "Backup failed."; return 1; }
             ;;
         2)
             echo ""
@@ -6152,11 +6458,20 @@ _sync_one_time_backup() {
             while [ -n "$_probe" ] && [ "$_probe" != "/" ] && [ ! -e "$_probe" ]; do _probe=$(dirname "$_probe"); done
             [ -n "$_probe" ] && [ ! -w "$_probe" ] && dst_needs_priv=true
 
+            # The sudo copy streams a tar, which can't delete: append only, no question.
+            if $needs_priv || $dst_needs_priv; then
+                sync_mode=append
+                info "ℹ Needs sudo (tar copy) — append only; mirror isn't possible for this copy."
+            else
+                _mirror_gate server "$src_path" "$dest_display" "rsync -avh --progress $(_shq "$SERVER_USER@$SERVER_IP:$rsync_src") $(_shq "$dst_path/")" || return
+            fi
+
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↓ One-time download: server → laptop${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
             echo -e "  To:   $dest_display"
+            _mirror_banner
             $needs_priv     && echo -e "  ${DIM}Source is root-owned — federver reads it under sudo.${NC}"
             $dst_needs_priv && echo -e "  ${DIM}Destination isn't writable — it's written under local sudo.${NC}"
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -6279,7 +6594,7 @@ _sync_one_time_backup() {
                     return 1
                 fi
             else
-                rsync -avh --progress "$SERVER_USER@$SERVER_IP:$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
+                rsync -avh --progress "${mirror_flag[@]}" "$SERVER_USER@$SERVER_IP:$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
             fi
             ;;
         3)
@@ -6301,6 +6616,7 @@ _sync_one_time_backup() {
                 rsync_src="$src_path"
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
+            _mirror_gate local "$src_path" "$dest_display" "rsync -avh --progress $(_shq "$rsync_src") $(_shq "$dst_path/")" || return
 
             local src_size=$(du -sh "$src_path" 2>/dev/null | awk '{print $1}')
             echo ""
@@ -6308,6 +6624,7 @@ _sync_one_time_backup() {
             echo -e "  ${BOLD}↪ One-time local copy: laptop → laptop${NC}"
             echo -e "  From: $src_path ($src_size)"
             echo -e "  To:   $dest_display"
+            _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             read -p "  Proceed? [y/N] " -n 1 -r
@@ -6315,7 +6632,7 @@ _sync_one_time_backup() {
             [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
 
             mkdir -p "$dst_path" || { fail "Could not create destination."; return 1; }
-            rsync -avh --progress "$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
+            rsync -avh --progress "${mirror_flag[@]}" "$rsync_src" "$dst_path/" || { fail "Backup failed."; return 1; }
             ;;
         4)
             echo ""
@@ -6339,26 +6656,49 @@ _sync_one_time_backup() {
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
 
+            # A mirror's guard, preview and copy all run as root on the server over
+            # non-TTY ssh with ONE password prompt (_server_sudo_run); an append copy
+            # keeps the interactive `ssh -t sudo` below.
+            local append_cmd="rsync -avh --progress $(_shq "$rsync_src") $(_shq "$dst_path/")"
+            _mirror_ask
+            if [[ "$sync_mode" == mirror ]]; then
+                local pw_rc=0
+                _server_sudo_pw_prompt || pw_rc=$?
+                if (( pw_rc == 2 )); then fail "Server unreachable - nothing changed."; return 1; fi
+                if (( pw_rc != 0 )); then fail "Wrong sudo password - nothing changed."; return 1; fi
+                _mirror_preview sudo "$src_path" "$dest_display" "$(_mirror_dry_cmd "$append_cmd")" copy || { unset _SRV_PW; return 2; }
+            fi
+
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}⇄ One-time server copy: federver → federver${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
+            _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             info "Runs with sudo on the server (Immich data is root-owned); you may be prompted for the server password."
 
             read -p "  Proceed? [y/N] " -n 1 -r
             echo ""
-            [[ ! $REPLY =~ ^[Yy]$ ]] && info "Cancelled." && return
+            [[ ! $REPLY =~ ^[Yy]$ ]] && { unset _SRV_PW; info "Cancelled."; return; }
 
+            if [[ "$sync_mode" == mirror ]]; then
+                _server_sudo_run "exec 2>&1; mkdir -p $(_shq "$dest_display") && $(_rsync_with "$append_cmd" --delete)" || { unset _SRV_PW; fail "Mirror failed."; return 1; }
+                unset _SRV_PW
+            else
             # -t for the interactive sudo password prompt. mkdir the destination
             # first, then copy. Single-quoted paths handle spaces (e.g. "New Backup").
             ssh -t "$SERVER_USER@$SERVER_IP" "sudo mkdir -p $(_shq "$dest_display") && sudo rsync -avh --progress $(_shq "$rsync_src") $(_shq "$dst_path/")" || { fail "Backup failed."; return 1; }
+            fi
             ;;
     esac
 
     echo ""
-    ok "Backup complete."
+    if [[ "$sync_mode" == mirror ]]; then
+        ok "Mirror complete - ${_mirror_n} deleted, destination matches source."
+    else
+        ok "Backup complete."
+    fi
 }
 
 step_manage_sync() {
@@ -6427,6 +6767,7 @@ step_sync() {
                 rsync_src="$local_path"
                 dest_display="$server_path/$(basename "$local_path")"
             fi
+            _mirror_ask
 
             src_size=$(du -sh "$local_path" 2>/dev/null | awk '{print $1}')
             echo ""
@@ -6434,6 +6775,7 @@ step_sync() {
             echo -e "  ${BOLD}↑ Upload: laptop → server${NC}"
             echo -e "  From: $local_path ($src_size)"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
+            _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             # Shell-quote every interpolated path with _shq (printf %q): these
@@ -6446,7 +6788,7 @@ step_sync() {
             local remote_mkdir="sudo mkdir -p $(_shq "$dest_display") && sudo chown $(_shq "$SERVER_USER:$SERVER_USER") $(_shq "$dest_display")"
             local pre_cmd="ssh -t $(_shq "$SERVER_USER@$SERVER_IP") $(_shq "$remote_mkdir")"
             local rsync_cmd="rsync -avh --progress -s $(_shq "$rsync_src") $(_shq "$SERVER_USER@$SERVER_IP:$server_path/")"
-            _sync_execute_or_schedule "upload" "$local_path" "$dest_display" "$rsync_cmd" "$pre_cmd"
+            _sync_execute_or_schedule "upload" "$local_path" "$dest_display" "$rsync_cmd" "$pre_cmd" "$sync_mode" local
             ;;
 
         2)
@@ -6466,12 +6808,14 @@ step_sync() {
                 rsync_src="$server_path"
                 dest_display="$local_path/$(basename "$server_path")"
             fi
+            _mirror_ask
 
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↓ Download: server → laptop${NC}"
             echo -e "  From: $SERVER_USER@$SERVER_IP:$server_path"
             echo -e "  To:   $dest_display"
+            _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
             # Shell-quote every path with _shq (see the upload branch): the dest
@@ -6479,7 +6823,7 @@ step_sync() {
             # source path from being re-split by the server's shell.
             local pre_cmd="sudo mkdir -p $(_shq "$dest_display")"
             local rsync_cmd="rsync -avh --progress -s $(_shq "$SERVER_USER@$SERVER_IP:$rsync_src") $(_shq "$local_path/")"
-            _sync_execute_or_schedule "download" "$server_path" "$dest_display" "$rsync_cmd" "$pre_cmd"
+            _sync_execute_or_schedule "download" "$server_path" "$dest_display" "$rsync_cmd" "$pre_cmd" "$sync_mode" server
             ;;
 
         3)
@@ -6539,7 +6883,7 @@ step_status() {
 
     if [[ "$remote" == "true" ]]; then
         local server_info
-        server_info=$( { declare -f _ts_state _ps_autostart; cat <<'REMOTE_STATUS'
+        server_info=$( { declare -f _ts_ipv4 _ts_state _ps_autostart _smb_summary _smb_folder_check _smb_sessions _smb_devices _smb_devname; cat <<'REMOTE_STATUS'
             echo "@@HOSTNAME@@$(hostname)"
             echo "@@IP@@$(hostname -I | awk '{print $1}')"
             echo "@@TS_STATE@@$(_ts_state)"
@@ -6562,6 +6906,10 @@ step_status() {
             echo "@@DISK_START@@"
             df -h 2>/dev/null | awk 'NR>1 && $1 ~ /^\/dev\// && $1 !~ /loop/ && !seen[$1]++'
             echo "@@DISK_END@@"
+            echo "@@SMB@@$(_smb_summary docker)"
+            echo "@@SMB_DEV_START@@"
+            _smb_devices docker
+            echo "@@SMB_DEV_END@@"
 REMOTE_STATUS
         } | ssh "$SERVER_USER@$SERVER_IP" bash -s ) || { fail "Cannot reach server at $SERVER_IP."; return 1; }
 
@@ -6579,6 +6927,8 @@ REMOTE_STATUS
         DSTATS=$(echo "$server_info" | sed -n '/@@DSTATS_START@@/,/@@DSTATS_END@@/p' | grep -v '@@DSTATS')
         USB_DISKS=$(echo "$server_info" | grep '@@USB_DISKS@@' | sed 's/@@USB_DISKS@@//')
         DISK=$(echo "$server_info" | sed -n '/@@DISK_START@@/,/@@DISK_END@@/p' | grep -v '@@DISK')
+        SMB=$(echo "$server_info" | grep '@@SMB@@' | sed 's/@@SMB@@//')
+        SMB_DEV=$(echo "$server_info" | sed -n '/@@SMB_DEV_START@@/,/@@SMB_DEV_END@@/p' | grep -v '@@SMB_DEV')
     else
         HOSTNAME=$(hostname)
         IP=$(hostname -I | awk '{print $1}')
@@ -6595,6 +6945,8 @@ REMOTE_STATUS
         DSTATS=$(docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>/dev/null)
         USB_DISKS=$(lsblk -rno NAME,TRAN 2>/dev/null | awk '$2=="usb"{print $1}' | paste -sd'|' -)
         DISK=$(df -h / /home /mnt/data 2>/dev/null | tail -n +2 | awk '!seen[$1]++')
+        SMB=$(_smb_summary docker)
+        SMB_DEV=$(_smb_devices docker)
     fi
 
     echo -e "  ${BOLD}Server${NC}"
@@ -6693,6 +7045,10 @@ REMOTE_STATUS
     else
         echo -e "    ${DIM}No containers running${NC}"
     fi
+
+    echo ""
+    echo -e "  ${BOLD}File sharing (SMB)${NC}"
+    _smb_summary_render "${SMB:-none}" "${SMB_DEV:-}"
 
     echo ""
     echo -e "  ${BOLD}Service URLs (local network)${NC}"
@@ -6796,13 +7152,13 @@ step_save_to_pass() {
     # non-TTY session; HOME is kept as the login user's so ~/privcloud/.env
     # still resolves.
     local fetch_script
-    fetch_script="$(declare -f _ts_state _ts_running)
+    fetch_script="$(declare -f _ts_ipv4 _ts_state _ts_running)
 $(cat <<'FETCH'
 echo "HOSTNAME=$(hostname)"
 echo "LOCAL_IP=$(hostname -I | awk '{print $1}')"
 TS_STATE=$(_ts_state)
 echo "TS_STATE=$TS_STATE"
-_ts_running "$TS_STATE" && echo "TS_IP=$(tailscale ip -4 2>/dev/null | head -1)"
+_ts_running "$TS_STATE" && echo "TS_IP=$(_ts_ipv4)"
 echo "---ENV---"
 cat ~/privcloud/.env 2>/dev/null || cat ~/data/.env 2>/dev/null || true
 echo "---DOCKER_COMPOSE---"
@@ -7071,6 +7427,692 @@ step_reset_password() {
     esac
 }
 
+# ── SMB file sharing (Samba) ─────────────────────────
+# Server-only install: a Samba container on host networking so phones and
+# laptops can open chosen folders over Tailscale (smb://<tailscale-ip>).
+# Host networking (not a published port) so boot order vs Tailscale does not
+# matter and smbd sees the real client IP; access is gated three ways: Samba
+# `hosts allow` (tailnet range only), firewalld (tailscale0 is trusted, 445 is
+# never opened on the public zone) and one password-protected user.
+# Each shared folder is its own share (named after the folder), never "all".
+# Floating tag + Watchtower, like the other services.
+_SMB_IMAGE="ghcr.io/servercontainers/samba:smbd-only-latest"
+_SMB_DIR="/opt/samba"   # kept on Uninstall; samba.env (login + password) and shares.conf, root 600
+_SMB_SETTLE=1           # seconds between "is it up yet" polls
+_SMB_POLL=3             # seconds between phone-connect polls
+_SMB_DRIVE_ROOTS="/mnt /run/media"   # folders here must sit on a real /dev/* mount
+_SMB_WAIT_TRIES=40      # x _SMB_POLL = 2 minutes
+_SMB_NAMES=(); _SMB_PATHS=(); _SMB_USER=""; _SMB_PW=""; _SMB_REAL=""
+
+_smb_exists()  { sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx samba; }
+_smb_running() { sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qx samba; }
+_smb_listening() { sudo ss -ltnH 'sport = :445' 2>/dev/null | grep -q .; }
+
+# The files folder FileBrowser serves (same .env value the compose file mounts).
+_smb_files_path() {
+    local SCRIPT_DIR
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _env_get FILES_LOCATION "$SCRIPT_DIR/.env"
+}
+
+# 16 alphanumeric characters: easy to type on a phone keyboard.
+_smb_gen_password() {
+    local raw pw
+    raw=$(openssl rand -base64 96) || return 1
+    pw=$(printf '%s' "$raw" | LC_ALL=C tr -dc 'A-Za-z0-9')
+    pw=${pw:0:16}
+    (( ${#pw} == 16 )) || return 1
+    printf '%s' "$pw"
+}
+
+# A typed password must survive the env file and the container's own scripts:
+# docker's env-file is literal (spaces, $, quotes are fine), but the image runs
+# `echo -e "$password"`, which turns a backslash into an escape, and a leading
+# "-" can be read as an echo option. Prints the reason and returns 1 if bad.
+_smb_pw_check() {
+    local p=$1
+    if (( ${#p} < 8 )); then echo "too short (at least 8 characters)"; return 1; fi
+    if (( ${#p} > 64 )); then echo "too long (64 characters at most)"; return 1; fi
+    if printf '%s' "$p" | LC_ALL=C grep -q '[^ -~]'; then echo "plain keyboard characters only (no accents or control characters)"; return 1; fi
+    if [[ "$p" == *\\* ]]; then echo "a backslash (\\) would be mangled by Samba - pick another character"; return 1; fi
+    if [[ "$p" == -* ]]; then echo "must not start with -"; return 1; fi
+    if [[ "$p" == " "* || "$p" == *" " ]]; then echo "no space at the start or end"; return 1; fi
+    return 0
+}
+
+# Ask for a password. Enter (or g) = generate; otherwise typed twice. Sets
+# _SMB_PW. Returns 1 if input ends (no terminal).
+_smb_ask_password() { # prompt-text
+    local a b why
+    while true; do
+        printf '  %s' "$1"
+        IFS= read -r -s a || { echo ""; return 1; }
+        echo ""
+        if [[ -z "$a" || "$a" == g ]]; then
+            _SMB_PW=$(_smb_gen_password) || { fail "Could not generate a password (openssl failed)."; return 1; }
+            return 0
+        fi
+        if ! why=$(_smb_pw_check "$a"); then fail "Password $why."; continue; fi
+        printf '  Type it again to confirm: '
+        IFS= read -r -s b || { echo ""; return 1; }
+        echo ""
+        if [[ "$a" != "$b" ]]; then fail "The two passwords did not match. Try again."; continue; fi
+        _SMB_PW=$a
+        return 0
+    done
+}
+
+# ── folders ──
+# Share name from a folder: basename, unsupported characters become "-".
+_smb_name_for() {
+    local n
+    n=$(basename "$1" | LC_ALL=C tr -c 'A-Za-z0-9_-' '-' | sed 's/^-*//; s/-*$//' | cut -c1-32)
+    echo "${n:-share}"
+}
+
+# Is $1 usable as a share name that is not taken yet? Prints the reason if not.
+_smb_name_ok() {
+    local n=$1 i
+    if [[ ! "$n" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$ ]]; then echo "use letters, digits, - and _ (max 32)"; return 1; fi
+    case "${n,,}" in global|homes|printers|ipc|print) echo "that name is reserved"; return 1 ;; esac
+    for i in "${!_SMB_NAMES[@]}"; do
+        if [[ "${_SMB_NAMES[$i],,}" == "${n,,}" ]]; then echo "already used by ${_SMB_PATHS[$i]}"; return 1; fi
+    done
+    return 0
+}
+
+# Validate a folder to share. On success sets _SMB_REAL (resolved path); on
+# failure prints the reason and returns 1.
+_smb_check_path() {
+    local p=$1 r i
+    _SMB_REAL=""
+    if [[ "$p" != /* ]]; then fail "Use a full path starting with / (got '$p')."; return 1; fi
+    if [[ "$p" == *[:\|]* || "$p" == *$'\n'* ]]; then fail "A path with ':' or '|' can't be used here."; return 1; fi
+    if [[ ! -e "$p" ]]; then fail "'$p' does not exist."; return 1; fi
+    r=$(realpath -e -- "$p" 2>/dev/null) || { fail "Could not resolve '$p'."; return 1; }
+    if [[ "$r" == *[:\|]* || "$r" == *$'\n'* ]]; then fail "The resolved path ($r) has a ':' or '|' and can't be used here."; return 1; fi
+    if [[ ! -d "$r" ]]; then fail "'$r' is not a folder."; return 1; fi
+    case "$r" in
+        /|/etc|/etc/*|/usr|/usr/*|/bin|/bin/*|/sbin|/sbin/*|/lib|/lib*|/boot|/boot/*|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/var|/var/*|/root|/root/*|/opt|/opt/*|/home|/mnt)
+            fail "'$r' is a system location - sharing it would expose the system. Pick a folder of your own."; return 1 ;;
+        /run|/run/*) if [[ "$r" != /run/media/?* ]]; then fail "'$r' is a system location (only /run/media/... drives can be shared)."; return 1; fi ;;
+    esac
+    if [[ ! -w "$r" ]]; then fail "'$r' is not writable by $(id -un) - sharing it would not let you save files."; return 1; fi
+    for i in "${!_SMB_PATHS[@]}"; do
+        if [[ "${_SMB_PATHS[$i]}" == "$r" ]]; then fail "'$r' is already shared as \"${_SMB_NAMES[$i]}\"."; return 1; fi
+    done
+    _SMB_REAL=$r
+}
+
+# Validate + add one folder to the in-memory list; asks for another name on a
+# clash. Returns 1 (nothing added) on a bad folder or if the name prompt is
+# left blank.
+_smb_add_folder() {
+    local name why
+    _smb_check_path "$1" || return 1
+    name=$(_smb_name_for "$_SMB_REAL")
+    while ! why=$(_smb_name_ok "$name"); do
+        warn "Share name \"$name\": $why."
+        printf '  Another name for %s (Enter = skip this folder): ' "$_SMB_REAL"
+        read -r name || return 1
+        [[ -z "$name" ]] && { info "Skipped."; return 1; }
+    done
+    _SMB_NAMES+=("$name"); _SMB_PATHS+=("$_SMB_REAL")
+}
+
+# ✓ ok / missing / notdir / unmounted. Under /mnt and /run/media the folder
+# must sit on a real mount whose source is a /dev/* device: a bare directory on
+# the system disk (drive not plugged in) or an autofs/stub mount is not it.
+_smb_folder_check() {
+    local p=$1 t s r
+    [[ -d "$p" ]] || { echo missing; return; }
+    for r in ${_SMB_DRIVE_ROOTS:-/mnt /run/media}; do
+        [[ "$p" == "$r"/* ]] || continue
+        t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null)
+        s=$(findmnt -n -o SOURCE -T "$p" 2>/dev/null)
+        if [[ -z "$t" || "$t" == / || "$s" != /dev/* ]]; then echo unmounted; return; fi
+    done
+    echo ok
+}
+
+_smb_folder_reason() { # check-result
+    case "$1" in
+        ok) ;;
+        missing) echo "folder missing" ;;
+        *) echo "drive not mounted" ;;
+    esac
+}
+
+# Saved share list -> _SMB_NAMES/_SMB_PATHS (root-only file, so sudo).
+_smb_load() {
+    local line
+    _SMB_NAMES=(); _SMB_PATHS=()
+    while IFS= read -r line; do
+        [[ "$line" == *'|'* ]] || continue
+        _SMB_NAMES+=("${line%%|*}"); _SMB_PATHS+=("${line#*|}")
+    done < <(sudo cat "$_SMB_DIR/shares.conf" 2>/dev/null)
+    (( ${#_SMB_NAMES[@]} > 0 ))
+}
+
+# Login + password back from the root-only env file -> _SMB_USER/_SMB_PW.
+_smb_cur_login() {
+    local line
+    line=$(sudo grep -m1 '^ACCOUNT_' "$_SMB_DIR/samba.env" 2>/dev/null)
+    [[ -n "$line" ]] || return 1
+    _SMB_USER=${line#ACCOUNT_}; _SMB_USER=${_SMB_USER%%=*}
+    _SMB_PW=${line#*=}
+}
+
+# The container's whole config as an env file (read once by --env-file; the
+# password never touches argv). One SAMBA_VOLUME_CONFIG_s<N> per folder (the
+# image evals the variable name, so it must not contain the share name).
+_smb_env_content() { # user uid gid password   (uses _SMB_NAMES/_SMB_PATHS)
+    local u=$1 grp="" i
+    [[ "$3" != "$2" ]] && grp="; force group = smbshare"
+    [[ "$3" != "$2" ]] && printf 'GROUP_smbshare=%s\n' "$3"
+    printf '%s\n' \
+        "ACCOUNT_$u=$4" \
+        "UID_$u=$2" \
+        "SAMBA_GLOBAL_STANZA=hosts allow = 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1;hosts deny = ALL;server min protocol = SMB2;server smb encrypt = desired"
+    for i in "${!_SMB_NAMES[@]}"; do
+        printf '%s\n' "SAMBA_VOLUME_CONFIG_s$i=[${_SMB_NAMES[$i]}]; path = /shares/${_SMB_NAMES[$i]}; valid users = $u; guest ok = no; read only = no; browseable = yes; force user = $u$grp; veto files = /lost+found/.Trash-*/; delete veto files = no"
+    done
+}
+
+# Is 445 reachable from the LAN? Prints yes|no|unknown (firewalld not running).
+# No --zone: asks the default zone, where _fw_defaults opens ports.
+_smb_fw_state() {
+    local p s
+    p=$(sudo firewall-cmd --query-port=445/tcp 2>/dev/null) || p=${p:-unknown}
+    s=$(sudo firewall-cmd --query-service=samba 2>/dev/null) || s=${s:-unknown}
+    if [[ "$p" == yes || "$s" == yes ]]; then echo yes
+    elif [[ "$p" == no && "$s" == no ]]; then echo no
+    else echo unknown; fi
+}
+
+_smb_fw_fix() {
+    echo -e "    ${YELLOW}sudo firewall-cmd --permanent --remove-port=445/tcp --remove-service=samba && sudo firewall-cmd --reload${NC}"
+}
+
+# Write config + (re)create the container from _SMB_USER/_SMB_PW and the folder
+# list, then verify it is running and listening. Never says "done" on failure;
+# after the old container is gone a failure says so loudly. A container that
+# was stopped stays stopped with autostart off (_svc_power stop, as Stop does).
+_smb_apply() {
+    local uid gid envc listc i mounts=() n up=0 was_stopped=0
+    # Never let docker auto-create a missing bind source: check every folder that
+    # will be shared BEFORE anything is written or removed (the running share
+    # stays as it is). Manage folders drops a removed folder from the list
+    # first, so removing a broken one is not blocked by itself.
+    local bad="" c
+    for i in "${!_SMB_NAMES[@]}"; do
+        c=$(_smb_folder_check "${_SMB_PATHS[$i]}")
+        [[ "$c" == ok ]] || bad+="    ${_SMB_NAMES[$i]} -> ${_SMB_PATHS[$i]}: $(_smb_folder_reason "$c")"$'\n'
+    done
+    if [[ -n "$bad" ]]; then
+        fail "Not applied - these folders are not available:"
+        printf '%s' "$bad"
+        if _smb_exists; then
+            echo -e "  Mount the drive (or restore the folder) and try again, or remove the folder in ${BOLD}Manage folders${NC}. The running share was not touched."
+        else
+            echo -e "  Mount the drive (or restore the folder) and try again. Nothing was changed."
+        fi
+        return 1
+    fi
+    uid=$(id -u); gid=$(id -g)
+    envc=$(_smb_env_content "$_SMB_USER" "$uid" "$gid" "$_SMB_PW")
+    listc=$(for i in "${!_SMB_NAMES[@]}"; do printf '%s|%s\n' "${_SMB_NAMES[$i]}" "${_SMB_PATHS[$i]}"; done)
+    info "Writing $_SMB_DIR/samba.env + shares.conf (root only, mode 600)..."
+    if ! { sudo install -d -m 755 "$_SMB_DIR" \
+        && printf '%s\n' "$envc"  | sudo install -m 600 /dev/stdin "$_SMB_DIR/samba.env" \
+        && printf '%s\n' "$listc" | sudo install -m 600 /dev/stdin "$_SMB_DIR/shares.conf"; }; then
+        fail "Could not write the config under $_SMB_DIR - nothing was changed."
+        return 1
+    fi
+    for i in "${!_SMB_NAMES[@]}"; do mounts+=(-v "${_SMB_PATHS[$i]}:/shares/${_SMB_NAMES[$i]}"); done
+    # Fetch the image before touching a running container, so a failed
+    # download never takes down a working share.
+    if ! sudo docker image inspect "$_SMB_IMAGE" > /dev/null 2>&1; then
+        info "Downloading Samba image..."
+        if ! sudo docker pull "$_SMB_IMAGE" > /dev/null; then
+            fail "Could not download $_SMB_IMAGE (no internet, or the registry is unreachable). Nothing was started or removed."
+            return 1
+        fi
+    fi
+    if _smb_exists; then
+        # A deliberate Stop must survive a config change: remember it, recreate
+        # with the new config, then Stop again below.
+        _smb_running || was_stopped=1
+        info "Recreating the Samba container..."
+        sudo docker rm -f samba > /dev/null 2>&1
+        if ! _container_gone samba; then
+            fail "Could not remove the old container - it is still running with the OLD settings."
+            return 1
+        fi
+    else
+        info "Starting Samba container..."
+    fi
+    if sudo docker run -d --name samba --network host --restart=unless-stopped \
+            --env-file "$_SMB_DIR/samba.env" "${mounts[@]}" "$_SMB_IMAGE" > /dev/null; then
+        for n in 1 2 3 4 5 6 7 8; do
+            if _smb_running && _smb_listening; then up=1; break; fi
+            sleep "$_SMB_SETTLE"
+        done
+    fi
+    if (( ! up )); then
+        echo -e "  ${RED}✗ FILE SHARING IS NOT RUNNING.${NC} The old container is gone and the new one did not come up."
+        sudo docker logs --tail 20 samba 2>&1
+        echo -e "  ${BOLD}Recover:${NC} run ${BOLD}federver -> 16${NC} again (it reuses your saved folders and password), or ${BOLD}Start${NC} if the menu offers it."
+        return 1
+    fi
+    if (( was_stopped )); then
+        _svc_power stop samba || { fail "Saved, but could not stop the new container again - it is running (autostart on). Use Stop."; return 1; }
+        ok "Saved. File sharing is stopped - Start (4) to use it."
+        return 0
+    fi
+    ok "Samba running on port 445."
+}
+
+# ── what phones are doing ──
+# Prints "ip|share|since" per open share (smbstatus -S). Args: docker words.
+_smb_sessions() {
+    "$@" exec samba smbstatus -S 2>/dev/null | awk '
+        /^-+$/ {go=1; next}
+        go && NF>=5 {t=""; for (i=4;i<=NF-2;i++) t=t (t?" ":"") $i; print $3 "|" $1 "|" t}'
+}
+
+# Tailscale device name for a tailnet IP (falls back to the IP).
+_smb_devname() {
+    local n
+    n=$(tailscale status 2>/dev/null | awk -v ip="$1" '$1==ip{print $2; exit}')
+    echo "${n:-$1}"
+}
+
+# One line per connected device: "name|shares opened|since HH:MM" (or "since
+# Thu 23:50" when the earliest open is not from today). smbstatus -S rows are
+# grouped by client IP (a device with two shares is one line). smbstatus prints
+# its time in UTC with a date, so each one is parsed whole by `date -d` and the
+# earliest picked by epoch, shown in this host's local time.
+_smb_devices() { # docker words
+    local sess ip name shares min="" e i sh t fmt=%H:%M
+    sess=$(_smb_sessions "$@")
+    for ip in $(cut -d'|' -f1 <<<"$sess" | sort -u); do
+        name=$(_smb_devname "$ip"); shares=""; min=""
+        while IFS='|' read -r i sh t; do
+            [[ "$i" == "$ip" ]] || continue
+            shares+="${shares:+, }$sh"
+            e=$(date -d "$t" +%s 2>/dev/null) || continue
+            [[ -z "$min" || "$e" -lt "$min" ]] && min=$e
+        done <<<"$sess"
+        fmt=%H:%M
+        if [[ -n "$min" && "$(date -d "@$min" +%F)" != "$(date +%F)" ]]; then
+            fmt="%a %H:%M"   # a weekday is unique for up to 6 days back; older gets a date
+            [[ ! "$(date -d "@$min" +%F)" > "$(date -d '7 days ago' +%F)" ]] && fmt="%-d %b %H:%M"
+        fi
+        echo "$name|$shares|${min:+$(date -d "@$min" +"$fmt")}"
+    done
+}
+
+_smb_plural() { (( $1 == 1 )) && echo "$1 device" || echo "$1 devices"; }
+
+# One line of facts: state|folders|folders-not-available|devices ("none" = no container).
+_smb_summary() { # docker words
+    local st n=0 bad=0 d p k
+    st=$(_ps_autostart "$@" 2>/dev/null | sed -n 's/^samba|//p' | head -1)
+    [[ -z "$st" ]] && { echo none; return; }
+    while IFS='|' read -r d p; do
+        [[ "$d" == /shares/* ]] || continue
+        n=$((n+1)); [[ "$(_smb_folder_check "$p")" == ok ]] || bad=$((bad+1))
+    done < <("$@" inspect -f '{{range .Mounts}}{{.Destination}}|{{.Source}}{{println}}{{end}}' samba 2>/dev/null)
+    k=$(_smb_sessions "$@" | cut -d'|' -f1 | sort -u | awk 'END{print NR}')
+    case "$st" in
+        Up*) echo "running|$n|$bad|$k" ;;
+        "stopped (autostart off)") echo "stopped-off|$n|$bad|$k" ;;
+        *) echo "stopped|$n|$bad|$k" ;;
+    esac
+}
+
+_smb_summary_render() { # summary-line [devices-lines]   (the (s) Status section)
+    local st n bad k extra="" nm sh since
+    IFS='|' read -r st n bad k <<<"$1"
+    (( bad )) && extra=" (${bad} ${RED}✗${NC} not mounted)"
+    case "$st" in
+        running)     echo -e "    ${GREEN}✓${NC} running · $n folders$extra · $(_smb_plural "$k") connected"
+                     while IFS='|' read -r nm sh since; do
+                         [[ -n "$nm" ]] && printf '      %-16s %s   since %s\n' "$nm" "$sh" "$since"
+                     done <<<"${2:-}" ;;
+        stopped-off) echo -e "    ${RED}✗ stopped (autostart off)${NC}" ;;
+        stopped)     echo -e "    ${RED}✗ not running${NC}" ;;
+        *)           echo -e "    ${DIM}not set up (federver → 16)${NC}" ;;
+    esac
+}
+
+# Full status block for the submenu (folders from the saved list, so a down
+# container still shows what it should be sharing).
+_smb_status() {
+    local st i c pol fw sess shares since name
+    echo ""
+    echo -e "  ${BOLD}File sharing (SMB)${NC}"
+    st=$(_ps_autostart sudo docker 2>/dev/null | sed -n 's/^samba|//p' | head -1)
+    if [[ "$st" == Up* ]]; then echo -e "    State:     ${GREEN}running${NC}  ${DIM}($st)${NC}"
+    elif [[ -n "$st" ]]; then   echo -e "    State:     ${RED}${st}${NC}"
+    else                        echo -e "    State:     ${RED}not set up${NC}"; return 0
+    fi
+    pol=$(sudo docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' samba 2>/dev/null)
+    if [[ "$pol" == no ]]; then echo -e "    Autostart: ${RED}off${NC}  ${DIM}(stays down after a reboot)${NC}"
+    else echo -e "    Autostart: ${GREEN}on${NC}"; fi
+    if _smb_listening; then echo -e "    Port 445:  ${GREEN}listening${NC}"
+    else                    echo -e "    Port 445:  ${RED}not listening${NC}"; fi
+    _smb_load || true
+    echo -e "    Folders:"
+    for i in "${!_SMB_NAMES[@]}"; do
+        c=$(_smb_folder_check "${_SMB_PATHS[$i]}")
+        if [[ "$c" == ok ]]; then echo -e "      ${GREEN}✓${NC} ${_SMB_NAMES[$i]}  ${DIM}${_SMB_PATHS[$i]}${NC}"
+        else echo -e "      ${RED}✗${NC} ${_SMB_NAMES[$i]}  ${DIM}${_SMB_PATHS[$i]}${NC}  ${RED}$(_smb_folder_reason "$c")${NC}"; fi
+    done
+    case "$(_smb_fw_state)" in
+        yes) echo -e "    Firewall:  ${RED}✗ 445 open on the LAN${NC}"; _smb_fw_fix ;;
+        no)  echo -e "    Firewall:  ${GREEN}LAN closed${NC}  ${DIM}(Tailscale only)${NC}" ;;
+        *)   echo -e "    Firewall:  ${YELLOW}unknown${NC}" ;;
+    esac
+    sess=$(_smb_devices sudo docker)
+    echo -e "    Connected:"
+    if [[ -z "$sess" ]]; then
+        echo -e "      ${DIM}nobody right now (an iPhone drops idle connections: none = no recent use)${NC}"
+    else
+        while IFS='|' read -r name shares since; do
+            echo -e "      $name  ${DIM}opened: $shares  since $since${NC}"
+        done <<<"$sess"
+    fi
+}
+
+# The connect box. Args are plain values so it can be tested.
+_smb_connect_box() { # tailscale-ip user password
+    local i
+    echo ""
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${BOLD}Connect to your folders${NC}"
+    echo ""
+    echo -e "    Server:    ${BLUE}smb://$1${NC}"
+    echo -e "    User:      ${BOLD}$2${NC}"
+    echo -e "    Password:  ${BOLD}$3${NC}"
+    echo -e "    Folders:   $(printf '%s ' "${_SMB_NAMES[@]}")"
+    echo ""
+    echo -e "  ${BOLD}iPhone / iPad${NC} (Tailscale app connected)"
+    echo -e "    Files -> ... -> Connect to Server -> ${BOLD}smb://$1${NC} -> Connect"
+    echo -e "    Registered User -> $2 + password above -> pick a folder"
+    echo -e "  ${BOLD}Android${NC} (Material Files app, Tailscale connected)"
+    echo -e "    Add storage -> SMB server -> host ${BOLD}$1${NC}, user $2 + password above"
+    echo -e "  ${BOLD}Laptop${NC}: file manager -> Connect to server -> ${BOLD}smb://$1${NC}"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+}
+
+# Optional live check after setup: poll smbstatus until a phone shows up.
+_smb_wait_phone() {
+    local n s ip share rc
+    echo ""
+    echo -e "  Connect your phone now — waiting... ${DIM}(Enter = skip)${NC}"
+    for ((n = 0; n < _SMB_WAIT_TRIES; n++)); do
+        rc=0; read -r -t "$_SMB_POLL" || rc=$?
+        (( rc > 128 )) || { info "Skipped."; return 0; }   # Enter (0) or end of input
+        s=$(_smb_sessions sudo docker | head -1)
+        if [[ -n "$s" ]]; then
+            ip=${s%%|*}; share=${s#*|}; share=${share%%|*}
+            ok "$(_smb_devname "$ip") connected, opened \"$share\""
+            return 0
+        fi
+    done
+    warn "No phone connected within the wait. Common causes: Tailscale is off on the phone, or the password was typed wrong."
+    info "Try later: federver -> 16 shows connected devices."
+}
+
+# ── set up ──
+# Set up's Reuse found saved folders that are not available: ask per folder
+# whether to drop it (y/N). A kept one makes _smb_apply refuse; nothing is written here.
+_smb_offer_drop() {
+    local i c r keepn=() keepp=()
+    for i in "${!_SMB_NAMES[@]}"; do
+        c=$(_smb_folder_check "${_SMB_PATHS[$i]}")
+        if [[ "$c" != ok ]]; then
+            echo -e "  ${RED}✗${NC} ${_SMB_NAMES[$i]} -> ${_SMB_PATHS[$i]}: $(_smb_folder_reason "$c")"
+            printf '  Stop sharing "%s"? Files are NOT deleted. [y/N] ' "${_SMB_NAMES[$i]}"
+            read -n 1 -r r
+            echo ""
+            [[ "$r" =~ ^[Yy]$ ]] && continue
+        fi
+        keepn+=("${_SMB_NAMES[$i]}"); keepp+=("${_SMB_PATHS[$i]}")
+    done
+    _SMB_NAMES=("${keepn[@]}"); _SMB_PATHS=("${keepp[@]}")
+}
+
+_smb_setup() {
+    local user ip f first=1 saved=0 keep_pw=0
+    user=$(id -un)
+    echo -e "  Shares folders from this server with the Files app on iPhone/Android and with"
+    echo -e "  laptops. Reachable over Tailscale only, never from the open home network."
+    echo ""
+    echo -e "  ${BOLD}What Set up installs:${NC}"
+    echo -e "    • Samba file server as a Docker container \"samba\""
+    echo -e "      (image $_SMB_IMAGE, downloaded now, ~20 MB RAM)"
+    echo -e "    • Settings in $_SMB_DIR (folders + password, root only)"
+    echo -e "    • Nothing installed on the system itself (no dnf packages)"
+    echo -e "  Same rules as the other containers: autostart on (Stop turns it off),"
+    echo -e "  Watchtower keeps it updated, included in Start All / Stop All and (s) Status."
+    echo -e "  Uninstall removes the container and keeps $_SMB_DIR."
+    echo ""
+    printf '  Continue? [Y/n] '
+    read -n 1 -r
+    echo ""
+    if [[ "$REPLY" =~ ^[Nn]$ ]]; then info "Cancelled. Nothing changed."; return 0; fi
+    echo ""
+    if [[ ! "$user" =~ ^[a-z_][a-z0-9_-]*$ ]]; then
+        fail "Login name '$user' is not usable as a Samba user (lowercase letters, digits, _ and - only)."
+        return 1
+    fi
+    ip=$(_ts_ipv4)
+    if [[ -z "$ip" ]]; then
+        fail "Tailscale is not connected on this server. File sharing is tailnet-only - run federver -> 8 first."
+        return 1
+    fi
+    ok "Tailscale connected ($ip)"
+    if _smb_listening; then
+        fail "Port 445 is already in use:"
+        sudo ss -ltnpH 'sport = :445' 2>/dev/null | sed 's/^/    /'
+        if sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx samba-poc; then
+            echo -e "  The Samba proof-of-concept container is still there. Remove it first:"
+            echo -e "    ${YELLOW}cd ~/samba-poc && docker compose -p samba-poc down && rm -rf ~/samba-poc${NC}"
+        else
+            echo -e "  Stop that service (a host Samba? ${YELLOW}sudo systemctl disable --now smb${NC}) and retry."
+        fi
+        return 1
+    fi
+    ok "Port 445 is free"
+    case "$(_smb_fw_state)" in
+        yes) fail "Firewall: port 445 is open to the home network (default zone). Close it first:"
+             _smb_fw_fix
+             return 1 ;;
+        no)  ok "Firewall: 445 is not open to the home network" ;;
+        *)   warn "Firewall: could not read the state (firewalld not running?). Make sure 445 is not open to the LAN." ;;
+    esac
+    echo ""
+
+    # A previous (uninstalled) setup left its folders and password behind.
+    if _smb_load && _smb_cur_login; then
+        echo -e "  Saved setup found: ${#_SMB_NAMES[@]} folder(s) ($(printf '%s ' "${_SMB_NAMES[@]}"))."
+        printf '  Reuse it, with the same password? [Y/n] '
+        read -n 1 -r
+        echo ""
+        if [[ ! "$REPLY" =~ ^[Nn]$ ]]; then saved=1; fi
+    fi
+    if (( saved )); then
+        _smb_offer_drop
+        if (( ${#_SMB_NAMES[@]} == 0 )); then
+            saved=0; keep_pw=1
+            info "No saved folder left - pick the folders to share (the saved password is kept)."
+        fi
+    fi
+    if (( ! saved )); then
+        _SMB_NAMES=(); _SMB_PATHS=()
+        echo -e "  ${DIM}Tip: your files folder is $(_smb_files_path)${NC}"
+        while true; do
+            if (( first )); then printf '  Folder to share (type a path, Enter = cancel): '
+            else printf '  Another folder? (path, Enter = done): '; fi
+            read -r f || f=""
+            if [[ -z "$f" ]]; then
+                (( first )) && { info "Cancelled. Nothing changed."; return 0; }
+                break
+            fi
+            if _smb_add_folder "$f"; then first=0; ok "Sharing ${_SMB_NAMES[-1]}"; fi
+        done
+        if (( ! keep_pw )); then
+            _smb_ask_password "Password for $user (Enter = generate, or type one): " || { fail "No password set - nothing installed."; return 1; }
+            _SMB_USER=$user
+        fi
+    fi
+    _smb_apply || return 1
+    _smb_connect_box "$ip" "$_SMB_USER" "$_SMB_PW"
+    echo -e "  ${RED}Save the password${NC} - Manage password shows it again."
+    _smb_wait_phone
+    ok "File sharing set up: ${#_SMB_NAMES[@]} folders."
+}
+
+# ── manage folders ──
+_smb_list_folders() {
+    local i c
+    echo ""
+    for i in "${!_SMB_NAMES[@]}"; do
+        c=$(_smb_folder_check "${_SMB_PATHS[$i]}")
+        if [[ "$c" == ok ]]; then echo -e "    $((i+1))) ${_SMB_NAMES[$i]} -> ${_SMB_PATHS[$i]} ${GREEN}✓${NC}"
+        else echo -e "    $((i+1))) ${_SMB_NAMES[$i]} -> ${_SMB_PATHS[$i]} ${RED}✗ $(_smb_folder_reason "$c")${NC}"; fi
+    done
+    echo ""
+}
+
+_smb_manage_folders() {
+    local in i r
+    if ! _smb_load || ! _smb_cur_login; then fail "Could not read the saved setup under $_SMB_DIR (sudo refused?)."; return 1; fi
+    while true; do
+        _smb_list_folders
+        printf '  Type a path to add, a number to remove, Enter = back: '
+        read -r in || in=""
+        [[ -z "$in" ]] && return 0
+        if [[ "$in" =~ ^[0-9]+$ ]]; then
+            i=$((in-1))
+            if (( in < 1 || i >= ${#_SMB_NAMES[@]} )); then fail "No folder number $in."; continue; fi
+            if (( ${#_SMB_NAMES[@]} == 1 )); then
+                fail "That is the last shared folder. To stop sharing everything use Uninstall."
+                continue
+            fi
+            printf '  Stop sharing "%s"? Files are NOT deleted. [y/N] ' "${_SMB_NAMES[$i]}"
+            read -n 1 -r r
+            echo ""
+            [[ "$r" =~ ^[Yy]$ ]] || { info "Kept."; continue; }
+            unset '_SMB_NAMES[i]' '_SMB_PATHS[i]'
+            _SMB_NAMES=("${_SMB_NAMES[@]}"); _SMB_PATHS=("${_SMB_PATHS[@]}")
+            _smb_apply || return 1
+            info "Phones that were open on it will lose the share."
+        else
+            _smb_add_folder "$in" || continue
+            _smb_apply || return 1
+            ok "Now sharing ${_SMB_NAMES[-1]}. Connected phones must reconnect."
+        fi
+    done
+}
+
+# ── manage password ──
+_smb_manage_password() {
+    local ip in
+    if ! _smb_cur_login; then fail "Could not read $_SMB_DIR/samba.env (sudo refused or file missing)."; return 1; fi
+    _smb_load || true
+    ip=$(_ts_ipv4)
+    _smb_connect_box "${ip:-<server tailscale ip>}" "$_SMB_USER" "$_SMB_PW"
+    printf '  New password (Enter = keep, g = generate, or type one): '
+    IFS= read -r -s in || in=""
+    echo ""
+    [[ -z "$in" ]] && { info "Password kept."; return 0; }
+    if [[ "$in" == g ]]; then
+        _SMB_PW=$(_smb_gen_password) || { fail "Could not generate a password (openssl failed)."; return 1; }
+    else
+        local why b
+        if ! why=$(_smb_pw_check "$in"); then fail "Password $why. Nothing changed."; return 1; fi
+        printf '  Type it again to confirm: '
+        IFS= read -r -s b || b=""
+        echo ""
+        if [[ "$in" != "$b" ]]; then fail "The two passwords did not match. Nothing changed."; return 1; fi
+        _SMB_PW=$in
+    fi
+    _smb_apply || return 1
+    ok "Password changed. Phones must re-enter it. New password: ${BOLD}$_SMB_PW${NC}"
+}
+
+_smb_uninstall() {
+    echo ""
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${RED}DELETE file sharing (Samba)${NC}"
+    echo ""
+    echo -e "  ${BOLD}What will happen:${NC}"
+    echo -e "    ${RED}•${NC} Stop + remove the samba container (phones lose access)"
+    echo -e "  ${BOLD}Kept:${NC}"
+    echo -e "    ${GREEN}•${NC} $_SMB_DIR/ (login, password, folder list); your files are never touched"
+    echo -e "  ${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    _confirm_delete samba || return 0
+    info "Removing samba container..."
+    sudo docker rm -f samba > /dev/null 2>&1
+    if ! _container_gone samba; then
+        fail "Container 'samba' is still present (or docker could not be queried) - not removed."
+        return 1
+    fi
+    ok "File sharing removed."
+    echo -e "  ${DIM}Config kept at $_SMB_DIR. To wipe it:${NC} sudo rm -rf $_SMB_DIR"
+}
+
+step_samba() {
+    info "Opens folders on this server to phones and laptops over Tailscale (SMB)."
+    echo ""
+    if ! command -v docker &>/dev/null; then
+        fail "Docker not installed. Run step 5 first."
+        return 1
+    fi
+    local choice
+    if ! _smb_exists; then
+        echo -e "  Not set up yet. Set up picks the folders, makes a password and starts sharing."
+        echo ""
+        echo -e "  ${BOLD}1)${NC} Set up"
+        echo -e "  ${BOLD}0)${NC} Back"
+        echo ""
+        read -p "  Choose: " choice
+        case $choice in
+            1) _smb_setup ;;
+            0|*) return ;;
+        esac
+        return
+    fi
+    _smb_status
+    echo ""
+    echo -e "  ${BOLD}1)${NC} Refresh"
+    echo -e "  ${BOLD}2)${NC} Manage folders             ${DIM}<- add or stop sharing folders${NC}"
+    echo -e "  ${BOLD}3)${NC} Manage password           ${DIM}<- show it, change it${NC}"
+    echo -e "  ${BOLD}4)${NC} Start"
+    echo -e "  ${BOLD}5)${NC} Stop"
+    echo -e "  ${BOLD}6)${NC} Restart"
+    echo -e "  ${BOLD}7)${NC} ${RED}Uninstall${NC}                 ${DIM}<- remove container, keep $_SMB_DIR${NC}"
+    echo -e "  ${BOLD}0)${NC} Back"
+    echo ""
+    read -p "  Choose: " choice
+    case $choice in
+        1) _smb_status ;;
+        2) _smb_manage_folders ;;
+        3) _smb_manage_password ;;
+        4) info "Starting...";   _svc_power start samba   && ok "Started."   || { fail "Start failed.";   return 1; } ;;
+        5) info "Stopping...";   _svc_power stop samba    && ok "Stopped."   || { fail "Stop failed.";    return 1; } ;;
+        6) info "Restarting..."; _svc_power restart samba && ok "Restarted." || { fail "Restart failed."; return 1; } ;;
+        7) _smb_uninstall ;;
+        0|*) return ;;
+    esac
+}
+# ── end SMB file sharing ─────────────────────────────
+
 # ── CLI argument handling (used by SSH routing) ─────
 if [[ "${1:-}" == "--run" && -n "${2:-}" ]]; then
     # Guard against stale checkouts: if the requested function doesn't exist
@@ -7133,6 +8175,7 @@ else
             13) run_step "[13] Manage remote desktop" "_on_server step_remotedesktop" ;;
             14) run_step "[14] Manage sync and backups" step_manage_sync ;;
             15) run_step "[15] Save to pass" step_save_to_pass ;;
+            16) run_step "[16] Connect phone (Files app)" "_on_server step_samba" ;;
             s)  run_step "[s] Status" step_status ;;
             i)  run_step "[i] Immich (privcloud)" step_immich ;;
             p)  run_step "[p] Power" step_power ;;

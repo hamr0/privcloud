@@ -1,6 +1,6 @@
 #!/bin/bash
 # Tests for the laptop-side Syncthing gate in setup.sh (step_syncthing ->
-# _syncthing_server_probe verify -> _two_sided_gate). When docker on the server
+# _syncthing_server_probe -> _two_sided_gate). When docker on the server
 # can't be queried the gate must stop ("changing nothing"), not read it as "not
 # installed" and offer an install. Not installed still offers it; running is
 # unchanged.

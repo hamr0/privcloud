@@ -804,11 +804,15 @@ step_firewall() {
     esac
 }
 
+# First Tailscale IPv4 of this node (empty when none; stderr silenced). The one
+# place that asks tailscale for the address; shipped to the server with `declare -f`.
+_ts_ipv4() { tailscale ip -4 2>/dev/null | head -1; }
+
 # One-line Tailscale record: "<BackendState> <key-expiry date|disabled|-> <days left|-> <ip|->".
 # BackendState is the only reliable "up AND logged in" signal: after the node
 # key expires, tailscaled stays active and `tailscale status` / `tailscale ip`
 # can still succeed, but the state is NeedsLogin. Self-contained (no jq) so it
-# can be shipped to the server with `declare -f _ts_state`.
+# can be shipped to the server with `declare -f _ts_ipv4 _ts_state`.
 _ts_state() {
     type -P tailscale &>/dev/null || { echo "NotInstalled - - -"; return; }
     local js state exp days="-" ip self=0
@@ -826,7 +830,7 @@ _ts_state() {
     else
         exp=-           # no Self (logged out / fresh): key state unknown
     fi
-    ip=$(tailscale ip -4 2>/dev/null | head -1)
+    ip=$(_ts_ipv4)
     echo "${state:-Stopped} $exp $days ${ip:--}"
 }
 
@@ -834,7 +838,7 @@ _ts_state() {
 _ts_ip() { cut -d' ' -f4 <<<"$1"; }
 
 # True only when a _ts_state record is Running (up AND logged in). With no
-# argument, checks the local _ts_state. Prefer this over `tailscale ip -4`,
+# argument, checks the local _ts_state. Prefer this over `tailscale ip`,
 # which still prints a stale IP after the node key expires.
 _ts_running() {
     local rec
@@ -986,7 +990,7 @@ _ts_install() {
 
     local ts_ip
     if _ts_running; then
-        ts_ip=$(tailscale ip -4 2>/dev/null | head -1)
+        ts_ip=$(_ts_ipv4)
         ok "Tailscale connected! IP: $ts_ip"
         echo ""
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1031,7 +1035,7 @@ _ts_install_laptop() {
     # Bring the laptop up on the tailnet if it isn't already
     if _ts_running; then
         local laptop_ts_ip
-        laptop_ts_ip=$(tailscale ip -4)
+        laptop_ts_ip=$(_ts_ipv4)
         ok "Laptop already on the tailnet: $laptop_ts_ip"
     else
         echo ""
@@ -1158,7 +1162,7 @@ step_tailscale() {
     # install, or manage the one side that exists); it never installs on its own.
     local lap_state="" srv_state="" g=0
     command -v tailscale &>/dev/null && lap_state="installed ($(_ts_state | cut -d' ' -f1))"
-    srv_state=$(_server_probe "$(declare -f _ts_state); if type -P tailscale >/dev/null; then echo \"installed (\$(_ts_state | cut -d' ' -f1))\"; fi")
+    srv_state=$(_server_probe "$(declare -f _ts_ipv4 _ts_state); if type -P tailscale >/dev/null; then echo \"installed (\$(_ts_state | cut -d' ' -f1))\"; fi")
     _two_sided_gate "Tailscale" "$lap_state" "$srv_state" _ts_install_laptop "_ts_server_step" _ts_uninstall_both || g=$?
     (( g == 10 )) || return $g
 
@@ -1169,7 +1173,7 @@ step_tailscale() {
 
     echo -e "  ${BOLD}── Server ──${NC}"
     local srv_out srv_ts srv_host
-    srv_out=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_state); _ts_state; hostname" 2>/dev/null) \
+    srv_out=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_ipv4 _ts_state); _ts_state; hostname" 2>/dev/null) \
         || srv_out="Unreachable - - -"
     srv_ts=$(head -1 <<<"$srv_out"); srv_host=$(sed -n 2p <<<"$srv_out")
     _ts_print_state "$srv_ts" server
@@ -1879,7 +1883,7 @@ _services_status() {
     local IP HOST TS_IP="" has_adguard=0
     IP=$(hostname -I | awk '{print $1}')
     HOST=$(hostname)
-    _ts_running && TS_IP=$(tailscale ip -4 2>/dev/null | head -1)
+    _ts_running && TS_IP=$(_ts_ipv4)
     echo "$all_names" | grep -q '^adguard$' && has_adguard=1
     local has_syncthing=0
     echo "$all_names" | grep -q '^syncthing$' && echo "$CONTAINERS" | grep '^syncthing|Up' -q && has_syncthing=1
@@ -2094,7 +2098,7 @@ _unified_service_picker() {
     # ── 3. Extract Tailscale server state ──
     local ts_server="disconnected"
     local ts_server_raw
-    ts_server_raw=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_state); _ts_state" 2>/dev/null) || true
+    ts_server_raw=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_ipv4 _ts_state); _ts_state" 2>/dev/null) || true
     case "$ts_server_raw" in
         Running*)    ts_server="connected" ;;
         NeedsLogin*) ts_server="logged out" ;;
@@ -3206,7 +3210,7 @@ XRDPEOF
 
     IP=$(hostname -I | awk '{print $1}')
     local ts_ip
-    ts_ip=$(tailscale ip -4 2>/dev/null || echo "not connected")
+    ts_ip=$(_ts_ipv4); ts_ip=${ts_ip:-not connected}
 
     echo ""
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -3769,7 +3773,7 @@ step_adguard() {
     # missing, surface that BEFORE touching the system, not at the end.
     if command -v tailscale &>/dev/null; then
         ts_rec=$(_ts_state)
-        _ts_running "$ts_rec" && TS_IP=$(tailscale ip -4 2>/dev/null | head -1)
+        _ts_running "$ts_rec" && TS_IP=$(_ts_ipv4)
     fi
     if [[ -z "$TS_IP" && "$DRY_RUN" != "1" ]]; then
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -6542,7 +6546,7 @@ step_status() {
 
     if [[ "$remote" == "true" ]]; then
         local server_info
-        server_info=$( { declare -f _ts_state _ps_autostart _smb_summary _smb_folder_check _smb_sessions _smb_devices _smb_devname; cat <<'REMOTE_STATUS'
+        server_info=$( { declare -f _ts_ipv4 _ts_state _ps_autostart _smb_summary _smb_folder_check _smb_sessions _smb_devices _smb_devname; cat <<'REMOTE_STATUS'
             echo "@@HOSTNAME@@$(hostname)"
             echo "@@IP@@$(hostname -I | awk '{print $1}')"
             echo "@@TS_STATE@@$(_ts_state)"
@@ -6811,13 +6815,13 @@ step_save_to_pass() {
     # non-TTY session; HOME is kept as the login user's so ~/privcloud/.env
     # still resolves.
     local fetch_script
-    fetch_script="$(declare -f _ts_state _ts_running)
+    fetch_script="$(declare -f _ts_ipv4 _ts_state _ts_running)
 $(cat <<'FETCH'
 echo "HOSTNAME=$(hostname)"
 echo "LOCAL_IP=$(hostname -I | awk '{print $1}')"
 TS_STATE=$(_ts_state)
 echo "TS_STATE=$TS_STATE"
-_ts_running "$TS_STATE" && echo "TS_IP=$(tailscale ip -4 2>/dev/null | head -1)"
+_ts_running "$TS_STATE" && echo "TS_IP=$(_ts_ipv4)"
 echo "---ENV---"
 cat ~/privcloud/.env 2>/dev/null || cat ~/data/.env 2>/dev/null || true
 echo "---DOCKER_COMPOSE---"
@@ -7106,7 +7110,6 @@ _SMB_NAMES=(); _SMB_PATHS=(); _SMB_USER=""; _SMB_PW=""; _SMB_REAL=""
 _smb_exists()  { sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx samba; }
 _smb_running() { sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qx samba; }
 _smb_listening() { sudo ss -ltnH 'sport = :445' 2>/dev/null | grep -q .; }
-_smb_ts_ip() { tailscale ip -4 2>/dev/null | head -1; }
 
 # The files folder FileBrowser serves (same .env value the compose file mounts).
 _smb_files_path() {
@@ -7559,7 +7562,7 @@ _smb_setup() {
         fail "Login name '$user' is not usable as a Samba user (lowercase letters, digits, _ and - only)."
         return 1
     fi
-    ip=$(_smb_ts_ip)
+    ip=$(_ts_ipv4)
     if [[ -z "$ip" ]]; then
         fail "Tailscale is not connected on this server. File sharing is tailnet-only - run federver -> 8 first."
         return 1
@@ -7674,7 +7677,7 @@ _smb_manage_password() {
     local ip in
     if ! _smb_cur_login; then fail "Could not read $_SMB_DIR/samba.env (sudo refused or file missing)."; return 1; fi
     _smb_load || true
-    ip=$(_smb_ts_ip)
+    ip=$(_ts_ipv4)
     _smb_connect_box "${ip:-<server tailscale ip>}" "$_SMB_USER" "$_SMB_PW"
     printf '  New password (Enter = keep, g = generate, or type one): '
     read -r -s in || in=""

@@ -13,6 +13,7 @@ mkdir -p "$T/bin" "$T/c" "$T/files/docs" "$T/files/media" "$T/files/My Pics" "$T
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 { grep -E '^(ok|fail|info|warn)\(\)' "$SRC"
   grep -m1 '^_shq()' "$SRC"
+  grep -m1 '^_ts_ipv4()' "$SRC"
   awk '/^_svc_power_body\(\)/{p=1} p{print} /^_ps_autostart\(\)/{q=1} q&&/^}/{exit}' "$SRC"
   awk '/^_env_get\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
   awk '/^_container_gone\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
@@ -310,7 +311,7 @@ S=$(_smb_summary docker); R=$(_smb_summary_render "$S"); mkdir -p "$T/files/medi
 check 9c "running with a missing folder and a device: (1 ✗ not mounted) · 1 device" '[ "$S" = "running|2|1|1" ] && [[ "$R" == *"(1 ✗ not mounted)"* && "$R" == *"1 device connected"* && "$R" != *"1 devices"* ]]'
 mkset; _svc_power stop samba 2>/dev/null; S=$(_smb_summary docker); R=$(_smb_summary_render "$S")
 check 9d "stopped: red ✗ stopped (autostart off)" '[ "${S%%|*}" = stopped-off ] && [[ "$R" == *"✗ stopped (autostart off)"* ]]'
-check 9e "step_status wires the SMB section (remote gather + local path + render)" '[ "$(grep -c "@@SMB@@" "$SRC")" -ge 2 ] && grep -q "_smb_summary_render" "$SRC" && grep -q "declare -f _ts_state _ps_autostart _smb_summary _smb_folder_check _smb_sessions _smb_devices _smb_devname" "$SRC" && grep -q "@@SMB_DEV_START@@" "$SRC"'
+check 9e "step_status wires the SMB section (remote gather + local path + render)" '[ "$(grep -c "@@SMB@@" "$SRC")" -ge 2 ] && grep -q "_smb_summary_render" "$SRC" && grep -q "declare -f _ts_ipv4 _ts_state _ps_autostart _smb_summary _smb_folder_check _smb_sessions _smb_devices _smb_devname" "$SRC" && grep -q "@@SMB_DEV_START@@" "$SRC"'
 
 # 11 real smbstatus -S output (captured on the live server) as the fixture
 FIX() { printf '%s\n' \
@@ -367,6 +368,17 @@ row '7 days ago'; r=$(_smb_devices docker)
 check 13e "7 days old: a date, not the weekday that would equal today's" '[ "$r" = "iphone-test|media|$(date -d "7 days ago" +"%-d %b") 08:00" ]'
 row '40 days ago'; r=$(_smb_devices docker)
 check 13f "40 days old: a date" '[ "$r" = "iphone-test|media|$(date -d "40 days ago" +"%-d %b") 08:00" ]'
+# Fixed "now" in a non-UTC zone (date wrapper, setup.sh untouched): now = 2027-01-01 00:10 Europe/Berlin
+# (= 2026-12-31 23:10 UTC), so local and UTC dates differ and a year boundary sits in the 7-day window.
+FAKE_NOW="2027-01-01 00:10"
+date() { if [ "$1" != -d ]; then command date -d "$FAKE_NOW" "$@"; elif [[ "$2" == *ago ]]; then command date -d "$FAKE_NOW $2" "${@:3}"; else command date "$@"; fi; }
+brow() { printf '%s\n' "media        15      100.99.99.98  $(command date -u -d "$1 UTC" '+%a %b %e %H:%M:%S %Y') UTC     -            -" > "$SMBSTATUS"; TZ=Europe/Berlin _smb_devices docker; }
+check 13g "Berlin: Jan 1 00:05 local (Dec 31 in UTC) is today: plain HH:MM" '[ "$(brow "2026-12-31 23:05")" = "iphone-test|media|00:05" ]'
+check 13h "Berlin: 1 day back across the year boundary (Dec 31 23:50 local): weekday form" '[ "$(brow "2026-12-31 22:50")" = "iphone-test|media|Thu 23:50" ]'
+check 13i "Berlin: 6 days back (Dec 26 10:00 local): weekday form" '[ "$(brow "2026-12-26 09:00")" = "iphone-test|media|Sat 10:00" ]'
+check 13j "Berlin: 7 days back (Dec 25 00:20 local, Dec 24 in UTC): date form, local day" '[ "$(brow "2026-12-24 23:20")" = "iphone-test|media|25 Dec 00:20" ]'
+check 13k "Berlin: 8 days back (Dec 24 12:00 local): date form" '[ "$(brow "2026-12-24 11:00")" = "iphone-test|media|24 Dec 12:00" ]'
+unset -f date brow; unset FAKE_NOW
 rm -f "$SMBSTATUS"
 
 # 14 saved folders are re-checked before anything is removed or run
@@ -388,6 +400,13 @@ check 14g "Reuse + broken folder + drop n: refused cleanly, saved config untouch
 reset; run $'1\ny'"$T/mnt/usb/data"$'\n\nFakePass0123456x\nFakePass0123456x\n' 0 step_samba; run $'7\nsamba\n' 0 step_samba; export FM_MODE=root; : > "$DOCKER_LOG"
 run $'1\nyyy'"$T/files/docs"$'\n\n\n' 0 step_samba
 check 14h "Reuse, only saved folder is broken, drop y: normal folder prompt, password kept (not asked)" '[ $RC = 0 ] && [[ "$OUT" == *"No saved folder left"* && "$OUT" == *"Folder to share"* && "$OUT" != *"Password for"* && "$OUT" == *"File sharing set up: 1 folders"* ]] && [ "$(PWOF)" = FakePass0123456x ] && grep -qx "docs|$T/files/docs" "$SHF"'
+# drop EVERY saved folder, then Enter (cancel) at "Folder to share": nothing is written or run
+reset; mkdir -p "$T/mnt/usb/data2"
+run $'1\ny'"$T/mnt/usb/data"$'\n'"$T/mnt/usb/data2"$'\n\nFakePass0123456x\nFakePass0123456x\n' 0 step_samba; run $'7\nsamba\n' 0 step_samba
+export FM_MODE=root; : > "$DOCKER_LOG"; cp "$ENVF" "$T/env.before"; cp "$SHF" "$T/sh.before"
+run $'1\nyyyy\n' 0 step_samba
+check 14n "Reuse, drop every saved folder, Enter at 'Folder to share': cancelled, config byte-identical, no rm/run" '[ $RC = 0 ] && [[ "$OUT" == *"No saved folder left"* && "$OUT" == *"Cancelled. Nothing changed."* && "$OUT" != *"File sharing set up"* ]] && ! grep -q "^docker rm\|^docker run" "$DOCKER_LOG" && cmp -s "$ENVF" "$T/env.before" && cmp -s "$SHF" "$T/sh.before"'
+rmdir "$T/mnt/usb/data2"
 # a broken saved folder must not block Stop/Start/Restart/Show password/Uninstall (none may go through _smb_apply)
 mkusb; export FM_MODE=root; : > "$DOCKER_LOG"; run $'5\n' 0 step_samba
 check 14i "broken saved folder: Stop works, no rm/run" '[ $RC = 0 ] && [[ "$OUT" == *"Stopped."* ]] && ! grep -q "^docker rm\|^docker run" "$DOCKER_LOG" && [ "$(cat "$T/c/samba/running")" = false ]'

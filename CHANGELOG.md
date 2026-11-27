@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`federver -> Manage Immich -> Stop` took Navidrome, FileBrowser, Uptime Kuma and Watchtower down with Immich, and skipped the autostart rule.** The Immich menu ran `docker compose down` on the whole `docker-compose.yml`, which holds all eight containers, and Start and Update used `compose up -d` and `compose pull` the same way, so one Immich action touched every service. Start and Stop are gone from the Manage Immich menu: `federver -> 7` (Manage services) is now the only place that starts, stops or restarts anything, and it already sets restart=no on Stop and unless-stopped on Start. Update and Install now pull and recreate only Immich's four compose services (`immich-server`, `immich-machine-learning`, `redis`, `database`, defined once as `_IMMICH_SERVICES`), and the autostart pass after an update only touches those four, so a Navidrome you stopped on purpose stays stopped. The hints that said "Start it first: federver -> i -> Start" now point at `federver -> 7 -> 2`.
+
+- **Start All asked for four sudo passwords and printed false failures for things that were fine.** From the laptop, `federver -> 7 -> 2 -> a` ran `sudo tailscale up` on the laptop although it was connected, `ssh -t ... sudo tailscale up` on the server although it was connected, tried to start a Syncthing that was installed on neither side ("Laptop: failed to start", "no such container: syncthing", "Server: failed to start"), and then opened a fourth ssh session whose `sudo docker` asked again. Container start, stop and restart now run docker through the docker group, with the same `sg docker` fallback the compose paths use when the group was added in this very login, and never through sudo, so the shared body (`_svc_power_body`, used by the server-local, laptop-over-ssh, bulk and standalone paths) cannot prompt and the remote runners use the plain `ssh()` wrapper without `-t`. The sudo-refused exit code 7 and its guard are gone with the only thing that could raise it. Start, Stop and Restart All now skip a side that has nothing to do and say so in one line (`Tailscale (Laptop): already connected - skipped`, `Tailscale (Server): already down - skipped`, `Syncthing (Laptop): not installed - skipped`) instead of reporting a failure; anything that still needs sudo (`tailscale up` when Tailscale is really down) asks once per side. The Services container list also reads docker without sudo now.
+
+### Changed
+
+- **Manage Immich moved into Extras, right after Tailscale (`federver -> 9`); the main menu is numbered 1 to 17 with no letter key for Immich.** Extras are now 8 Tailscale, 9 Immich, 10 WireGuard, 11 AdGuard, 12 storage, 13 Syncthing, 14 remote desktop, 15 Connect phone (Files app); Tools are 16 Manage sync and backups and 17 Save to pass. The separate "Immich photo management" section, the `i)` key and the `i) Immich` entry in the bottom bar are removed. Every `federver -> N` hint in the script, README, customer guide, wiki and PRDs was renumbered (old 14 is 16, old 16 is 15, old `i` is 9). The Manage Immich submenu is renumbered 1 to 11 without the old Start and Stop, uses the same `←` arrows as the other submenus, and the Remove row is aligned again. `tests/menu-refs.sh` now runs the real menu and dispatcher text and fails on a stale `federver -> N` hint.
+- **Every screen starts with the federver header.** `run_step` used to clear the screen and print only `=== step ===`; it now prints the same banner as the main menu (name, version, laptop or server, tagline, rule) and the step name beneath it, so a submenu or step never loses where you are. The banner is still printed by the one function `_show_menu_header`.
+
 ## v0.13.0 — 2026-11-27
 
 ### Fixed

@@ -211,10 +211,12 @@ _shq() { printf '%q' "$1"; }
 # Afterwards the state AND the policy are read back; any mismatch is a failure,
 # never a false "complete". Failures print one line to stderr and exit non-zero:
 #   2 docker unreachable, 3 no such container, 4 policy update failed,
-#   5 docker action failed, 6 read-back mismatch, 7 sudo refused.
+#   5 docker action failed, 6 read-back mismatch.
+# Docker runs through the docker group (_svc_docker_fn), never sudo: nothing
+# here can ask for a password, so the ssh hop needs no TTY (no `ssh -t`).
 # _svc_power_body prints the shell text; the runners below execute it locally
-# (a fresh bash, so its exits never kill the menu) or over ssh -t (sudo needs a
-# TTY). c is set from an already-quoted word, so odd names survive one parse.
+# (a fresh bash, so its exits never kill the menu) or over ssh. c is set from
+# an already-quoted word, so odd names survive one parse.
 _svc_power_body() { # action quoted-container-word
     local p v run
     case "$1" in
@@ -224,27 +226,34 @@ _svc_power_body() { # action quoted-container-word
         *) return 1 ;;
     esac
     printf '%s\n' "c=$2" \
-        "$(_svc_sudo_guard)" \
-        "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
-        "sudo docker inspect \"\$c\" >/dev/null 2>&1 || { echo \"no such container: \$c\" >&2; exit 3; }" \
-        "sudo docker update --restart=$p \"\$c\" >/dev/null || { echo \"\$c: could not set restart policy $p\" >&2; exit 4; }" \
-        "sudo docker $v \"\$c\" >/dev/null || { echo \"\$c: docker $v failed\" >&2; exit 5; }" \
-        "s=\$(sudo docker inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' \"\$c\" 2>/dev/null)" \
+        "$(_svc_docker_fn)" \
+        "d inspect \"\$c\" >/dev/null 2>&1 || { echo \"no such container: \$c\" >&2; exit 3; }" \
+        "d update --restart=$p \"\$c\" >/dev/null || { echo \"\$c: could not set restart policy $p\" >&2; exit 4; }" \
+        "d $v \"\$c\" >/dev/null || { echo \"\$c: docker $v failed\" >&2; exit 5; }" \
+        "s=\$(d inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' \"\$c\" 2>/dev/null)" \
         "[ \"\$s\" = \"$run $p\" ] || { echo \"\$c: expected '$run $p', found '\$s'\" >&2; exit 6; }"
 }
-# The sudo-refused guard both bodies start with (exit 7), one text for both.
-_svc_sudo_guard() { echo "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }"; }
+# Shell text both bodies start with: defines `d`, docker through the docker
+# group. That is plain `docker`, or `sg docker` when the group was added in this
+# very login (the same fallback the compose paths use). Exits 2 when docker
+# cannot be reached.
+_svc_docker_fn() {
+    cat <<'EOF'
+d() { docker "$@"; }
+docker info >/dev/null 2>&1 || { id -nG 2>/dev/null | grep -qw docker && d() { sg docker -c "docker $(printf '%q ' "$@")"; }; }
+d info >/dev/null 2>&1 || { echo "docker is not reachable" >&2; exit 2; }
+EOF
+}
 # Same rule for every container on the host: start and stop = all (incl. exited
 # ones, so a stopped-on-its-own unless-stopped container gets restart=no and
 # stays down after a daemon start); restart = the running ones only. Standalone ones (adguard, syncthing) are
 # ordinary containers here, so they are covered with no special case.
 _svc_power_all_body() { # action
-    local list="docker ps -a --format '{{.Names}}'"
-    [[ "$1" == restart ]] && list="docker ps --format '{{.Names}}'"
+    local list="d ps -a --format '{{.Names}}'"
+    [[ "$1" == restart ]] && list="d ps --format '{{.Names}}'"
     printf '%s\n' \
-        "$(_svc_sudo_guard)" \
-        "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
-        "rc=0; for n in \$(sudo $list); do (" \
+        "$(_svc_docker_fn)" \
+        "rc=0; for n in \$($list); do (" \
         "$(_svc_power_body "$1" '"$n"')" \
         ") || rc=1; done; exit \$rc"
 }
@@ -256,13 +265,13 @@ _svc_power_all()        { # action             (on the server itself)
     if [[ "${DRY_RUN:-0}" == 1 ]]; then echo "    [dry-run] all containers $1" >&2; return 0; fi
     bash -c "$(_svc_power_all_body "$1")"
 }
-_svc_power_remote()     { ssh -t "$SERVER_USER@$SERVER_IP" "$(_svc_power_body "$1" "$(_shq "$2")")"; }  # action container
-_svc_power_all_remote() { ssh -t "$SERVER_USER@$SERVER_IP" "$(_svc_power_all_body "$1")"; }              # action
+_svc_power_remote()     { ssh "$SERVER_USER@$SERVER_IP" "$(_svc_power_body "$1" "$(_shq "$2")")"; }  # action container
+_svc_power_all_remote() { ssh "$SERVER_USER@$SERVER_IP" "$(_svc_power_all_body "$1")"; }              # action
 
 # Print "name|status" like `docker ps -a --format '{{.Names}}|{{.Status}}'`, but
 # a stopped container whose restart policy is "no" reads "stopped (autostart
 # off)", so a deliberate stop is visible before a reboot. Pass the docker
-# command words: _ps_autostart docker | _ps_autostart sudo docker.
+# command words: _ps_autostart docker.
 _ps_autostart() {
     local ps pol n s
     ps=$("$@" ps -a --format '{{.Names}}|{{.Status}}') || return $?
@@ -376,15 +385,16 @@ _two_sided_gate() {
     esac
 }
 
-# Run a step with clear screen and success/fail banner.
+# Run a step: federver header (clears the screen), step name, then success/fail banner.
 # Convention: a step that returns 2 means "user picked Back before doing
 # anything" — skip the banner and the Press-Enter prompt so it feels like
 # a clean return to the main menu instead of "DONE" for a no-op.
 run_step() {
     local step_name="$1"
     local step_func="$2"
-    clear
-    echo -e "${BOLD}${BLUE}=== $step_name ===${NC}"
+    _show_menu_header
+    echo ""
+    echo -e "  ${BOLD}${BLUE}=== $step_name ===${NC}"
     echo ""
     local rc=0
     $step_func || rc=$?
@@ -595,21 +605,19 @@ _show_laptop_menu() {
     echo ""
     echo -e "  ${DIM}-- Extras (optional, run anytime) --${NC}"
     echo -e "  ${BOLD}8)${NC}  Manage Tailscale                    ${DIM}← install, status, up/down${NC}"
-    echo -e "  ${BOLD}9)${NC}  Manage WireGuard                    ${DIM}← install, peers, QR, remove${NC}"
-    echo -e "  ${BOLD}10)${NC} Manage AdGuard                      ${DIM}← install DNS ad blocker, uses Tailscale${NC}"
-    echo -e "  ${BOLD}11)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
-    echo -e "  ${BOLD}12)${NC} Manage Syncthing                    ${DIM}← real-time bidirectional file sync${NC}"
-    echo -e "  ${BOLD}13)${NC} Manage remote desktop               ${DIM}← install, access XFCE via RDP${NC}"
-    echo -e "  ${BOLD}16)${NC} Connect phone (Files app)           ${DIM}← iPhone/Android open server folders over Tailscale${NC}"
-    echo ""
-    echo -e "  ${DIM}-- Immich photo management --${NC}"
-    echo -e "  ${BOLD}i)${NC}  Manage Immich                       ${DIM}← status, start/stop, update, upload, backup${NC}"
+    echo -e "  ${BOLD}9)${NC}  Manage Immich                       ${DIM}← status, update, upload, backup${NC}"
+    echo -e "  ${BOLD}10)${NC} Manage WireGuard                    ${DIM}← install, peers, QR, remove${NC}"
+    echo -e "  ${BOLD}11)${NC} Manage AdGuard                      ${DIM}← install DNS ad blocker, uses Tailscale${NC}"
+    echo -e "  ${BOLD}12)${NC} Manage storage                      ${DIM}← USB drives, media/data paths${NC}"
+    echo -e "  ${BOLD}13)${NC} Manage Syncthing                    ${DIM}← real-time bidirectional file sync${NC}"
+    echo -e "  ${BOLD}14)${NC} Manage remote desktop               ${DIM}← install, access XFCE via RDP${NC}"
+    echo -e "  ${BOLD}15)${NC} Connect phone (Files app)           ${DIM}← iPhone/Android open server folders over Tailscale${NC}"
     echo ""
     echo -e "  ${DIM}-- Tools --${NC}"
-    echo -e "  ${BOLD}14)${NC} Manage sync and backups             ${DIM}← sync jobs, Immich backup, disk monitor${NC}"
-    echo -e "  ${BOLD}15)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
+    echo -e "  ${BOLD}16)${NC} Manage sync and backups             ${DIM}← sync jobs, Immich backup, disk monitor${NC}"
+    echo -e "  ${BOLD}17)${NC} Save to pass                        ${DIM}← from laptop, backup everything to pass${NC}"
     echo ""
-    echo -e "  ${BOLD}s)${NC}  Status     ${BOLD}i)${NC}  Immich     ${BOLD}p)${NC}  Power     ${BOLD}r)${NC}  Reset password     ${BOLD}a)${NC}  Run all (3-7)     ${BOLD}0)${NC}  Exit"
+    echo -e "  ${BOLD}s)${NC}  Status     ${BOLD}p)${NC}  Power     ${BOLD}r)${NC}  Reset password     ${BOLD}a)${NC}  Run all (3-7)     ${BOLD}0)${NC}  Exit"
     echo ""
 }
 
@@ -1073,22 +1081,57 @@ _ts_stop_both() {
     read -p "  [y/N] " -n 1 -r; echo ""
     [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
     info "Disconnecting..."
-    sudo tailscale down 2>/dev/null && ok "Laptop: disconnected." || warn "Laptop: not connected."
-    ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale down 2>/dev/null" \
-        && ok "Server: disconnected." || warn "Server: not connected."
+    local rec
+    rec=$(_ts_state)
+    _ts_skip stop Laptop "$rec" || { sudo tailscale down 2>/dev/null && ok "Laptop: disconnected." || warn "Laptop: not connected."; }
+    rec=$(_ts_server_state)
+    _ts_skip stop Server "$rec" || { ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale down 2>/dev/null" \
+        && ok "Server: disconnected." || warn "Server: not connected."; }
 }
 
 _ts_start_both() {
     info "Connecting Tailscale on both laptop and server..."
-    sudo tailscale up 2>/dev/null && ok "Laptop: connected." || warn "Laptop: failed."
-    ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale up" || warn "Server: failed."
+    local rec
+    rec=$(_ts_state)
+    _ts_skip start Laptop "$rec" || { sudo tailscale up 2>/dev/null && ok "Laptop: connected." || warn "Laptop: failed."; }
+    rec=$(_ts_server_state)
+    _ts_skip start Server "$rec" || { ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale up" || warn "Server: failed."; }
 }
 
 _ts_restart_both() {
     info "Restarting Tailscale on both laptop and server..."
-    sudo systemctl restart tailscaled 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."
-    ssh -t "$SERVER_USER@$SERVER_IP" "sudo systemctl restart tailscaled 2>/dev/null" \
-        && ok "Server: restarted." || warn "Server: failed."
+    local rec
+    rec=$(_ts_state)
+    _ts_skip restart Laptop "$rec" || { sudo systemctl restart tailscaled 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."; }
+    rec=$(_ts_server_state)
+    _ts_skip restart Server "$rec" || { ssh -t "$SERVER_USER@$SERVER_IP" "sudo systemctl restart tailscaled 2>/dev/null" \
+        && ok "Server: restarted." || warn "Server: failed."; }
+}
+
+# The server's _ts_state record, or "Unreachable - - -" when the ssh itself fails.
+_ts_server_state() {
+    local rec
+    rec=$(_server_probe "$(declare -f _ts_ipv4 _ts_state); _ts_state")
+    [[ "$rec" == unreachable ]] && rec="Unreachable - - -"
+    echo "$rec"
+}
+
+# Says why and returns 0 when one side has nothing to do for this action, so the
+# caller skips it with no sudo prompt and no false failure: not installed (any
+# action), already connected (start), already down (stop). An unreachable server
+# is skipped with a warning. Anything else returns 1 and the caller acts.
+_ts_skip() { # action side state-record
+    local st=${3%% *}
+    case "$st" in
+        NotInstalled) info "Tailscale ($2): not installed - skipped"; return 0 ;;
+        Unreachable)  warn "Tailscale ($2): cannot reach it - skipped"; return 0 ;;
+    esac
+    case "$1:$st" in
+        start:Running) info "Tailscale ($2): already connected - skipped"; return 0 ;;
+        stop:Running|restart:*) return 1 ;;
+        stop:*)        info "Tailscale ($2): already down - skipped"; return 0 ;;
+    esac
+    return 1
 }
 
 # True when this laptop reaches the server over Tailscale: the resolver swapped
@@ -1322,7 +1365,7 @@ _require_data_mount() {
     info "Services bind-mount your photos/music/files from here. Using it now"
     info "would fail with 'no such device' and create empty folders on the"
     info "system disk that look like data loss."
-    info "Fix it: ${BOLD}federver → 11 → 2${NC} (Mount USB drive), then retry."
+    info "Fix it: ${BOLD}federver → 12 → 2${NC} (Mount USB drive), then retry."
     return 1
 }
 
@@ -1412,7 +1455,7 @@ _storage_status() {
             *)
                 echo ""
                 warn "$mp is NOT mounted (real disk absent; check: $v)."
-                info "Services using it will fail to start. Mount: ${BOLD}federver → 11 → 2${NC}." ;;
+                info "Services using it will fail to start. Mount: ${BOLD}federver → 12 → 2${NC}." ;;
         esac
     done
 
@@ -1847,7 +1890,7 @@ _storage_change_immich() {
 
     ok "Done. Immich now uses: $new_base"
     echo ""
-    warn "If you moved existing data, verify with: federver → i → Status"
+    warn "If you moved existing data, verify with: federver → 9 → Status"
 }
 
 _services_status() {
@@ -1891,10 +1934,10 @@ _services_status() {
     local all_names
     all_names=$(echo "$CONTAINERS" | cut -d'|' -f1)
     if ! echo "$all_names" | grep -q '^adguard$'; then
-        echo -e "    ${RED}✗${NC} $(printf '%-24s' "adguard")  ${RED}not created${NC} ${DIM}(install: federver → 10)${NC}"
+        echo -e "    ${RED}✗${NC} $(printf '%-24s' "adguard")  ${RED}not created${NC} ${DIM}(install: federver → 11)${NC}"
     fi
     if ! echo "$all_names" | grep -q '^syncthing$'; then
-        echo -e "    ${RED}✗${NC} $(printf '%-24s' "syncthing")  ${RED}not created${NC} ${DIM}(install: federver → 12)${NC}"
+        echo -e "    ${RED}✗${NC} $(printf '%-24s' "syncthing")  ${RED}not created${NC} ${DIM}(install: federver → 13)${NC}"
     fi
 
     echo ""
@@ -1948,7 +1991,7 @@ _pick_container() {
     local idx=1
     declare -a arr
     local all_statuses
-    all_statuses=$(_ps_autostart sudo docker 2>/dev/null)
+    all_statuses=$(_ps_autostart docker 2>/dev/null)
     while IFS= read -r n; do
         local status
         status=$(echo "$all_statuses" | awk -F'|' -v name="$n" '$1==name{print $2; exit}')
@@ -2021,11 +2064,11 @@ _services_action() {
         case "$target" in
             syncthing)
                 warn "Syncthing has a laptop + server instance."
-                info "Use ${BOLD}federver → 12${NC} to ${action} both sides."
+                info "Use ${BOLD}federver → 13${NC} to ${action} both sides."
                 return 0
                 ;;
             adguard)
-                info "Use ${BOLD}federver → 10${NC} to manage AdGuard."
+                info "Use ${BOLD}federver → 11${NC} to manage AdGuard."
                 return 0
                 ;;
         esac
@@ -2302,8 +2345,8 @@ _unified_service_picker() {
     # Handle "not created" containers
     if [[ "$state_text" == "not created" ]]; then
         case "$cname" in
-            adguard)   warn "Container doesn't exist. Use ${BOLD}federver → 10${NC} to install it." ;;
-            syncthing) warn "Container doesn't exist. Use ${BOLD}federver → 12${NC} to install it." ;;
+            adguard)   warn "Container doesn't exist. Use ${BOLD}federver → 11${NC} to install it." ;;
+            syncthing) warn "Container doesn't exist. Use ${BOLD}federver → 13${NC} to install it." ;;
             *)         warn "Container '$cname' doesn't exist." ;;
         esac
         return 0
@@ -2828,7 +2871,7 @@ _syncthing_install() {
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "  ${YELLOW}NEXT: Pair your devices${NC}"
     echo ""
-    echo -e "  Laptop is already installed (option 12 handled it)."
+    echo -e "  Laptop is already installed (option 13 handled it)."
     echo -e "  For ${BOLD}phones${NC}:"
     echo -e "    Android: install ${BOLD}Syncthing${NC} from F-Droid or Play Store"
     echo -e "    iOS:     install ${BOLD}Möbius Sync${NC} from the App Store"
@@ -2842,7 +2885,7 @@ _syncthing_install() {
     echo ""
     echo -e "  ${DIM}First-time server dashboard visit will prompt for GUI username${NC}"
     echo -e "  ${DIM}+ password — set them (the UI is LAN-reachable). After that,${NC}"
-    echo -e "  ${DIM}run federver → 15 (Save to pass) to back up the device identity${NC}"
+    echo -e "  ${DIM}run federver → 17 (Save to pass) to back up the device identity${NC}"
     echo -e "  ${DIM}— losing cert.pem/key.pem means re-pairing every client.${NC}"
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
@@ -2896,30 +2939,47 @@ _syncthing_install_laptop() {
     echo ""
 }
 
+# True (and says why) when one side has no Syncthing to act on: not installed
+# there, or the server cannot be asked. Start/Stop/Restart All skip that side
+# instead of reporting a false failure. Side is Laptop or Server.
+_syncthing_skip() { # side
+    local st
+    if [[ "$1" == Laptop ]]; then
+        command -v syncthing &>/dev/null && return 1
+    else
+        st=$(_syncthing_server_probe)
+        case "$st" in
+            running|stopped) return 1 ;;
+            docker-error|unreachable) warn "Syncthing ($1): cannot reach it - skipped"; return 0 ;;
+        esac
+    fi
+    info "Syncthing ($1): not installed - skipped"
+    return 0
+}
+
 _syncthing_stop_both() {
     warn "Stop Syncthing on both laptop and server?"
     read -p "  [y/N] " -n 1 -r; echo ""
     [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
     info "Stopping..."
-    systemctl --user stop syncthing 2>/dev/null && ok "Laptop: stopped." || warn "Laptop: not running."
-    _svc_power_remote stop syncthing \
-        && ok "Server: stopped." || warn "Server: could not stop (is it installed?)."
+    _syncthing_skip Laptop || { systemctl --user stop syncthing 2>/dev/null && ok "Laptop: stopped." || warn "Laptop: not running."; }
+    _syncthing_skip Server || { _svc_power_remote stop syncthing \
+        && ok "Server: stopped." || warn "Server: could not stop."; }
 }
 
 _syncthing_start_both() {
     info "Starting Syncthing on both laptop and server..."
-    systemctl --user start syncthing 2>/dev/null && ok "Laptop: started." || warn "Laptop: failed to start."
-    # ssh -t for sudo TTY. NOT inside $() — that captures the prompt.
-    _svc_power_remote start syncthing \
+    _syncthing_skip Laptop || { systemctl --user start syncthing 2>/dev/null && ok "Laptop: started." || warn "Laptop: failed to start."; }
+    _syncthing_skip Server || { _svc_power_remote start syncthing \
         && ok "Server: started." \
-        || { warn "Server: failed to start."; info "If container has bad config: federver → 12 to reinstall."; }
+        || { warn "Server: failed to start."; info "If container has bad config: federver → 13 to reinstall."; }; }
 }
 
 _syncthing_restart_both() {
     info "Restarting Syncthing on both laptop and server..."
-    systemctl --user restart syncthing 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."
-    _svc_power_remote restart syncthing \
-        && ok "Server: restarted." || warn "Server: failed."
+    _syncthing_skip Laptop || { systemctl --user restart syncthing 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."; }
+    _syncthing_skip Server || { _svc_power_remote restart syncthing \
+        && ok "Server: restarted." || warn "Server: failed."; }
 }
 
 # Laptop half of the Syncthing uninstall. Returns 0 only if verified gone.
@@ -3785,45 +3845,42 @@ PersistentKeepalive = 25"
 }
 
 # ── Manage Immich (the former `privcloud` script, merged in) ─────────────
-# federver -> i. Every action runs on the server (_on_server hops there, so
+# federver -> 9. Every action runs on the server (_on_server hops there, so
 # `setup.sh --run step_immich_<action>` is also the scripting entry point) and
 # reads and writes the repo's own .env / docker-compose.yml on the server.
 # Single pass, like the other submenus: run one action, then back to the main menu.
 step_immich() {
     echo ""
-    echo -e "  ${BOLD}1)${NC}  Status                          ${DIM}<- containers, storage, recent errors${NC}"
-    echo -e "  ${BOLD}2)${NC}  Start                           ${DIM}<- bring Immich up, autostart on${NC}"
-    echo -e "  ${BOLD}3)${NC}  Stop                            ${DIM}<- down; stops Docker if nothing else runs${NC}"
-    echo -e "  ${BOLD}4)${NC}  Update                          ${DIM}<- pull new images, apply${NC}"
-    echo -e "  ${BOLD}5)${NC}  Install                         ${DIM}<- check Docker, first-time config, pull images${NC}"
-    echo -e "  ${BOLD}6)${NC}  Config                          ${DIM}<- change the photo storage location${NC}"
+    echo -e "  ${BOLD}1)${NC}  Status                          ${DIM}← containers, storage, recent errors${NC}"
+    echo -e "  ${BOLD}2)${NC}  Update                          ${DIM}← pull new Immich images, apply${NC}"
+    echo -e "  ${BOLD}3)${NC}  Install                         ${DIM}← check Docker, first-time config, pull images${NC}"
+    echo -e "  ${BOLD}4)${NC}  Config                          ${DIM}← change the photo storage location${NC}"
     echo ""
-    echo -e "  ${BOLD}7)${NC}  Upload photos                   ${DIM}<- bulk-upload a folder on the server (Immich CLI)${NC}"
-    echo -e "  ${BOLD}8)${NC}  Fix Google Photos metadata      ${DIM}<- Takeout export: dates and GPS${NC}"
+    echo -e "  ${BOLD}5)${NC}  Upload photos                   ${DIM}← bulk-upload a folder on the server (Immich CLI)${NC}"
+    echo -e "  ${BOLD}6)${NC}  Fix Google Photos metadata      ${DIM}← Takeout export: dates and GPS${NC}"
     echo ""
-    echo -e "  ${BOLD}9)${NC}  Backup - One-time               ${DIM}<- copy photos + database to a drive now${NC}"
-    echo -e "  ${BOLD}10)${NC} Backup - Scheduled - Set up     ${DIM}<- weekly systemd timer, no downtime${NC}"
-    echo -e "  ${BOLD}11)${NC} Backup - Scheduled - Status     ${DIM}<- schedule, next/last run, recent runs${NC}"
-    echo -e "  ${BOLD}12)${NC} Backup - Scheduled - Run now    ${DIM}<- start a backup in the background${NC}"
-    echo -e "  ${BOLD}13)${NC} ${RED}Backup - Scheduled - Remove${NC}    ${DIM}<- delete the schedule (keeps files)${NC}"
+    echo -e "  ${BOLD}7)${NC}  Backup - One-time               ${DIM}← copy photos + database to a drive now${NC}"
+    echo -e "  ${BOLD}8)${NC}  Backup - Scheduled - Set up     ${DIM}← weekly systemd timer, no downtime${NC}"
+    echo -e "  ${BOLD}9)${NC}  Backup - Scheduled - Status     ${DIM}← schedule, next/last run, recent runs${NC}"
+    echo -e "  ${BOLD}10)${NC} Backup - Scheduled - Run now    ${DIM}← start a backup in the background${NC}"
+    echo -e "  ${BOLD}11)${NC} ${RED}Backup - Scheduled - Remove${NC}     ${DIM}← delete the schedule (keeps files)${NC}"
     echo -e "  ${BOLD}0)${NC}  Back"
+    echo -e "  ${DIM}Start / Stop / Restart: federver → 7 (Manage services)${NC}"
     echo ""
     local c
-    read -p "  Choice [0-13]: " c
+    read -p "  Choice [0-11]: " c
     case "$c" in
         1)  _on_server step_immich_status ;;
-        2)  _on_server step_immich_start ;;
-        3)  _on_server step_immich_stop ;;
-        4)  _on_server step_immich_update ;;
-        5)  _on_server step_immich_install ;;
-        6)  _on_server step_immich_config ;;
-        7)  _on_server step_immich_upload ;;
-        8)  _on_server step_immich_fix_gp ;;
-        9)  _on_server step_immich_backup_once ;;
-        10) _on_server step_immich_backup ;;
-        11) _on_server _immich_backup_status ;;
-        12) _on_server _immich_backup_run ;;
-        13) _on_server _immich_backup_remove ;;
+        2)  _on_server step_immich_update ;;
+        3)  _on_server step_immich_install ;;
+        4)  _on_server step_immich_config ;;
+        5)  _on_server step_immich_upload ;;
+        6)  _on_server step_immich_fix_gp ;;
+        7)  _on_server step_immich_backup_once ;;
+        8)  _on_server step_immich_backup ;;
+        9)  _on_server _immich_backup_status ;;
+        10) _on_server _immich_backup_run ;;
+        11) _on_server _immich_backup_remove ;;
         0|"") return 2 ;;
         *)  fail "Invalid choice."; return 2 ;;
     esac
@@ -3831,14 +3888,17 @@ step_immich() {
 
 _IMMICH_ENV="$(dirname "$_FV_SELF")/.env"
 _IMMICH_COMPOSE="$(dirname "$_FV_SELF")/docker-compose.yml"
+# The compose services that are Immich (the file also holds Navidrome, FileBrowser,
+# Watchtower, Uptime Kuma). Install/Update name only these; lifecycle is federver -> 7.
+_IMMICH_SERVICES=(immich-server immich-machine-learning redis database)
 
-# The `privcloud` command is gone (federver -> i replaces it). Older installs
+# The `privcloud` command is gone (federver -> 9 replaces it). Older installs
 # left a wrapper behind that now points at a file that no longer exists; remove it.
 _STALE_PRIVCLOUD_CMD=/usr/local/bin/privcloud
 _remove_stale_privcloud_cmd() {
     [[ -e "$_STALE_PRIVCLOUD_CMD" || -L "$_STALE_PRIVCLOUD_CMD" ]] || return 0
     if sudo rm -f "$_STALE_PRIVCLOUD_CMD"; then
-        info "Removed the old 'privcloud' command - Immich is now: federver -> i (Manage Immich)."
+        info "Removed the old 'privcloud' command - Immich is now: federver -> 9 (Manage Immich)."
     else
         warn "Could not remove the old 'privcloud' command ($_STALE_PRIVCLOUD_CMD) - it no longer works; remove it with sudo."
     fi
@@ -3910,26 +3970,27 @@ _immich_ensure_docker() { # step
 }
 
 # Compose gives some services restart: always, and an earlier Stop leaves
-# restart=no. After bringing the stack up, make every container of it
+# restart=no. After bringing Immich up, make each of its containers (only the
+# _IMMICH_SERVICES: a Navidrome stopped on purpose must stay stopped)
 # unless-stopped with the same rule the Services menu's Start applies
 # (_svc_power start: sets the policy, starts, reads both back). The stack is
 # already up, so a failure warns (visibly) and returns 0: it must not abort the
 # caller before it waits for Immich / reports the update.
 _immich_keep_autostart() {
     local ids id rc=0
-    ids="$(_immich_compose ps -aq)" || rc=1
+    ids="$(_immich_compose ps -aq "${_IMMICH_SERVICES[@]}")" || rc=1
     if (( rc == 0 )); then
         for id in $ids; do _svc_power start "$id" || rc=1; done
     fi
     if (( rc )); then
-        warn "Could not set autostart on the containers - they're running now but may not come back after a reboot. Re-run start or use federver -> Manage services -> Start."
+        warn "Could not set autostart on the containers - they're running now but may not come back after a reboot. Use federver -> 7 -> 2 (Start)."
     fi
     return 0
 }
 
 _immich_need_env() {
     [[ -f "$_IMMICH_ENV" ]] && return 0
-    fail "Not set up yet. Run: federver -> i -> Install"
+    fail "Not set up yet. Run: federver -> 9 -> Install"
     return 1
 }
 
@@ -3965,64 +4026,9 @@ step_immich_install() {
 
     echo ""
     echo -e "  ${BOLD}Pulling images (first time takes a few minutes)...${NC}"
-    _immich_compose pull || { fail "Pulling the images failed."; return 1; }
+    _immich_compose pull "${_IMMICH_SERVICES[@]}" || { fail "Pulling the images failed."; return 1; }
     echo ""
-    ok "Install complete. Next: federver -> i -> Start"
-}
-
-step_immich_start() {
-    _immich_need_env || return 1
-    _immich_ensure_docker "$FUNCNAME" || return 1
-
-    if _immich_up; then
-        ok "Already running."
-        echo ""
-        _immich_urls
-        return 0
-    fi
-
-    _immich_fix_permissions
-
-    _immich_compose up -d || { fail "docker compose up failed."; return 1; }
-    _immich_keep_autostart
-
-    echo ""
-    printf "  Waiting for Immich"
-    local attempts=0
-    while (( attempts < 30 )); do
-        if _immich_up; then
-            echo ""
-            echo ""
-            ok "Immich is running."
-            echo ""
-            _immich_urls
-            echo ""
-            info "Both devices must be on the same WiFi."
-            info "Stop with: federver -> i -> Stop"
-            return 0
-        fi
-        sleep 2
-        attempts=$((attempts + 1))
-        printf "."
-    done
-    echo ""
-    warn "Taking longer than expected. Check: federver -> i -> Status"
-}
-
-step_immich_stop() {
-    _immich_need_env || return 1
-    _immich_ensure_docker "$FUNCNAME" || return 1
-
-    _immich_compose down || { fail "docker compose down failed."; return 1; }
-
-    # Stop the Docker daemon if no other containers are running
-    if [[ -z "$(docker ps -q 2>/dev/null)" ]]; then
-        info "No other containers running. Stopping Docker..."
-        sudo systemctl stop docker docker.socket
-        ok "Docker stopped."
-    fi
-
-    ok "Stopped. Your photos are safe on disk."
+    ok "Install complete. Next: federver -> 7 -> 6 (Deploy) starts Immich"
 }
 
 step_immich_status() {
@@ -4083,7 +4089,7 @@ step_immich_status() {
     fi
 
     echo "    Version:  $(_env_get IMMICH_VERSION "$_IMMICH_ENV" | grep . || echo "not set")"
-    echo "    Change:   federver -> i -> Config"
+    echo "    Change:   federver -> 9 -> Config"
     echo ""
 
     echo -e "  ${BOLD}Containers${NC}"
@@ -4105,7 +4111,7 @@ step_immich_status() {
         if ! $has_containers; then
             warn "No containers running."
             echo ""
-            info "Run: federver -> i -> Start"
+            info "Run: federver -> 7 -> 2 (Start Immich)"
             return 0
         fi
     fi
@@ -4206,7 +4212,7 @@ step_immich_update() {
     before_ml="$(docker images -q "ghcr.io/immich-app/immich-machine-learning:${ver}" 2>/dev/null || echo "")"
 
     info "Checking for updates..."
-    _immich_compose pull --quiet 2>/dev/null || { fail "Could not pull the images. Check the server's internet connection."; return 1; }
+    _immich_compose pull --quiet "${_IMMICH_SERVICES[@]}" 2>/dev/null || { fail "Could not pull the images. Check the server's internet connection."; return 1; }
 
     after_server="$(docker images -q "ghcr.io/immich-app/immich-server:${ver}" 2>/dev/null || echo "")"
     after_ml="$(docker images -q "ghcr.io/immich-app/immich-machine-learning:${ver}" 2>/dev/null || echo "")"
@@ -4229,7 +4235,7 @@ step_immich_update() {
     fi
 
     echo ""
-    _immich_compose up -d || { fail "docker compose up failed."; return 1; }
+    _immich_compose up -d "${_IMMICH_SERVICES[@]}" || { fail "docker compose up failed."; return 1; }
     _immich_keep_autostart
 
     echo ""
@@ -4245,7 +4251,7 @@ step_immich_upload() {
     _immich_docker_group "$FUNCNAME"
 
     if ! _immich_up; then
-        fail "Immich is not running. Start it first: federver -> i -> Start"
+        fail "Immich is not running. Start it first: federver -> 7 -> 2 (Start)"
         return 1
     fi
 
@@ -4375,7 +4381,7 @@ step_immich_fix_gp() {
     bash "$(dirname "$_FV_SELF")/scripts/google-takeout-fix.sh" "$input_path"
 }
 
-# One-time Immich backup to a drive (federver -> i -> Backup - One-time). Asks the
+# One-time Immich backup to a drive (federver -> 9 -> Backup - One-time). Asks the
 # questions, then runs the ONE backup script with --once (see _immich_backup_script):
 # the same layout (<dest>/immich/photos + db/), excludes and database dump as the
 # scheduled backup. Append by default; a mirror needs the same source guard, preview
@@ -4389,7 +4395,7 @@ step_immich_backup_once() {
     db_loc="$(_env_get DB_DATA_LOCATION "$_IMMICH_ENV")"
 
     if [[ -z "$upload_loc" || -z "$db_loc" ]]; then
-        fail "Not configured yet. Run: federver -> i -> Install"
+        fail "Not configured yet. Run: federver -> 9 -> Install"
         return 1
     fi
     if ! sudo -v; then
@@ -4518,13 +4524,13 @@ step_immich_backup_once() {
     echo "    Config:   $backup_dir/.env"
     echo ""
     echo "  To restore on any machine:"
-    echo "    1. Clone privcloud, then federver -> i -> Install"
+    echo "    1. Clone privcloud, then federver -> 9 -> Install"
     $do_photos && echo "    2. Point config to the backed-up photos directory"
     if $do_db && $pg_running; then
-        echo "    3. Start Immich (federver -> i -> Start), then load the dump:"
+        echo "    3. Start Immich (federver -> 7 -> 2), then load the dump:"
         echo "         gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres"
     elif $do_db; then
-        echo "    3. Copy db/postgres/ and .env back, then federver -> i -> Start"
+        echo "    3. Copy db/postgres/ and .env back, then federver -> 7 -> 2 (Start)"
     fi
     return 0
 }
@@ -4726,7 +4732,7 @@ ADGUARDEOF
         echo ""
         echo -e "  ${BOLD}Real rollout (all devices, at home + roaming):${NC}"
         echo -e "    1. Run ${BOLD}federver → 8${NC} to install Tailscale"
-        echo -e "    2. Re-run ${BOLD}federver → 10${NC} — this time it'll detect Tailscale"
+        echo -e "    2. Re-run ${BOLD}federver → 11${NC} — this time it'll detect Tailscale"
         echo -e "       and print the admin-console steps to route every tailnet device"
         echo -e "       through AdGuard in one shot."
         echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -4968,7 +4974,7 @@ _immich_cron_lines() {
 # writes them (verbatim unless a path needs quotes), so any path round-trips through
 # _env_get. $1 repo dir, $2 backup dir, $3 retention days.
 _immich_backup_conf() {
-    printf '# Managed by setup.sh (federver -> i -> Backup - Scheduled - Set up); read by %s at each run.\n' "$_IMMICH_BACKUP_BIN"
+    printf '# Managed by setup.sh (federver -> 9 -> Backup - Scheduled - Set up); read by %s at each run.\n' "$_IMMICH_BACKUP_BIN"
     printf 'REPO_DIR=%s\nBACKUP_DIR=%s\nRETENTION_DAYS=%s\n' "$(_env_quote "$1")" "$(_env_quote "$2")" "$3"
 }
 
@@ -4984,7 +4990,7 @@ _immich_backup_script() {
 # Full Immich backup: database (online pg_dump) + photo originals (live rsync).
 # Neither step stops the stack: pg_dumpall is transactionally consistent and
 # UPLOAD_LOCATION holds write-once originals, so both are safe while Immich runs.
-# Managed by setup.sh (federver -> i -> Backup - Scheduled - Set up); regenerated by every Set up.
+# Managed by setup.sh (federver -> 9 -> Backup - Scheduled - Set up); regenerated by every Set up.
 #   immich-backup.sh                                  scheduled run: append-only, retention, logged
 #   immich-backup.sh --once --dest DIR --scope photos|db|both [--mirror]
 #                                                     one-time run to DIR, output on the terminal
@@ -5298,7 +5304,7 @@ TIMEREOF
     fi
 
     echo ""
-    info "Manage it anytime:  federver → i  (Backup - Scheduled: Status / Run now / Remove)"
+    info "Manage it anytime:  federver → 9  (Backup - Scheduled: Status / Run now / Remove)"
     info "View log:           tail $_IMMICH_BACKUP_LOG"
 }
 
@@ -5307,7 +5313,7 @@ TIMEREOF
 _immich_backup_run() {
     if [ ! -x "$_IMMICH_BACKUP_BIN" ]; then
         warn "No scheduled Immich backup is configured yet."
-        info "Set one up first: federver → i → Backup - Scheduled - Set up  (or federver → 14 → 6)."
+        info "Set one up first: federver → 9 → Backup - Scheduled - Set up  (or federver → 16 → 6)."
         return 0
     fi
     if ! sudo -v; then
@@ -5329,7 +5335,7 @@ _immich_backup_run() {
 }
 
 # Immich-backup-only status (Option C): report just THIS backup's schedule and
-# recent runs, then point to federver → 14 → 1 for the full server job list —
+# recent runs, then point to federver → 16 → 1 for the full server job list —
 # no dumping of unrelated cron jobs here. The backup can be scheduled two ways,
 # detected by BEHAVIOUR (what the job runs) not by a fixed name:
 #   • systemd timer  immich-backup.timer   (federver-managed, the modern path)
@@ -5363,7 +5369,7 @@ _immich_backup_status() {
         last_log_run=$(grep -E 'Backup (complete|FAILED)' "$_IMMICH_BACKUP_LOG" 2>/dev/null | tail -1 | sed 's/: Backup.*//')
     fi
 
-    # Same table styling as federver → 14 → 1 (_sync_show_status): one BLUE rule,
+    # Same table styling as federver → 16 → 1 (_sync_show_status): one BLUE rule,
     # a BOLD header, and the identical %-20s %-18s %-16s %-10s %s column widths —
     # so this Immich-only view reads as the same "clean status" the fleet view does.
     local RULE="━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -5439,17 +5445,17 @@ _immich_backup_status() {
     if [ "$mechanism" != "timer" ] && [ "$mechanism" != "cron" ]; then
         echo ""
         if [ "$cron_checked" -eq 1 ]; then
-            info "Re-enable:  Backup → Scheduled - Set up  (federver → i → Backup - Scheduled - Set up, or federver → 14 → 6)."
+            info "Re-enable:  Backup → Scheduled - Set up  (federver → 9 → Backup - Scheduled - Set up, or federver → 16 → 6)."
         else
             info "Verify by hand:  sudo crontab -l | grep -i immich"
-            info "Set up the schedule:  Backup → Scheduled - Set up  (federver → i → Backup - Scheduled - Set up, or federver → 14 → 6)."
+            info "Set up the schedule:  Backup → Scheduled - Set up  (federver → 9 → Backup - Scheduled - Set up, or federver → 16 → 6)."
         fi
     fi
 
     # Option C: this screen is Immich-only. The full list of everything scheduled
     # on the server lives in its own view — point there instead of duplicating it.
     echo ""
-    echo -e "  ${DIM}▸ Other scheduled jobs on this server → federver → 14 → 1${NC}"
+    echo -e "  ${DIM}▸ Other scheduled jobs on this server → federver → 16 → 1${NC}"
 }
 
 # Remove the schedule (timer + service + script). Leaves existing backup files
@@ -5521,14 +5527,14 @@ _immich_backup_remove() {
     cron_left=$(_immich_cron_lines) || { fail "Removed, but could not re-read root's crontab to confirm."; return 1; }
     if [ -f "$_IMMICH_UNIT_DIR/immich-backup.timer" ] || [ -e "$_IMMICH_BACKUP_BIN" ] || [ -n "$cron_left" ]; then
         fail "Removal did not complete — the schedule may still be active."
-        info "Check it: federver → i → Backup - Scheduled - Status."
+        info "Check it: federver → 9 → Backup - Scheduled - Status."
         return 1
     fi
     ok "Scheduled Immich backup removed. Backup files left intact."
 }
 
-# Management submenu for the scheduled backup, used by federver → 14 → 6.
-# (federver → i lists the same four actions flat and calls step_immich_backup /
+# Management submenu for the scheduled backup, used by federver → 16 → 6.
+# (federver → 9 lists the same four actions flat and calls step_immich_backup /
 # _immich_backup_status / _immich_backup_run / _immich_backup_remove directly;
 # both drive the same single schedule.)
 # `|| true` on each action: a step returning 2 (Back) must not abort under set -e.
@@ -5716,7 +5722,7 @@ DISKEOF
 _disk_check_existing_note() {
     if [ -e /usr/local/bin/disk-check.sh ]; then
         warn "A previously installed disk-check is still installed and unchanged - it may be outdated."
-        info "Re-run federver -> 14 -> 7 from the privcloud folder to replace it."
+        info "Re-run federver -> 16 -> 7 from the privcloud folder to replace it."
     else
         info "No disk-check is installed - nothing installed."
     fi
@@ -5900,7 +5906,7 @@ step_disk_monitor() {
     echo "$dry_out" | sed 's/^/    /'
     if (( dry_rc == 4 )); then
         fail "The monitor would be blind (see above) - disk-check NOT installed."
-        info "Run this from the repo checkout that holds your .env (federver -> 14 -> 7, or ~/privcloud/setup.sh on the server)."
+        info "Run this from the repo checkout that holds your .env (federver -> 16 -> 7, or ~/privcloud/setup.sh on the server)."
         _disk_check_existing_note
         return 1
     elif (( dry_rc != 0 && dry_rc != 1 )); then
@@ -7221,7 +7227,7 @@ _sync_show_status() {
         [[ -e /usr/local/bin/disk-check.sh ]]    && echo disk-check  # root 0700: -e, not -x
         true
     ' 2>/dev/null) || server_scripts=""
-    # immich-backup migrated from cron to systemd timer (federver → 14 → 6).
+    # immich-backup migrated from cron to systemd timer (federver → 16 → 6).
     # If the timer is present, prefer its OnCalendar over any legacy cron line.
     # Read OnCalendar via `systemctl cat` — `systemctl show -p OnCalendar` is
     # always empty (it isn't a show property), which is why this used to blank.
@@ -9021,7 +9027,7 @@ _smb_apply() {
     if (( ! up )); then
         echo -e "  ${RED}✗ FILE SHARING IS NOT RUNNING.${NC} The old container is gone and the new one did not come up."
         sudo docker logs --tail 20 samba 2>&1
-        echo -e "  ${BOLD}Recover:${NC} run ${BOLD}federver -> 16${NC} again (it reuses your saved folders and password), or ${BOLD}Start${NC} if the menu offers it."
+        echo -e "  ${BOLD}Recover:${NC} run ${BOLD}federver -> 15${NC} again (it reuses your saved folders and password), or ${BOLD}Start${NC} if the menu offers it."
         return 1
     fi
     if (( was_stopped )); then
@@ -9102,7 +9108,7 @@ _smb_summary_render() { # summary-line [devices-lines]   (the (s) Status section
                      done <<<"${2:-}" ;;
         stopped-off) echo -e "    ${RED}✗ stopped (autostart off)${NC}" ;;
         stopped)     echo -e "    ${RED}✗ not running${NC}" ;;
-        *)           echo -e "    ${DIM}not set up (federver → 16)${NC}" ;;
+        *)           echo -e "    ${DIM}not set up (federver → 15)${NC}" ;;
     esac
 }
 
@@ -9182,7 +9188,7 @@ _smb_wait_phone() {
         fi
     done
     warn "No phone connected within the wait. Common causes: Tailscale is off on the phone, or the password was typed wrong."
-    info "Try later: federver -> 16 shows connected devices."
+    info "Try later: federver -> 15 shows connected devices."
 }
 
 # ── set up ──
@@ -9496,16 +9502,16 @@ else
             6)  run_step "[6] Manage firewall" "_on_server step_firewall" ;;
             7)  run_step "[7] Manage services" step_services_wrapper ;;
             8)  run_step "[8] Manage Tailscale" step_tailscale ;;
-            9)  run_step "[9] Manage WireGuard" "_on_server step_wireguard" ;;
-            10) run_step "[10] Manage AdGuard" "_on_server step_adguard" ;;
-            11) run_step "[11] Manage storage" "_on_server step_storage" ;;
-            12) run_step "[12] Manage Syncthing" step_syncthing ;;
-            13) run_step "[13] Manage remote desktop" "_on_server step_remotedesktop" ;;
-            14) run_step "[14] Manage sync and backups" step_manage_sync ;;
-            15) run_step "[15] Save to pass" step_save_to_pass ;;
-            16) run_step "[16] Connect phone (Files app)" "_on_server step_samba" ;;
+            9)  run_step "[9] Manage Immich" step_immich ;;
+            10) run_step "[10] Manage WireGuard" "_on_server step_wireguard" ;;
+            11) run_step "[11] Manage AdGuard" "_on_server step_adguard" ;;
+            12) run_step "[12] Manage storage" "_on_server step_storage" ;;
+            13) run_step "[13] Manage Syncthing" step_syncthing ;;
+            14) run_step "[14] Manage remote desktop" "_on_server step_remotedesktop" ;;
+            15) run_step "[15] Connect phone (Files app)" "_on_server step_samba" ;;
+            16) run_step "[16] Manage sync and backups" step_manage_sync ;;
+            17) run_step "[17] Save to pass" step_save_to_pass ;;
             s)  run_step "[s] Status" step_status ;;
-            i)  run_step "[i] Manage Immich" step_immich ;;
             p)  run_step "[p] Power" step_power ;;
             r)  run_step "[r] Reset password" "_on_server step_reset_password" ;;
             a)  run_step "Run all (3-7)" "_on_server run_all" ;;

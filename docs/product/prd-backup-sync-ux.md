@@ -84,10 +84,10 @@ You confirm by *seeing* the shape, not by decoding slashes.
   immediately; files extract owned by the user, the source stays root-owned, and nothing
   privileged persists. This matches the server → server direction, which was already
   privileged via `sudo rsync` over `ssh -t`.
-- Fixes all six flows at once: the four one-time backup directions (`federver` → 14 → 5,
+- Fixes all six flows at once: the four one-time backup directions (`federver` → 16 → 5,
   incl. the new **server → server**) and both scheduled upload/download jobs
-  (`federver` → 14 → 2) — so saved cron commands match what the tree showed.
-- **Immich backup** (`federver` → i; was `privcloud` → 9), a separate program with no folder-vs-contents
+  (`federver` → 16 → 2) — so saved cron commands match what the tree showed.
+- **Immich backup** (`federver` → 9; was `privcloud` → 9), a separate program with no folder-vs-contents
   ambiguity (fixed `privcloud-backup/` layout), gets the same destination tree in its confirm
   for visual consistency. (Its backup model has since grown a one-time/scheduled split and a
   no-downtime path — see [prd-immich-backup](prd-immich-backup.md); the tree-preview UX here is
@@ -100,4 +100,4 @@ You confirm by *seeing* the shape, not by decoding slashes.
 - Single-**file** sources still pass through the callsites' `src/` line, which appends a
   slash to a filename; that path predates this work and is out of scope here.
 - `federver` and `privcloud` are separate scripts; the helper is duplicated in spirit (the
-  Immich tree is hand-written) rather than shared, since `privcloud`'s layout is fixed. (`privcloud` has since been merged into `setup.sh` as federver → i.)
+  Immich tree is hand-written) rather than shared, since `privcloud`'s layout is fixed. (`privcloud` has since been merged into `setup.sh` as federver → 9.)

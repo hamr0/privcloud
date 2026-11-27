@@ -1,4 +1,4 @@
-# PRD: Immich backup — one-time + scheduled, no downtime (`federver` → i; was `privcloud` → 9)
+# PRD: Immich backup — one-time + scheduled, no downtime (`federver` → 9; was `privcloud` → 9)
 
 Status: **Shipped (v0.9.0).**
 
@@ -51,8 +51,8 @@ privcloud → 9  Backup  (Immich photos + database)
 **Flat menu (v0.9.13).** The one-time backup and the four scheduled actions sit at one level —
 no `One time` / `Scheduled` chooser → submenu drill-down. Options 2–5 delegate straight to
 `setup.sh`'s individual steps (`step_immich_backup`, `_immich_backup_status`, `_immich_backup_run`,
-`_immich_backup_remove`) — the same functions `federver` → 14 → 6 drives — so there's no extra
-submenu and both tools still manage one schedule. Layout mirrors `federver` → 14's aligned
+`_immich_backup_remove`) — the same functions `federver` → 16 → 6 drives — so there's no extra
+submenu and both tools still manage one schedule. Layout mirrors `federver` → 16's aligned
 `←`-hint style.
 
 ### One time
@@ -99,14 +99,14 @@ truth). Each run is **full** (database + photos), no downtime:
 
 ### Managing it
 
-`federver` → 14 → 6 opens the shared submenu (`step_immich_backup_menu` in `setup.sh`); on the
+`federver` → 16 → 6 opens the shared submenu (`step_immich_backup_menu` in `setup.sh`); on the
 `privcloud` side the same four actions are flattened into the top-level Backup menu (v0.9.13).
 Either way they run the same set: **Set up / change**, **Status**, **Run now** (background), and
 **Remove** (deletes timer/service/script via `_immich_backup_remove`, **leaving backup files
 intact**). All actions live in `setup.sh` so both entry points are single-source.
 
 **Status format (v0.9.13).** `_immich_backup_status` renders in the **same table layout** as the
-fleet view `federver` → 14 → 1 (`_sync_show_status`): a **Scheduled tasks** table
+fleet view `federver` → 16 → 1 (`_sync_show_status`): a **Scheduled tasks** table
 (Name · Schedule · When · Type · Note — next-run and enabled-state ride in Note) and a **Last runs**
 table (one row per run, newest last, up to 8 — `✓ ok` / `✗ failed`, no log dump). It stays
 Immich-only and points to `14 → 1` for everything else on the server. Works whether the backup runs
@@ -136,7 +136,7 @@ a single failure loses both copies and asks to confirm.
 - **Status unchanged.** The shared script keeps the exact `Backup complete` success phrase, so
   `federver`'s Last-runs table renders without changes.
 - **Immich-only, cron-aware Status (v0.9.10).** The Status screen reports only the Immich backup
-  (full server-job list lives at `federver → 14 → 1`). It reads the timer's schedule via
+  (full server-job list lives at `federver → 16 → 1`). It reads the timer's schedule via
   `systemctl cat` — `systemctl show -p OnCalendar` is not a real property and always returned empty
   (the old `Schedule: ?`). It also detects a backup scheduled via **root cron**, matching what the
   line *runs* (`immich-backup.sh` / `immich-db` / `immich-backup.log`) rather than the word "immich",

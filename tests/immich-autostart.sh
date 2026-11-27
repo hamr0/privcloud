@@ -1,6 +1,6 @@
 #!/bin/bash
-# Tests for the Immich autostart rule in setup.sh: after step_immich_start /
-# step_immich_update brings the stack up, every container of the stack ends at
+# Tests for the Immich autostart rule in setup.sh: after step_immich_update
+# brings Immich up (Start is federver -> 7 now), every container of the stack ends at
 # restart policy unless-stopped (compose's `always` must not survive, and a
 # container left at `no` by an earlier stop must be re-armed), and running ones
 # stay up. The policy goes through _svc_power (set, start, read back).
@@ -19,11 +19,12 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nIMMICH_VERSION=release\n'
 # The step functions come straight from setup.sh; run.sh is the --run entry.
 {
   printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC=\nDRY_RUN=0\n_FV_SELF=%q\n' "$T/app/run.sh"
-  for f in ok fail info warn _env_get _shq _svc_sudo_guard _svc_power_body _svc_power _immich_compose _immich_up \
+  for f in ok fail info warn _env_get _shq _svc_docker_fn _svc_power_body _svc_power _immich_compose _immich_up \
            _immich_urls _immich_needs_selinux _immich_fix_permissions _immich_docker_group \
-           _immich_ensure_docker _immich_keep_autostart _immich_need_env step_immich_start step_immich_update; do
+           _immich_ensure_docker _immich_keep_autostart _immich_need_env step_immich_update; do
     extract_fn "$f" "$SRC"
   done
+  grep -m1 "^_IMMICH_SERVICES=" "$SRC"
   printf '_IMMICH_ENV=%q\n_IMMICH_COMPOSE=%q\n' "$T/app/.env" "$T/app/docker-compose.yml"
   printf '[ "$1" = --run ] && { "$2"; exit $?; }\n'
 } > "$T/app/run.sh"
@@ -43,9 +44,12 @@ if [ "$1" = compose ]; then
   case "$1" in
     version) exit 0 ;;
     pull) : > "$STATE_PULLED"; exit 0 ;;
-    up) : > "$STATE_UP"; for d in "$C"/*/; do [ -d "$d" ] && echo true > "$d/running"; done; exit 0 ;;
-    ps) [ -n "$FAIL_PS" ] && exit 1
-        for d in "$C"/*/; do [ -d "$d" ] && { cat "$d/name"; echo; }; done; exit 0 ;;
+    up) shift; [ "$1" = -d ] && shift   # `up -d [SERVICE...]`: names given -> only those start
+        : > "$STATE_UP"; for d in "$C"/*/; do [ -d "$d" ] || continue
+          [ $# = 0 ] || [[ " $* " == *" $(cat "$d/name") "* ]] || continue; echo true > "$d/running"; done; exit 0 ;;
+    ps) [ -n "$FAIL_PS" ] && exit 1; shift   # `ps -aq [SERVICE...]`: names given -> only those (container name = service name here)
+        for d in "$C"/*/; do [ -d "$d" ] || continue; n=$(cat "$d/name")
+          [ $# -le 1 ] || [[ " $* " == *" $n "* ]] || continue; echo "$n"; done; exit 0 ;;
   esac
   exit 0
 fi
@@ -78,49 +82,57 @@ run() { OUT=$("$@" 2>&1 </dev/null); RC=$?; }
 runy() { OUT=$(echo y | "$@" 2>&1); RC=$?; }
 RUN="$T/app/run.sh --run"
 
-reset; mk web false no; mk db true always
-run $RUN step_immich_start
-check 1a "start: a stopped policy=no container ends unless-stopped" '[ $RC = 0 ] && [ "$(st web)" = "true unless-stopped" ]'
-check 1b "start: compose 'always' becomes unless-stopped, container stays running" '[ "$(st db)" = "true unless-stopped" ]'
-check 1c "start ran under the sg docker re-run (docker was unusable before it)" 'grep -q "docker update" "$DOCKER_LOG"'
+reset; mk immich-server false no; mk database true always
+runy $RUN step_immich_update
+check 1a "update: a stopped policy=no container ends unless-stopped" '[ $RC = 0 ] && [ "$(st immich-server)" = "true unless-stopped" ]'
+check 1b "update: compose 'always' becomes unless-stopped, container stays running" '[ "$(st database)" = "true unless-stopped" ]'
+check 1c "update ran under the sg docker re-run (docker was unusable before it)" 'grep -q "docker update" "$DOCKER_LOG"'
 
-reset; mk web true unless-stopped
-run $RUN step_immich_start
-check 2a "start: already unless-stopped stays as is" '[ $RC = 0 ] && [ "$(st web)" = "true unless-stopped" ]'
+reset; mk immich-server true unless-stopped
+runy $RUN step_immich_update
+check 2a "update: already unless-stopped stays as is" '[ $RC = 0 ] && [ "$(st immich-server)" = "true unless-stopped" ]'
 
-reset; mk web false no; export FAIL_UPDATE=1
-run $RUN step_immich_start
-check 3a "start: policy update fails -> warned (visible), start still reaches Waiting for Immich, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Could not set autostart"* ]] && [[ "$OUT" == *"Waiting for Immich"* ]]'
-reset; mk web false no; export FAIL_PS=1
-run $RUN step_immich_start
-check 3b "start: cannot list containers -> warned, continues, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Could not set autostart"* ]] && [[ "$OUT" == *"Waiting for Immich"* ]]'
-reset; mk web true always; export FAIL_UPDATE=1
+reset; mk immich-server false no; export FAIL_UPDATE=1
+runy $RUN step_immich_update
+check 3a "update: policy update fails -> warned (visible), still reaches Update applied, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Could not set autostart"* ]] && [[ "$OUT" == *"Update applied"* ]]'
+reset; mk immich-server false no; export FAIL_PS=1
+runy $RUN step_immich_update
+check 3b "update: cannot list containers -> warned, continues, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Could not set autostart"* ]] && [[ "$OUT" == *"Update applied"* ]]'
+reset; mk immich-server true always; export FAIL_UPDATE=1
 runy $RUN step_immich_update
 check 3c "update: policy update fails -> warned, still prints Update applied + prunes, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Could not set autostart"* ]] && [[ "$OUT" == *"Update applied"* ]] && grep -q "docker image prune" "$DOCKER_LOG"'
-reset; mk web false no
-run $RUN step_immich_start
-check 3d "start success path: no warning printed" '[ $RC = 0 ] && [[ "$OUT" != *"Could not set autostart"* ]]'
-
-reset; mk web true always; mk db false no
+reset; mk immich-server false no
 runy $RUN step_immich_update
-check 4a "update: applied update re-arms every container to unless-stopped" '[ $RC = 0 ] && [ "$(st web)" = "true unless-stopped" ] && [ "$(st db)" = "true unless-stopped" ] && [[ "$OUT" != *"Could not set autostart"* ]]'
+check 3d "update success path: no warning printed" '[ $RC = 0 ] && [[ "$OUT" != *"Could not set autostart"* ]]'
+
+reset; mk immich-server true always; mk database false no
+runy $RUN step_immich_update
+check 4a "update: applied update re-arms every container to unless-stopped" '[ $RC = 0 ] && [ "$(st immich-server)" = "true unless-stopped" ] && [ "$(st database)" = "true unless-stopped" ] && [[ "$OUT" != *"Could not set autostart"* ]]'
 
 # the read-back: a policy update that "succeeds" but does not stick is a warning, not a silent pass
-reset; mk web false no; export NOOP_UPDATE=1
-run $RUN step_immich_start
-check 5a "start: a policy that did not stick is caught by the read-back (warned, rc 0)" '[ $RC = 0 ] && [[ "$OUT" == *"Could not set autostart"* ]] && [ "$(st web)" = "true no" ]'
+reset; mk immich-server false no; export NOOP_UPDATE=1
+runy $RUN step_immich_update
+check 5a "update: a policy that did not stick is caught by the read-back (warned, rc 0)" '[ $RC = 0 ] && [[ "$OUT" == *"Could not set autostart"* ]] && [ "$(st immich-server)" = "true no" ]'
 
 # C: the tracked compose file is never edited, whatever SELinux says (it carries :Z, which docker ignores when SELinux is off)
 printf '#!/bin/bash\necho "${GE_MODE:-Permissive}"\n' > "$T/bin/getenforce"; chmod +x "$T/bin/getenforce"
 cp "$H/../docker-compose.yml" "$T/compose.orig"
 for mode in Enforcing Permissive Disabled; do
-  cp "$T/compose.orig" "$T/app/docker-compose.yml"; reset; mk web false no; export GE_MODE=$mode
-  run $RUN step_immich_start
-  check "6-$mode" "start with SELinux $mode: docker-compose.yml is byte-identical afterwards" '[ $RC = 0 ] && cmp -s "$T/app/docker-compose.yml" "$T/compose.orig" && [ ! -e "$T/app/docker-compose.yml.bak" ]'
+  cp "$T/compose.orig" "$T/app/docker-compose.yml"; reset; mk immich-server false no; export GE_MODE=$mode
+  runy $RUN step_immich_update
+  check "6-$mode" "update with SELinux $mode: docker-compose.yml is byte-identical afterwards" '[ $RC = 0 ] && cmp -s "$T/app/docker-compose.yml" "$T/compose.orig" && [ ! -e "$T/app/docker-compose.yml.bak" ]'
 done
-cp "$T/compose.orig" "$T/app/docker-compose.yml"; reset; mk web true always; export GE_MODE=Permissive
+cp "$T/compose.orig" "$T/app/docker-compose.yml"; reset; mk immich-server true always; export GE_MODE=Permissive
 runy $RUN step_immich_update
 check 6u "update with SELinux off: docker-compose.yml is byte-identical afterwards" '[ $RC = 0 ] && cmp -s "$T/app/docker-compose.yml" "$T/compose.orig"'
 check 6z "the committed compose file carries :Z on both Immich bind mounts" '[ "$(grep -c ":Z$" "$H/../docker-compose.yml")" = 2 ]'
+
+# D7: Update touches only Immich's four compose services, never the other containers
+reset; mk immich-server true always; mk database true always; mk navidrome false no; mk uptime-kuma true always
+runy $RUN step_immich_update
+SVC='immich-server immich-machine-learning redis database'
+check 7a "update: compose pull and up name exactly the four Immich services" '[ $RC = 0 ] && grep -q "compose .* pull --quiet $SVC\$" "$DOCKER_LOG" && grep -q "compose .* up -d $SVC\$" "$DOCKER_LOG"'
+check 7b "update: no compose pull/up/ps call without the service list" '! grep -E "compose .* (pull|up|ps)( |$)" "$DOCKER_LOG" | grep -vq "$SVC"'
+check 7c "update: a container stopped on purpose (navidrome, policy no) is not started or re-armed" '[ "$(st navidrome)" = "false no" ] && [ "$(st uptime-kuma)" = "true always" ] && [ "$(st database)" = "true unless-stopped" ]'
 
 check_total

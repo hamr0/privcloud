@@ -22,7 +22,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T
 rw() { sed -e "s|/usr/local/bin/immich-backup.sh|$BIN|g" -e "s|/var/log/immich-backup.log|$LOG|g" \
            -e "s|/etc/systemd/system/|$UNITS/|g" -e "s|/etc/immich-backup.conf|$CONF|g"; }
 fns() { local f; for f in "$@"; do extract_fn "$f" "$SRC" | rw; done; }
-FNS="ok fail info warn _env_get _drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove _immich_docker_group _immich_compose step_immich_backup_once _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
+FNS="ok fail info warn _env_get _drive_verdict _backup_dest_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove _immich_docker_group _immich_compose step_immich_backup_once _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
 mkrun() {  # rebuild run.sh from the CURRENT $SRC (functions that do not exist yet are skipped)
   {
     printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC= BLUE=\nDRY_RUN=0\nMIRROR_WIPE_MIN=1000\n_FV_SELF=%q\n' "$T/app/setup.sh"
@@ -324,5 +324,33 @@ bash "$BIN" --dest "$ONE" >/dev/null 2>&1; r4=$?
 check 7af "script-level: --once without --dest, a bad scope, a missing destination, --dest without --once all fail (64/64/1/64)" '[ $r1 = 64 ] && [ $r2 = 64 ] && [ $r3 = 1 ] && [ $r4 = 64 ]'
 one_fresh; setup_sched; runbk; echo stray > "$DEST/immich/photos/stray"; runbk
 check 7ag "scheduled path: the rsync call of a scheduled run never contains --delete, the stray at the destination stays" '! grep -q -- --delete "$RS_LOG" && [ -e "$DEST/immich/photos/stray" ]'
+
+# ── 8  the destination must be on a mounted drive (6c) ─────────────────────
+# _DRIVE_ROOTS is $T/mnt in this sandbox. findmnt stub: ok = a /dev mount at $T/mnt/usb,
+# bare = only /, stub = an autofs mount (source is not a /dev device).
+stub_findmnt ok "$T/mnt/usb" /dev/sdb1 bare / /dev/sda2 stub "$T/mnt/usb" systemd-1
+rm -rf "$T/mnt"; mkdir -p "$T/mnt/usb/old" "$T/mnt/bare/sub"; echo x > "$T/mnt/usb/old/f"
+sched_to() {  # a scheduled script (the real generator) whose configured destination is $1
+  fresh; printf 'REPO_DIR=%s\nBACKUP_DIR=%s\nRETENTION_DAYS=7\n' "$T/app" "$1" > "$CONF"
+  bash -c "source $T/app/run.sh; _immich_backup_script $CONF $LOG" > "$BIN"; chmod +x "$BIN"
+}
+sched_to "$T/mnt/usb/old"; FM_MODE=ok runbk
+check 8a "destination on a /dev mount: runs, files written" '[ $RC = 0 ] && [ -f "$T/mnt/usb/old/immich/photos/library/u1/a.jpg" ]'
+sched_to "$T/mnt/bare/sub"; FM_MODE=bare runbk
+check 8b "destination under /mnt on a bare system-disk folder: refused, non-zero, nothing created, log line" '[ $RC != 0 ] && [[ "$LOGTXT" == *"Backup SKIPPED - destination $T/mnt/bare/sub is not on a mounted drive (unmounted), nothing written"* ]] && [ ! -e "$T/mnt/bare/sub/immich" ] && [ ! -s "$RS_LOG" ] && tail -n 1 "$LOG" | grep -q "Backup FAILED"'
+sched_to "$T/mnt/usb/new/deeper"; FM_MODE=ok runbk
+check 8c "destination not yet existing under a mounted drive: runs (nearest existing ancestor is checked)" '[ $RC = 0 ] && [ -f "$T/mnt/usb/new/deeper/immich/photos/library/u1/a.jpg" ]'
+sched_to "$T/mnt/gone/bk"; FM_MODE=bare runbk
+check 8d "destination not yet existing under an unmounted root: refused, the missing folders are not created" '[ $RC != 0 ] && [[ "$LOGTXT" == *"Backup SKIPPED"* ]] && [ ! -e "$T/mnt/gone" ]'
+sched_to "$T/mnt/usb/old"; rm -rf "$T/mnt/usb/old/immich"; FM_MODE=stub runbk
+check 8e "autofs stub mount: refused, non-zero, nothing written" '[ $RC != 0 ] && [[ "$LOGTXT" == *"Backup SKIPPED"* ]] && [ ! -e "$T/mnt/usb/old/immich" ]'
+sched_to "$DEST"; FM_MODE=bare runbk
+check 8f "destination outside the drive roots: runs as before" '[ $RC = 0 ] && [ -f "$DEST/immich/photos/library/u1/a.jpg" ]'
+fresh; FM_MODE=bare go "\n$T/mnt/bare/sub\n\n\n" step_immich_backup_once
+check 8g "one-time: the same refusal before Start is asked; nothing copied, rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"Backup SKIPPED - destination $T/mnt/bare/sub is not on a mounted drive (unmounted)"* ]] && [[ "$OUT" != *"Start backup"* ]] && [ ! -s "$RS_LOG" ] && [ ! -e "$T/mnt/bare/sub/immich" ]'
+sched_to "$T/mnt/bare/sub"; FM_MODE=bare runbk; go "" _immich_backup_status
+check 8h "Status shows the refusal reason from the log, run listed as failed" '[[ "$OUT" == *"Last run: Backup SKIPPED - destination $T/mnt/bare/sub is not on a mounted drive (unmounted)"* && "$OUT" == *"✗ failed"* ]]'
+sched_to "$T/mnt/usb/old"; FM_MODE=ok runbk; go "" _immich_backup_status
+check 8i "Status after a good run: no refusal line" '[[ "$OUT" != *"Last run: Backup SKIPPED"* ]]'
 
 check_total

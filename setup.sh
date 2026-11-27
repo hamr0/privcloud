@@ -4446,6 +4446,12 @@ step_immich_backup_once() {
         return 1
     fi
 
+    local dv; dv=$(_backup_dest_verdict "$dest")
+    if [[ "$dv" != ok ]]; then
+        fail "Backup SKIPPED - destination $dest is not on a mounted drive ($dv), nothing written"
+        return 1
+    fi
+
     local backup_dir="$dest/immich"
     local avail
     avail="$(df -h "$dest" 2>/dev/null | awk 'NR==2{print $4}')"
@@ -4973,6 +4979,22 @@ _immich_backup_conf() {
     printf 'REPO_DIR=%s\nBACKUP_DIR=%s\nRETENTION_DAYS=%s\n' "$1" "$2" "$3"
 }
 
+# _backup_dest_verdict <dir> prints ok when a backup may write to <dir>, else the _drive_verdict
+# word (unmounted, unknown, ...) of the mount it would land on. Under _DRIVE_ROOTS the nearest
+# EXISTING ancestor must be on a real mount (ok, or empty = a fresh drive), so an unplugged
+# drive's folder is refused instead of filling the system disk; a root itself has no mount
+# below it. A destination outside _DRIVE_ROOTS is the user's explicit choice: ok.
+_backup_dest_verdict() {
+    local d=$1 r a v drive=""
+    for r in $_DRIVE_ROOTS; do [[ "$d" == "$r"/* ]] && drive=1; done
+    [[ -n "$drive" ]] || { echo ok; return 0; }
+    a=$d
+    while [[ ! -e "$a" ]]; do a=$(dirname -- "$a"); done
+    for r in $_DRIVE_ROOTS; do [[ "$a" == "$r" ]] && { echo unmounted; return 0; }; done
+    v=$(_drive_verdict "$a")
+    case $v in ok|empty) echo ok ;; *) echo "$v" ;; esac
+}
+
 # Print the backup script (stdout). $1 = config file path, $2 = log file path (both baked with
 # %q; every other value is read at run time). The drive check and the .env reader are the
 # same functions setup.sh uses, shipped with declare -f.
@@ -4980,7 +5002,7 @@ _immich_backup_script() {
     printf '#!/bin/bash\n# Format: 2\nCONF=%q\nLOG=%q\n' "$1" "$2"
     declare -p _DRIVE_ROOTS
     printf 'EXCLUDES=(%s)\n' "$(printf '%q ' "${_IMMICH_EXCLUDES[@]}")"
-    declare -f _drive_verdict _env_get
+    declare -f _drive_verdict _backup_dest_verdict _env_get
     cat <<'BACKUPEOF'
 # Full Immich backup: database (online pg_dump) + photo originals (live rsync).
 # Neither step stops the stack: pg_dumpall is transactionally consistent and
@@ -5025,6 +5047,14 @@ if [ "$once" = 0 ]; then
     BACKUP_DIR=$(_env_get BACKUP_DIR "$CONF")
     RETENTION_DAYS=$(_env_get RETENTION_DAYS "$CONF")
     case "$RETENTION_DAYS" in ''|*[!0-9]*) echo "$(date): bad RETENTION_DAYS in $CONF"; rc=1; finish ;; esac
+fi
+# Never write a photo library onto the system disk because the drive is unplugged.
+if [ -n "$BACKUP_DIR" ]; then
+    v=$(_backup_dest_verdict "$BACKUP_DIR")
+    if [ "$v" != ok ]; then
+        echo "$(date): Backup SKIPPED - destination $BACKUP_DIR is not on a mounted drive ($v), nothing written"
+        rc=5; finish
+    fi
 fi
 if [ -z "$BACKUP_DIR" ] || { [ "$once" = 1 ] && [ ! -d "$BACKUP_DIR" ]; }; then
     echo "$(date): backup destination missing ($BACKUP_DIR)"; rc=1; finish
@@ -5416,6 +5446,15 @@ _immich_backup_status() {
         done
     else
         printf "  %-20s %-20s ${DIM}%s${NC}\n" "immich-backup" "never" "—"
+    fi
+
+    # A refused destination is logged as SKIPPED just before its FAILED line: say why.
+    local skip_line
+    skip_line=$(grep -E 'Backup (SKIPPED|complete|FAILED)' "$_IMMICH_BACKUP_LOG" 2>/dev/null | tail -n 2)
+    if [[ "$skip_line" == *"Backup SKIPPED"*$'\n'*"Backup FAILED"* ]]; then
+        skip_line=${skip_line%%$'\n'*}
+        echo ""
+        echo -e "  ${RED}Last run: Backup${skip_line#*: Backup}${NC}"
     fi
 
     # For the "off"/"unreadable" states, keep the actionable guidance the table

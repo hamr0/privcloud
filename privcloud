@@ -121,6 +121,22 @@ env_get() {
   grep "^${1}=" "$ENV_FILE" 2>/dev/null | cut -d'=' -f2-
 }
 
+# Set KEY=VAL in .env: literal match on the whole key (values go through ENVIRON,
+# so | & \ need no escaping), appended when missing, every other line untouched.
+# The temp file is made 0600 and replaces .env, so the result is always 0600.
+env_set() {
+  local tmp
+  tmp="$(umask 077; mktemp "$ENV_FILE.XXXXXX")" || return 1
+  if K="$1" V="$2" awk 'BEGIN { k = ENVIRON["K"]; v = ENVIRON["V"]; n = length(k) + 1 }
+       !done && substr($0, 1, n) == k "=" { print k "=" v; done = 1; next }
+       { print }
+       END { if (!done) print k "=" v }' "$ENV_FILE" > "$tmp"; then
+    mv "$tmp" "$ENV_FILE"
+  else
+    rm -f "$tmp"; return 1
+  fi
+}
+
 patch_selinux() {
   if needs_selinux; then
     sed -i.bak \
@@ -547,10 +563,19 @@ cmd_config() {
     db_pass="privcloud_$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)"
   fi
 
-  # Holds the DB password — create it 0600 from the start (umask in a subshell,
-  # no world-readable window) rather than create-then-chmod.
-  ( umask 077
-    cat > "$ENV_FILE" << EOF
+  if [ -f "$ENV_FILE" ]; then
+    # Existing .env: touch only what this command asks for; MEDIA/MUSIC/FILES
+    # and every other key stay as they are. The password changes only when it
+    # is still the .env.example placeholder (the documented flow).
+    env_set UPLOAD_LOCATION "$upload_loc"
+    env_set DB_DATA_LOCATION "$db_loc"
+    [ "$db_pass" = "$(env_get DB_PASSWORD 2>/dev/null || echo "")" ] || env_set DB_PASSWORD "$db_pass"
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
+  else
+    # First time: holds the DB password — create it 0600 from the start (umask
+    # in a subshell, no world-readable window) rather than create-then-chmod.
+    ( umask 077
+      cat > "$ENV_FILE" << EOF
 UPLOAD_LOCATION=${upload_loc}
 DB_DATA_LOCATION=${db_loc}
 IMMICH_VERSION=v3
@@ -558,10 +583,8 @@ DB_PASSWORD=${db_pass}
 DB_USERNAME=postgres
 DB_DATABASE_NAME=immich
 EOF
-  )
-  # Belt-and-suspenders: also tighten an already-existing .env (truncating a
-  # pre-existing file with `>` keeps its old, possibly looser, permissions).
-  chmod 600 "$ENV_FILE" 2>/dev/null || true
+    )
+  fi
 
   green "Config saved."
   echo "  Photos:   $upload_loc"

@@ -108,12 +108,12 @@ check 1h "padded answer (\"delete \") is not the exact word: append" 'copied && 
 mk; run "${ONE}delete\ny\n$Y" LOCALCMD
 check 2a "delete + y: extras removed, source files copied" 'copied && extras_gone'
 check 2b "preview header names the count and destination" '[[ "$OUT" == *"⚠ 3 files would be deleted at $T/d:"* ]]'
-check 2c "preview lists the names before asking" 'PRE=${OUT%%Delete these*}; [[ "$PRE" == *"gone"* && "$PRE" == *"sub/old"* && "$PRE" == *"we ird"* ]]'
+check 2c "preview shows the folder summary before asking" 'PRE=${OUT%%Delete these*}; [[ "$PRE" == *"(top level)  2 files"* && "$PRE" == *"sub/  1 file"* && "$PRE" == *"Full list: "* ]]'
 check 2d "confirm wording" '[[ "$OUT" == *"Delete these 3 files at the destination? [y/N]: "* ]]'
 check 2e "success line counts the deletions" '[[ "$OUT" == *"✓ Mirror complete - 3 deleted, destination matches source."* ]]'
 mk; for i in 1 2 3 4 5 6 7; do echo x > "$T/d/extra$i"; done
 run "${ONE}delete\ny\n$Y" LOCALCMD
-check 2f "more than 5 deletions: 5 names then '... and M more'" '[[ "$OUT" == *"⚠ 10 files would be deleted"* && "$OUT" == *"... and 5 more"* ]]'
+check 2f "10 deletions: one (top level) group, counted not listed" '[[ "$OUT" == *"⚠ 10 files would be deleted"* && "$OUT" == *"(top level)  9 files"* ]]'
 
 mk; run "" bash -c 'source "$T/fn.sh"; c=$(_mirror_dry_cmd "rsync -az $(_shq "$P_SRC/") $(_shq "$P_DST/")"); bash -c "$c"'
 check 2g "dry-run command works for an rsync line without the standard flag prefix" '[ "$RC" = 0 ] && [[ "$OUT" == *"del.|gone"* ]] && extras_kept'
@@ -167,7 +167,7 @@ mkempty; run "${ONE}delete\nn\n$Y" LOCALCMD
 check 5e "empty-folders-only + n: nothing removed" 'empties_kept && [[ "$OUT" == *"Cancelled - nothing changed."* ]]'
 mkempty; mkdir "$T/d/e3" "$T/d/e4" "$T/d/e5" "$T/d/e6" "$T/d/e7"
 run "${ONE}delete\nn\n$Y" LOCALCMD
-check 5f "more than 5 empty folders: 5 names then '... and M more'" '[[ "$OUT" == *"⚠ 7 empty folders would be removed"* && "$OUT" == *"... and 2 more"* ]]'
+check 5f "more than 5 empty folders: 5 groups then '... and M more folders'" '[[ "$OUT" == *"⚠ 7 empty folders would be removed"* && "$OUT" == *"... and 2 more folders"* ]]'
 mkempty; rm -rf "$T/d/e2"
 run "${ONE}delete\nn\n$Y" LOCALCMD
 check 5g "one empty folder is singular" '[[ "$OUT" == *"⚠ 1 empty folder would be removed at $T/d:"* && "$OUT" == *"Delete these 1 empty folder at the destination? [y/N]: "* ]]'

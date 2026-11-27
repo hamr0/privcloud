@@ -5159,14 +5159,23 @@ _mirror_preview() {
     fi
     # Files are listed by name; a directory counts only when no deleted file
     # sits under it (those go with their files) = an empty folder.
-    local counts
-    counts=$(awk '/^del\.\|/ { p = substr($0, 6)
+    # One awk pass over the list file: totals, then one G line per top-level
+    # folder (count, files, empty folders, whole-folder flag, name). A folder is
+    # "whole" when its own "name/" entry is in the list (rsync prints it when
+    # the directory goes entirely).
+    local sum
+    sum=$(awk 'function top(x,   j) { j = index(x, "/"); return j ? substr(x, 1, j) : "(top level)" }
+        /^del\.\|/ { p = substr($0, 6)
             if (p ~ /\/$/) { d[++nd] = p; next }
-            nf++
+            nf++; t = top(p); cnt[t]++; seen[t] = 1
             while ((i = match(p, /\/[^\/]*$/)) > 0) { p = substr(p, 1, i - 1); if ((p "/") in has) break; has[p "/"] = 1 } }
-        END { for (i = 1; i <= nd; i++) if (!(d[i] in has)) ne++
-              print nf + 0, ne + 0 }' "$list")
-    read -r nf nd <<<"$counts"
+        END { for (i = 1; i <= nd; i++) { t = top(d[i]); seen[t] = 1
+                if (!(d[i] in has)) { ne++; em[t]++ }
+                if (index(d[i], "/") == length(d[i])) whole[t] = 1 }
+              print "T", nf + 0, ne + 0
+              for (t in seen) { if (t in whole) nw++; printf "G %d %d %d %d %s\n", cnt[t] + em[t], cnt[t] + 0, em[t] + 0, (t in whole), t }
+              print "W", nw + 0 }' "$list")
+    read -r _ nf nd <<<"$(grep '^T ' <<<"$sum")"
     _mirror_n=$((nf + nd))
     if (( _mirror_n == 0 )); then rm -f "$list"; else
         local old=()   # keep only the newest 5 lists
@@ -5178,18 +5187,26 @@ _mirror_preview() {
         what="${nf} file$([[ $nf == 1 ]] || echo s)"
         (( nd > 0 )) && what+=" (+ ${nd} empty folder$([[ $nd == 1 ]] || echo s))"
         echo -e "  ${YELLOW}⚠ ${what} would be deleted at ${dest}:${NC}"
-        sed -n 's/^del\.|//p' "$list" | awk '!/\/$/ && ++n <= 5' | sed 's/[[:cntrl:]]//g; s/^/    /'
-        (( nf > 5 )) && echo "    ... and $((nf - 5)) more"
-        echo "  Full list: $list"
     elif (( nd > 0 )); then
         what="${nd} empty folder$([[ $nd == 1 ]] || echo s)"
         echo -e "  ${YELLOW}⚠ ${what} would be removed at ${dest}:${NC}"
-        sed -n 's/^del\.|//p' "$list" | awk '/\/$/ && ++n <= 5' | sed 's/[[:cntrl:]]//g; s/^/    /'
-        (( nd > 5 )) && echo "    ... and $((nd - 5)) more"
-        echo "  Full list: $list"
     else
         ok "Nothing to delete - destination has no extra files."
         [[ "$ask" == copy ]] && return 0
+    fi
+    if (( _mirror_n > 0 )); then
+        # Top 5 top-level folders by count; the rest are summed up.
+        local _c _f _e _w _name ng=0 line
+        while read -r _ _c _f _e _w _name; do
+            ng=$((ng + 1)); (( ng > 5 )) && continue
+            line="$_f file$([[ $_f == 1 ]] || echo s)"
+            (( _f == 0 )) && line="$_e empty folder$([[ $_e == 1 ]] || echo s)"
+            (( _f > 0 && _e > 0 )) && line+=" (+ $_e empty folder$([[ $_e == 1 ]] || echo s))"
+            (( _w )) && line+="  ← whole folder deleted"
+            printf '    %s  %s\n' "$(sed 's/[[:cntrl:]]//g' <<<"$_name")" "$line"
+        done < <(grep '^G ' <<<"$sum" | sort -k2,2nr -k6)
+        (( ng > 5 )) && echo "    ... and $((ng - 5)) more folders"
+        echo "  Full list: $list"
     fi
     if [[ "$ask" == save ]]; then
         printf '  Save this job as mirror? [y/N]: '

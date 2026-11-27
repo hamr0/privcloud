@@ -37,7 +37,7 @@ LIST="printf 'del.|a\\ndel.|sub/b\\n'"
 for loc in local sudo; do
   OUT=$(echo n | _mirror_preview $loc /s /d "$LIST" copy 2>&1); RC=$?
   check 2a-$loc "$loc: explains what is happening before the dry run" '[[ "$OUT" == *"Checking what a mirror would delete"* ]]'
-  check 2b-$loc "$loc: deletion list parsed as before, answer n -> rc 1" '[ $RC = 1 ] && [[ "$(plain "$OUT")" == *"⚠ 2 files would be deleted at /d:"* && "$OUT" == *"    a"* && "$OUT" == *"    sub/b"* && "$OUT" == *"Cancelled"* ]]'
+  check 2b-$loc "$loc: deletion list parsed as before, answer n -> rc 1" '[ $RC = 1 ] && [[ "$(plain "$OUT")" == *"⚠ 2 files would be deleted at /d:"* && "$OUT" == *"    (top level)  1 file"* && "$OUT" == *"    sub/  1 file"* && "$OUT" == *"Cancelled"* ]]'
   OUT=$(echo y | _mirror_preview $loc /s /d "$LIST" copy 2>&1); RC=$?
   check 2c-$loc "$loc: answer y -> rc 0" '[ $RC = 0 ]'
   OUT=$(_mirror_preview $loc /s /d "echo oops; exit 23" copy 2>&1); RC=$?
@@ -70,6 +70,7 @@ check 4b "list file holds the dry-run output, mode 600, dir 700" '[ -n "$LF" ] &
 for i in 1 2 3 4 5 6 7 8; do : > "$T/state/federver/mirror-preview-2020010$i-000000.txt"; done
 OUT=$(echo n | _mirror_preview local /s /d "$LIST" copy 2>&1)
 check 4c "only the newest 5 list files are kept" '[ "$(ls "$T/state/federver" | wc -l)" = 5 ] && [ ! -e "$T/state/federver/mirror-preview-20200101-000000.txt" ] && [ -e "$T/state/federver/mirror-preview-20200108-000000.txt" ]'
+sleep 1.1  # list names are per second
 OUT=$(_mirror_preview local /s /d "echo oops; exit 23" copy 2>&1)
 check 4d "failed preview leaves no new list file" '[ "$(ls "$T/state/federver" | wc -l)" = 5 ]'
 BIG="awk 'BEGIN{for(i=1;i<=200000;i++) print \"del.|d\" (i%7) \"/f\" i}'"
@@ -77,6 +78,16 @@ S0=$(date +%s.%N); OUT=$(echo n | _mirror_preview local /s /d "$BIG" copy 2>&1);
 check 4e "200k-line deletion list is counted from the file" '[ $RC = 1 ] && [[ "$(plain "$OUT")" == *"⚠ 200000 files would be deleted at /d:"* ]]'
 check 4f "the preview never holds the whole output in a variable" '! declare -f _mirror_preview | grep -Eq "out=|\$\(cat"'
 echo "      (200k preview took $(awk -v a="$S0" -v b="$S1" 'BEGIN{printf "%.1f", b-a}')s)"
+
+# 5 screen summary by top-level folder; whole folders flagged
+SUM="awk 'BEGIN{for(f=1;f<=7;f++){for(i=1;i<=8-f;i++) print \"del.|f\" f \"/x\" i}; print \"del.|f3/\"; print \"del.|top.txt\"; print \"del.|emp/\"}'"
+OUT=$(plain "$(echo n | _mirror_preview local /s /d "$SUM" copy 2>&1)")
+check 5a "top 5 folders by count, biggest first, with counts" '[[ "$OUT" == *"    f1/  7 files"*"    f2/  6 files"* && "$OUT" == *"    f5/  3 files"* ]]'
+check 5b "only 5 groups shown; the rest summed" '[[ "$OUT" == *"... and 4 more folders"* && "$OUT" != *"    f6/"* ]]'
+check 5c "whole-folder deletion is marked, others are not" '[[ "$OUT" == *"    f3/  5 files  ← whole folder deleted"* && "$OUT" != *"f1/  7 files  ←"* ]]'
+check 5d "total line unchanged and the file names are not dumped" '[[ "$OUT" == *"⚠ 29 files (+ 1 empty folder) would be deleted at /d:"* && "$OUT" != *"x1"* ]]'
+OUT=$(plain "$(echo n | _mirror_preview local /s /d "printf 'del.|a\\ndel.|b\\n'" copy 2>&1)")
+check 5e "files directly at the top level are grouped as (top level)" '[[ "$OUT" == *"    (top level)  2 files"* ]]'
 
 echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
 [ "$FAILN" = 0 ]

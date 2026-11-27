@@ -267,7 +267,7 @@ check 6h "refuses removing the last folder, points to Uninstall" '[[ "$OUT" == *
 mkset; run $'2\n9\n\n' 0 step_samba
 check 6i "bad number rejected" '[[ "$OUT" == *"No folder number 9"* ]] && [ "$(NSH)" = 2 ]'
 mkset; export FAIL_RUN=1; run $'2\n'"$T/files/My Pics"$'\n' 0 step_samba
-check 6j "recreate fails after rm: loud NOT RUNNING + how to recover, no success" '[ $RC != 0 ] && [[ "$OUT" == *"NOT RUNNING"* && "$OUT" == *"run federver -> 16 again"* && "$OUT" != *"Now sharing"* ]] && [ ! -d "$T/c/samba" ]'
+check 6j "recreate fails after rm: loud NOT RUNNING + how to recover, no success" '[ $RC != 0 ] && [[ "$OUT" == *"NOT RUNNING"* && "$OUT" == *"run federver -> 15 again"* && "$OUT" != *"Now sharing"* ]] && [ ! -d "$T/c/samba" ]'
 unset FAIL_RUN
 run $'1\nyy' 0 step_samba
 check 6k 'recovery works: Set up reuses saved folders after a failed recreate' '[[ "$OUT" == *"Saved setup found: 3 folder"* && "$OUT" == *"File sharing set up: 3 folders."* ]]'
@@ -313,7 +313,7 @@ check 8d "rm fails: not reported as removed" '[ $RC != 0 ] && [[ "$OUT" != *"Fil
 
 # 9 (s) Status section: three states
 reset; S=$(_smb_summary docker); R=$(_smb_summary_render "$S")
-check 9a "not set up" '[ "$S" = none ] && [[ "$R" == *"not set up (federver → 16)"* ]]'
+check 9a "not set up" '[ "$S" = none ] && [[ "$R" == *"not set up (federver → 15)"* ]]'
 mkset; S=$(_smb_summary docker); R=$(_smb_summary_render "$S")
 check 9b "running: ✓ running · N folders · K devices connected" '[ "$S" = "running|2|0|0" ] && [[ "$R" == *"✓ running · 2 folders · 0 devices connected"* ]]'
 printf 'docs         14      100.99.99.98  Fri Nov 27 09:10:11 2026 UTC     -            -\n' > "$SMBSTATUS"; rm -rf "$T/files/media"
@@ -489,7 +489,7 @@ check 16d "running + Manage password: stays running, restart=unless-stopped, no 
   '[ $RC = 0 ] && [ "$(PWOF)" != "$OLDPW" ] && [ "$(cat "$T/c/samba/running")" = true ] && grep -qx unless-stopped "$T/c/samba/policy" && [[ "$OUT" == *"Samba running on port 445"* && "$OUT" != *"is stopped"* ]]'
 
 # 10 main menu + public-repo hygiene
-check 10a "main menu line 16 reads 'Connect phone (Files app)' with the hint" 'grep -q "16)\${NC} Connect phone (Files app) .*iPhone/Android open server folders over Tailscale" "$SRC" && grep -q "16) run_step \"\[16\] Connect phone (Files app)\" \"_on_server step_samba\"" "$SRC"'
+check 10a "main menu line 15 reads 'Connect phone (Files app)' with the hint" 'grep -q "15)\${NC} Connect phone (Files app) .*iPhone/Android open server folders over Tailscale" "$SRC" && grep -q "15) run_step \"\[16\] Connect phone (Files app)\" \"_on_server step_samba\"" "$SRC"'
 # The pattern is built at runtime from this machine's own values (federver
 # config, $USER, local FILES_LOCATION), so none of them is ever written in the
 # repo. No values available = SKIP (counted as a pass with a note).

@@ -1,6 +1,6 @@
 # Privcloud — Home server stack
 # Immich (photo backup) + Navidrome + FileBrowser + Watchtower + Uptime Kuma
-# Managed by: ./setup.sh (federver -> i, Manage Immich)
+# Managed by: ./setup.sh (federver -> 9, Manage Immich)
 
 name: privcloud
 

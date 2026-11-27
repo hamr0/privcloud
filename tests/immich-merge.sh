@@ -34,7 +34,7 @@ printf '{ "name": "x" }\n' > "$T/nover.json"
 check 2c "package.json without a version -> unknown" '[ "$(_fv_pkg_version "$T/nover.json")" = unknown ]'
 check 2d "no stale 0.9.5 fallback left" '! grep -q "0\.9\.5" "$S"'
 
-# 3 Manage Immich (federver -> i): every former privcloud action is a menu item
+# 3 Manage Immich (federver -> 9): every former privcloud action is a menu item
 # that hops to the right step; Back and junk return 2 (clean back, no DONE banner)
 _on_server() { echo "$1" > "$T/called"; }
 pick() { rm -f "$T/called"; MENU=$(printf '%s\n' "$1" | step_immich 2>&1); RC=$?; CALLED=$(cat "$T/called" 2>/dev/null); }
@@ -51,7 +51,7 @@ check 3g "the submenu is numbered 1..11 contiguously, arrows are ←, arrow colu
 pick 0;  check 3a "0 = Back: rc 2, nothing run" '[ $RC = 2 ] && [ -z "$CALLED" ]'
 pick x;  check 3b "junk: rc 2, nothing run" '[ $RC = 2 ] && [ -z "$CALLED" ] && [[ "$MENU" == *"Invalid choice"* ]]'
 check 3c "the backup items point straight at the existing scheduled-backup functions (no 'bash setup.sh --run' hop)" 'grep -q "_on_server step_immich_backup ;;" "$S" && grep -q "_on_server _immich_backup_status ;;" "$S" && grep -q "_on_server _immich_backup_run ;;" "$S" && grep -q "_on_server _immich_backup_remove ;;" "$S" && ! grep -q "setup.sh --run" <(extract_fn step_immich "$S")'
-check 3d "main menu entry is 'Manage Immich' (i)" 'grep -q "run_step \"\[i\] Manage Immich\" step_immich" "$S" && grep -q "i)\${NC}  Manage Immich" "$S"'
+check 3d "main menu entry is 'Manage Immich' (9)" 'grep -q "run_step \"\[9\] Manage Immich\" step_immich" "$S" && grep -q "9)\${NC}  Manage Immich" "$S"'
 
 # 4 each Immich action is a real `--run` step: run the real script (a copy, in a
 # sandbox with stubbed docker/curl/sudo) and see it is dispatched, not "not defined"
@@ -81,7 +81,7 @@ check 5e "the installer no longer writes a privcloud wrapper" '! grep -q "tee /u
 STALE=$T/stale-privcloud; _STALE_PRIVCLOUD_CMD=$STALE
 sudo() { "$@"; }
 echo old > "$STALE"; OUT=$(_remove_stale_privcloud_cmd 2>&1)
-check 6a "stale wrapper removed, exactly one line said" '[ ! -e "$STALE" ] && [ "$(wc -l <<<"$OUT")" = 1 ] && [[ "$OUT" == *"federver -> i"* ]]'
+check 6a "stale wrapper removed, exactly one line said" '[ ! -e "$STALE" ] && [ "$(wc -l <<<"$OUT")" = 1 ] && [[ "$OUT" == *"federver -> 9"* ]]'
 ln -s "$T/does-not-exist" "$STALE"; OUT=$(_remove_stale_privcloud_cmd 2>&1)
 check 6b "a dangling symlink (the old standalone install) is removed too" '[ ! -L "$STALE" ] && [[ "$OUT" == *"Removed"* ]]'
 OUT=$(_remove_stale_privcloud_cmd 2>&1)

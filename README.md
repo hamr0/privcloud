@@ -20,7 +20,7 @@ Self-hosted home server with photo backup, music streaming, file management, and
 
 ## Quickstart
 
-Always-on machine running photos, music, files, monitoring, remote access, ad blocking — all in one. One tool, `federver` (`setup.sh`), handles everything from a fresh Fedora install, Immich included (**i** → Manage Immich: install, start/stop, status, update, upload, backup).
+Always-on machine running photos, music, files, monitoring, remote access, ad blocking — all in one. One tool, `federver` (`setup.sh`), handles everything from a fresh Fedora install, Immich included (**9** → Manage Immich: install, status, update, upload, backup; start/stop is **7** → Manage services).
 
 ```bash
 git clone https://github.com/hamr0/privcloud.git && cd privcloud
@@ -47,7 +47,7 @@ git clone https://github.com/hamr0/privcloud.git && cd privcloud
 2. On the server (with a monitor): clone the repo and run `./setup.sh` → pick **1** to enable SSH
 3. Unplug the monitor — everything from here runs from your laptop
 4. On your laptop: clone the repo and run `./setup.sh` → pick **2** (SSH key), then **3 → 7** in order
-5. Open your services in the browser — Immich at `:2283`, music at `:4533`, files at `:8080` (Immich: `federver` → **i** → Install, then Start)
+5. Open your services in the browser — Immich at `:2283`, music at `:4533`, files at `:8080` (Immich: `federver` → **9** → Install, then **7** → Deploy)
 
 Every step is safe to re-run. Server steps auto-route via SSH; laptop steps run locally.
 

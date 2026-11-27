@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sync jobs of federver -> 14 (laptop): create, list, edit, schedule, delete, Status and the
+# Sync jobs of federver -> 16 (laptop): create, list, edit, schedule, delete, Status and the
 # run of a job. Pins the current behaviour of the paths the sync-job refactor touches
 # (change schedule, delete, dotted names, the logged result of a run) so each step
 # stays proven, then covers what the refactor adds. Functions are extracted from

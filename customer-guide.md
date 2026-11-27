@@ -67,7 +67,7 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 
 ## What you get
 
-### From federver → i (Manage Immich)
+### From federver → 9 (Manage Immich)
 
 | Menu item | What it does |
 |---------|-------------|
@@ -104,21 +104,19 @@ Every item runs on the server (federver connects over SSH for you), on a cleared
 
   -- Extras (optional, run anytime) --
   8)  Manage Tailscale                      ← install, status, up/down
-  9)  Manage WireGuard                      ← install, peers, QR, remove
-  10) Manage AdGuard                        ← install DNS ad blocker, uses Tailscale
-  11) Manage storage                        ← USB drives, media/data/Immich paths
-  12) Manage Syncthing                      ← real-time bidirectional file sync
-  13) Manage remote desktop                 ← install, access XFCE via RDP
-
-  -- Immich photo management --
-  i)  Manage Immich                         ← status, start/stop, update, upload, backup
+  9)  Manage Immich                         ← status, update, upload, backup
+  10) Manage WireGuard                      ← install, peers, QR, remove
+  11) Manage AdGuard                        ← install DNS ad blocker, uses Tailscale
+  12) Manage storage                        ← USB drives, media/data/Immich paths
+  13) Manage Syncthing                      ← real-time bidirectional file sync
+  14) Manage remote desktop                 ← install, access XFCE via RDP
+  15) Connect phone (Files app)             ← iPhone/Android open server folders over Tailscale
 
   -- Tools --
-  14) Manage sync and backups               ← sync jobs, Immich backup (DB + photos), disk-space monitor
-  15) Save to pass                          ← from laptop, backup everything to pass
-  16) Connect phone (Files app)             ← iPhone/Android open server folders over Tailscale
+  16) Manage sync and backups               ← sync jobs, Immich backup (DB + photos), disk-space monitor
+  17) Save to pass                          ← from laptop, backup everything to pass
 
-  s)  Status   i)  Immich   p)  Power   r)  Reset password   a)  Run all (3-7)   0)  Exit
+  s)  Status   p)  Power   r)  Reset password   a)  Run all (3-7)   0)  Exit
 ```
 
 **Wizard exits:** inside any option, press `0` in a numbered menu or type `q` at a text prompt to drop back to this main menu. No need for Ctrl+C.
@@ -161,16 +159,16 @@ cd privcloud
 
 Pick **i** (Manage Immich), then `Install` (checks Docker, images, storage config), then `Start`.
 
-Install, Start and Update never edit `docker-compose.yml` (the repo's copy stays exactly as committed, so `git status` stays clean and later updates pull cleanly). The two Immich data mounts carry the `:Z` label in the committed file: with SELinux Enforcing it relabels them, with SELinux off Docker ignores it. Status only checks the labels are still there when SELinux is Enforcing.
+Install and Update never edit `docker-compose.yml` (the repo's copy stays exactly as committed, so `git status` stays clean and later updates pull cleanly). The two Immich data mounts carry the `:Z` label in the committed file: with SELinux Enforcing it relabels them, with SELinux off Docker ignores it. Status only checks the labels are still there when SELinux is Enforcing.
 
-Immich `Start` and `Update` leave every Immich container on restart policy `unless-stopped`, the same as the federver menu's Start: a service compose runs as `always`, or one an earlier Stop left at `no`, is re-armed, so the stack comes back after a reboot unless you stop it yourself. Containers already running are not restarted. If the policy cannot be set the command prints a yellow warning (the containers are already running, so it does not abort) and carries on to the Immich wait or the update message; re-run start or use federver -> Manage services -> Start.
+Immich `Update` (which recreates only Immich's four compose services, never Navidrome, FileBrowser, Watchtower or Uptime Kuma) leaves each Immich container on restart policy `unless-stopped`, the same as the federver menu's Start (`federver → 7`; Immich has no Start/Stop of its own): a service compose runs as `always`, or one an earlier Stop left at `no`, is re-armed, so the stack comes back after a reboot unless you stop it yourself. Containers already running are not restarted. If the policy cannot be set the command prints a yellow warning (the containers are already running, so it does not abort) and carries on to the update message; use federver → 7 → Start.
 
 Open http://localhost:2283 in your browser. Create your first account — this becomes the admin.
 
 ## Connecting your phone
 
 1. Install the Immich app — [iPhone](https://apps.apple.com/app/immich/id1613945652) / [Android](https://play.google.com/store/apps/details?id=app.alextran.immich)
-2. Server URL: `http://<your-computer-ip>:2283` (shown by `federver` → i → Start)
+2. Server URL: `http://<your-computer-ip>:2283` (shown by `federver` → 7 → 2 (Start))
 3. Login with the account you created in the web UI
 4. Go to app settings and enable **auto backup**
 5. Both devices must be on the same WiFi network
@@ -237,7 +235,7 @@ Each Immich account gets its own separate library, timeline, face recognition, a
 
 ### Uploading to the right account
 
-Each API key is tied to the account that created it. When using `federver` → i → Upload photos, use the API key for whichever account should own the photos — so a second profile (a separate username with its own key) stays completely separate.
+Each API key is tied to the account that created it. When using `federver` → 9 → Upload photos, use the API key for whichever account should own the photos — so a second profile (a separate username with its own key) stays completely separate.
 
 A few things about how Upload photos works:
 
@@ -250,7 +248,7 @@ A few things about how Upload photos works:
 
 ## Migrating from Google Photos
 
-Google Takeout exports your photos with metadata stripped into separate JSON files. The filenames are truncated and inconsistent. the `Fix Google Photos metadata` item (`federver` → i → 8) handles all of it.
+Google Takeout exports your photos with metadata stripped into separate JSON files. The filenames are truncated and inconsistent. the `Fix Google Photos metadata` item (`federver` → 9 → 6) handles all of it.
 
 ### Step 1: Export from Google
 
@@ -262,7 +260,7 @@ Google Takeout exports your photos with metadata stripped into separate JSON fil
 ### Step 2: Fix metadata
 
 ```bash
-federver → i → Fix Google Photos metadata
+federver → 9 → Fix Google Photos metadata
 ```
 
 The script extracts zips, matches each photo to its JSON sidecar, writes dates and GPS back into EXIF, and sets correct file timestamps.
@@ -270,7 +268,7 @@ The script extracts zips, matches each photo to its JSON sidecar, writes dates a
 ### Step 3: Upload
 
 ```bash
-federver → i → Upload photos
+federver → 9 → Upload photos
 ```
 
 Enter your API key (from http://localhost:2283 → Account Settings → API Keys) and the path to the extracted photos. When asked **Albums or Flat**, pick **Flat** — a Takeout export is usually one big dump rather than album folders (choose **Albums** only if you sorted the export into folders you want to keep).
@@ -301,7 +299,7 @@ If your photos are still on your iPhone (not "Optimize Storage"):
 
 1. Go to [icloud.com/photos](https://icloud.com/photos)
 2. Select all, download
-3. Use `federver` → i → Upload photos to bulk upload
+3. Use `federver` → 9 → Upload photos to bulk upload
 
 ### Option C: Mac/Windows export
 
@@ -313,7 +311,7 @@ If your photos are still on your iPhone (not "Optimize Storage"):
 ## Uploading existing photo collections
 
 ```bash
-federver → i → Upload photos
+federver → 9 → Upload photos
 ```
 
 Point it at any folder. It uploads recursively and skips duplicates automatically (by file hash). Run it from multiple sources — Immich won't create duplicate entries.
@@ -466,7 +464,7 @@ Expect ~20-30% overhead on top of your original library for thumbnails and previ
 ### How to backup
 
 ```bash
-federver → i   (the Backup items)
+federver → 9   (the Backup items)
 ```
 
 The Manage Immich menu lists the one-time backup and the four scheduled actions at the same level:
@@ -481,11 +479,11 @@ The Manage Immich menu lists the one-time backup and the four scheduled actions 
 
 **Neither stops the server** — your photos stay online the whole time. Photos are copied live, and the database is dumped while it runs (a consistent snapshot).
 
-**One-time** then asks *what* to back up — **Both** (default), **Photos only**, or **Database only** — and a destination (if a schedule exists, Enter keeps its destination, so the library is copied once, not twice). For photos it asks the one copy-mode question used everywhere in federver: Enter = **append only** (keep everything on the backup), or type `delete` for a **mirror** (exact copy, removes files deleted from source). A mirror is held to the same safety as a sync: it is refused when the photo source is empty, missing or on a drive that is not mounted, it previews what it would delete (grouped by top-level folder, full list in a file), and a big deletion needs the exact count typed. The backup script refuses a mirror on its own too, even if called by hand. Incremental after the first run. (This is the *Immich* one-time backup — distinct from the generic rsync at `federver` → 14 → 5.)
+**One-time** then asks *what* to back up — **Both** (default), **Photos only**, or **Database only** — and a destination (if a schedule exists, Enter keeps its destination, so the library is copied once, not twice). For photos it asks the one copy-mode question used everywhere in federver: Enter = **append only** (keep everything on the backup), or type `delete` for a **mirror** (exact copy, removes files deleted from source). A mirror is held to the same safety as a sync: it is refused when the photo source is empty, missing or on a drive that is not mounted, it previews what it would delete (grouped by top-level folder, full list in a file), and a big deletion needs the exact count typed. The backup script refuses a mirror on its own too, even if called by hand. Incremental after the first run. (This is the *Immich* one-time backup — distinct from the generic rsync at `federver` → 16 → 5.)
 
 **One backup, one script.** One-time and scheduled run the *same* script (`/usr/local/bin/immich-backup.sh`; `--once --dest <dir> --scope photos|db|both [--mirror]` is the one-time form), so they write the same layout and skip the same regenerable folders. Under the destination, both put everything in `<dest>/immich/`: `photos/` (originals), `db/` (`immich-db-*.sql.gz`, owner-only; `db/postgres/` when Immich was stopped and the data directory was copied), and for one-time also `immich/.env` (so a restore knows the database password). Older one-time backups were written to `<dest>/privcloud-backup/`; when the destination still has that folder, the one-time backup tells you it is the old layout — it is never deleted for you, remove it by hand once you have checked the new `immich/` folder. A destination under `/mnt`, `/media` or `/run/media` must be on a mounted drive (the folder it sits in is checked, so a not-yet-created subfolder of a mounted drive is fine): with the drive unplugged, both the scheduled and the one-time backup refuse with `Backup SKIPPED - destination <dir> is not on a mounted drive`, write nothing, and Status shows that reason — they never fill the system disk.
 
-**Scheduled - Set up** creates an automatic backup (daily at 3am, keep 7 days; or weekly, keep 3 weeks) that runs the *same* schedule as `federver` → 14 → 6 (one source of truth, no double-runs), backs up database + photos every run, catches up if the server was off, and retries on failure. It defaults the destination to the destination already configured in the installed schedule (so pressing Enter when re-running Set up keeps it and never repoints the job at a fresh, empty folder), and only on a first setup to an external/USB drive; it warns if you point it at the same drive as your photos (a single disk failure would lose both). Right after setup it offers to **run the first backup now** so you can confirm it works instead of waiting for the next scheduled time. Set up generates the script fresh every time (nothing is patched in place, so any destination path works) and writes the settings the script needs to `/etc/immich-backup.conf` (destination, retention, repo path — readable by everyone, no secrets). The photo location is read from your `.env` at every run, so moving the photos (`federver` → i → Config) needs no re-Set-up. If **Status** says `outdated - run Set up again`, the installed script is from before this layout: it keeps running as it was, and Set up (Enter keeps the destination) upgrades it. **Status** shows *your Immich backup* — schedule, next run, and a recent-runs history — in the **same table layout** as `federver` → 14 → 1 (and points you there for everything else scheduled on the server), whether the backup runs as a systemd timer or a root cron job. **Remove** first lists exactly what it will delete (the timer and its cadence, the service, the script, and any legacy cron line) — there's only one Immich backup schedule, so this is a confirmation, not a chooser — then deletes the schedule while keeping your backup files.
+**Scheduled - Set up** creates an automatic backup (daily at 3am, keep 7 days; or weekly, keep 3 weeks) that runs the *same* schedule as `federver` → 16 → 6 (one source of truth, no double-runs), backs up database + photos every run, catches up if the server was off, and retries on failure. It defaults the destination to the destination already configured in the installed schedule (so pressing Enter when re-running Set up keeps it and never repoints the job at a fresh, empty folder), and only on a first setup to an external/USB drive; it warns if you point it at the same drive as your photos (a single disk failure would lose both). Right after setup it offers to **run the first backup now** so you can confirm it works instead of waiting for the next scheduled time. Set up generates the script fresh every time (nothing is patched in place, so any destination path works) and writes the settings the script needs to `/etc/immich-backup.conf` (destination, retention, repo path — readable by everyone, no secrets). The photo location is read from your `.env` at every run, so moving the photos (`federver` → 9 → Config) needs no re-Set-up. If **Status** says `outdated - run Set up again`, the installed script is from before this layout: it keeps running as it was, and Set up (Enter keeps the destination) upgrades it. **Status** shows *your Immich backup* — schedule, next run, and a recent-runs history — in the **same table layout** as `federver` → 16 → 1 (and points you there for everything else scheduled on the server), whether the backup runs as a systemd timer or a root cron job. **Remove** first lists exactly what it will delete (the timer and its cadence, the service, the script, and any legacy cron line) — there's only one Immich backup schedule, so this is a confirmation, not a chooser — then deletes the schedule while keeping your backup files.
 
 > **Tip:** an external/USB drive is the point — a backup on the same disk as your photos dies with that disk.
 
@@ -502,16 +500,16 @@ Restore depends on how the database was backed up:
 
 **If your backup has a `db/postgres/` folder** (database files, from a one-time backup made while Immich was stopped; older backups have `postgres/` at the top):
 
-1. Stop Immich on the old machine (`federver` → i → Stop)
+1. Stop Immich on the old machine (`federver` → 7 → 3 (Stop))
 2. Copy the `photos` and `postgres` directories (`immich/photos`, `immich/db/postgres`) to the new machine
-3. Clone privcloud, run `federver` → i → Install
+3. Clone privcloud, run `federver` → 9 → Install
 4. Point config at the copied directories, make sure `DB_PASSWORD` matches
-5. Start Immich (`federver` → i → Start)
+5. Start Immich (`federver` → 7 → 2 (Start))
 
 **If your backup has `immich-db-*.sql.gz`** (a database dump — what no-downtime and scheduled backups produce; one-time and scheduled backups both put them under `immich/db/` and photos under `immich/photos/`):
 
-1. Clone privcloud, run `federver` → i → Install, point config at the copied photos
-2. Start Immich (`federver` → i → Start)
+1. Clone privcloud, run `federver` → 9 → Install, point config at the copied photos
+2. Start Immich (`federver` → 7 → 2 (Start))
 3. Load the newest dump:
    ```bash
    gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres
@@ -526,7 +524,7 @@ Either way, everything comes back — faces, albums, search, sharing.
 1. Take photos normally
 2. Open Immich app occasionally — photos sync over WiFi
 3. Browse/organize at http://localhost:2283
-4. `federver` → i → Stop when done (or leave running)
+4. `federver` → 7 → 3 (Stop) when done (or leave running)
 
 ML processing resumes where it left off on next start.
 
@@ -536,7 +534,7 @@ ML processing resumes where it left off on next start.
 
 ### Immich Start hangs or times out
 
-Run `federver` → i → Status — it now shows container health and recent errors from logs. Common causes:
+Run `federver` → 9 → Status — it now shows container health and recent errors from logs. Common causes:
 - Port 2283 in use
 - Not enough RAM
 - Docker not running
@@ -559,7 +557,7 @@ Enable transcoding: Administration → Video Transcoding → H.264.
 
 ### Wrong dates
 
-Run `federver` → i → Fix Google Photos metadata on Google Takeout exports before uploading. For other sources, check if files have EXIF data.
+Run `federver` → 9 → Fix Google Photos metadata on Google Takeout exports before uploading. For other sources, check if files have EXIF data.
 
 ### Immich won't start right after a major update
 
@@ -715,7 +713,7 @@ After step 7 (services deploy), configure each service in your browser. Run `fed
    - **iPhone:** [App Store](https://apps.apple.com/app/immich/id1613945652)
    - **Android:** [Play Store](https://play.google.com/store/apps/details?id=app.alextran.immich)
 3. In the app: enter server URL (`http://<server-ip>:2283`), log in, enable auto-upload
-4. If migrating: use `federver` → i → Upload photos or Fix Google Photos metadata for Google Takeout
+4. If migrating: use `federver` → 9 → Upload photos or Fix Google Photos metadata for Google Takeout
 
 ### Navidrome (port 4533)
 
@@ -842,7 +840,7 @@ WireGuard routes ALL your device traffic through the server. Unlike Tailscale (w
 | | Tailscale | WireGuard |
 |--|-----------|-----------|
 | **Purpose** | Access your server remotely | Route all traffic through server |
-| **Setup** | Easy (managed service) | Step 11 handles everything |
+| **Setup** | Easy (managed service) | Step 10 handles everything |
 | **Privacy** | Only server traffic | All internet traffic encrypted |
 | **Geo-restrictions** | No help | Bypass (appear to be at home) |
 | **Public WiFi** | Server access only | Full protection |
@@ -976,7 +974,7 @@ Open [http://federver](http://federver) → **Settings → DNS settings** and pa
 | Fallback DNS servers | `1.1.1.1` <br> `8.8.8.8` |
 | Load balancing | **Parallel requests** |
 
-Click **Apply** at the bottom. Quad9 plain-DNS anycast pair as upstream (malware filtering, same provider as before — just not DoH), a different company (Cloudflare/Google) as fallback so a Quad9-side outage doesn't take you offline. Same guide is available anytime in `federver → 12 → 2`.
+Click **Apply** at the bottom. Quad9 plain-DNS anycast pair as upstream (malware filtering, same provider as before — just not DoH), a different company (Cloudflare/Google) as fallback so a Quad9-side outage doesn't take you offline. Same guide is available anytime in `federver → 13 → 2`.
 
 **What each field does and why these values:**
 
@@ -1008,7 +1006,7 @@ Click **Apply**. Verified impact (`old.reddit.com` etc., 50 parallel uncached lo
 
 ## Syncthing real-time folder sync
 
-Continuous bidirectional file sync between devices. Peer-to-peer — no central cloud, changes propagate in seconds. Good for folders you actively edit on multiple devices (notes, code, documents, obsidian vault). Complements Manage sync (`federver` → 14), which handles one-shot transfers and scheduled jobs; Syncthing is always-on.
+Continuous bidirectional file sync between devices. Peer-to-peer — no central cloud, changes propagate in seconds. Good for folders you actively edit on multiple devices (notes, code, documents, obsidian vault). Complements Manage sync (`federver` → 16), which handles one-shot transfers and scheduled jobs; Syncthing is always-on.
 
 ### What it's good for
 
@@ -1017,7 +1015,7 @@ Continuous bidirectional file sync between devices. Peer-to-peer — no central 
 - **Code drafts** — small repos you're hacking on from multiple machines
 - **Photos from camera SD** — drop in a folder, server auto-picks them up
 
-Not the tool for: photo backup (use Immich), music library (use Navidrome), or one-shot transfers (use Manage sync, option 14).
+Not the tool for: photo backup (use Immich), music library (use Navidrome), or one-shot transfers (use Manage sync, option 16).
 
 ### Install
 
@@ -1107,11 +1105,11 @@ No port forwarding, no DDNS, no VPN required. Device IDs are location-independen
 - **Server:** [http://federver:8384](http://federver:8384) (or `http://<server-ip>:8384`)
 - **Laptop:** [http://localhost:8384](http://localhost:8384)
 
-First visit to each dashboard prompts you to set a GUI username and password. Set them — both web UIs are reachable from the LAN (and over Tailscale), so they need credentials. After that, run `federver → 15 (Save to pass)` to back up the server's `device_id`, `config.xml`, `cert.pem`, and `key.pem` into `pass`. The cert/key pair is the node's cryptographic identity — losing it means re-pairing every client.
+First visit to each dashboard prompts you to set a GUI username and password. Set them — both web UIs are reachable from the LAN (and over Tailscale), so they need credentials. After that, run `federver → 17 (Save to pass)` to back up the server's `device_id`, `config.xml`, `cert.pem`, and `key.pem` into `pass`. The cert/key pair is the node's cryptographic identity — losing it means re-pairing every client.
 
-### Submenu (`federver` → 12 after install)
+### Submenu (`federver` → 13 after install)
 
-Re-running option 12 from the laptop once both sides are installed opens a unified submenu that **controls both laptop and server together**:
+Re-running option 13 from the laptop once both sides are installed opens a unified submenu that **controls both laptop and server together**:
 
 1. **Refresh status** — both sides: laptop service state + server container state, both dashboard URLs, both Device IDs
 2. **Show Device IDs** — laptop + server IDs for pairing new clients
@@ -1127,15 +1125,15 @@ If the laptop menu cannot query Docker on the server (Docker stopped, or the que
 
 The server's running state and Device ID are read with plain `docker` (the server user is in the `docker` group), so no sudo prompt is needed for them. In the single-side state (only laptop or only server installed) the menu offers install-missing / uninstall-remaining instead of the full list above.
 
-When run directly on the server, option 12 opens a server-only submenu instead.
+When run directly on the server, option 13 opens a server-only submenu instead.
 
 ### Troubleshooting
 
 - **Devices don't discover each other on LAN** — port 21027/udp blocked somewhere. Check firewall on both sides.
 - **Sync is slow from off-site** — check Syncthing dashboard → peer details. If the connection shows "Relay" it's using Syncthing's public relays (slower, bandwidth-limited). If both peers are on Tailscale, the tailnet connection should be direct — check Tailscale is up on both sides.
-- **Device ID unavailable** — container still starting up or Syncthing 2.x CLI couldn't be read. Wait 10 seconds and re-run option 12 → 2. The helper tries several CLI shapes and falls back to reading `config.xml` directly.
+- **Device ID unavailable** — container still starting up or Syncthing 2.x CLI couldn't be read. Wait 10 seconds and re-run option 13 → 2. The helper tries several CLI shapes and falls back to reading `config.xml` directly.
 - **"Remote expects to exchange plain data, but local data is encrypted"** — Folder Type mismatch. One side set `Receive Encrypted`, the other didn't set an encryption password. Either set a password on the trusted side's Sharing tab, or change the untrusted side's Folder Type to `Send & Receive`.
-- **Forgot the GUI password** — stop the container (`federver → 12 → 4`), delete `/opt/syncthing/config/config.xml`, restart. Regenerates clean. Pairings are lost (they lived in config.xml).
+- **Forgot the GUI password** — stop the container (`federver → 13 → 4`), delete `/opt/syncthing/config/config.xml`, restart. Regenerates clean. Pairings are lost (they lived in config.xml).
 
 ---
 
@@ -1166,7 +1164,7 @@ Menu is organised by category — `Status` spans everything, then `Sync -` entri
 
 ### When to use it vs Syncthing
 
-| | Manage sync (option 14) | Syncthing (option 12) |
+| | Manage sync (option 16) | Syncthing (option 13) |
 |---|---|---|
 | **Mode** | One-shot, cron, or systemd timer | Always-on real-time |
 | **Direction** | One-way per transfer | Bidirectional |
@@ -1204,7 +1202,7 @@ Open folders from the server on an iPhone, Android phone or laptop as a network 
 
 ## Remote desktop
 
-Access the full XFCE desktop from any device. Step 10 in `federver` installs xrdp.
+Access the full XFCE desktop from any device. Step 14 in `federver` installs xrdp.
 
 ### How it works
 
@@ -1234,10 +1232,10 @@ Install "RD Client" from App Store. Add PC with `federver` (via Tailscale).
 
 ## Save to pass
 
-Option **15** in `federver` backs up everything to the `pass` password manager. Run from your **laptop** (where pass is installed) — it SSHes into the server to fetch data. The server-side reads need root (`/etc/wireguard`, AdGuard's config, Syncthing's cert and key), so it first asks for the **server sudo password** (hidden; checked up front and sent over SSH to `sudo -S`, never on a command line). A wrong password stops with "Wrong sudo password - nothing saved to pass" and writes nothing.
+Option **17** in `federver` backs up everything to the `pass` password manager. Run from your **laptop** (where pass is installed) — it SSHes into the server to fetch data. The server-side reads need root (`/etc/wireguard`, AdGuard's config, Syncthing's cert and key), so it first asks for the **server sudo password** (hidden; checked up front and sent over SSH to `sudo -S`, never on a command line). A wrong password stops with "Wrong sudo password - nothing saved to pass" and writes nothing.
 
 ```bash
-federver    # pick 15
+federver    # pick 17
 ```
 
 Saves:
@@ -1280,7 +1278,7 @@ pass show privcloud/ssh/private_key        # SSH key
 ### Daily (automated)
 
 - **Every 5 min** — Disk space heartbeat to Uptime Kuma (alerts if `/` or a data drive exceeds 85%, or a configured data drive is not mounted)
-- **3:00am daily or weekly** — Immich backup (DB + photos, systemd timer, set up via `federver` → i → Backup - Scheduled - Set up, or `federver` → 14 → 6)
+- **3:00am daily or weekly** — Immich backup (DB + photos, systemd timer, set up via `federver` → 9 → Backup - Scheduled - Set up, or `federver` → 16 → 6)
 - **4:00am** — Watchtower checks for container updates
 
 ### Monitoring
@@ -1290,8 +1288,8 @@ pass show privcloud/ssh/private_key        # SSH key
 | Service health | Uptime Kuma monitors | `http://<server-ip>:3001` |
 | Server online | Ping monitor in Uptime Kuma | Type: Ping → server IP |
 | Disk space | Every-5-min cron + Kuma Push | `cat /var/log/disk-check.last` (last run) / `disk-check.log` (alerts) or Uptime Kuma dashboard |
-| Backup status | Last runs table | `federver` → 14 → 1 (or `cat /var/log/immich-backup.log`) |
-| Container errors | `federver` → i → Status | Shows recent errors per container |
+| Backup status | Last runs table | `federver` → 16 → 1 (or `cat /var/log/immich-backup.log`) |
+| Container errors | `federver` → 9 → Status | Shows recent errors per container |
 
 **Uptime Kuma monitors to add:**
 
@@ -1304,22 +1302,22 @@ pass show privcloud/ssh/private_key        # SSH key
 
 Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 
-**Disk space alert:** `federver` → 14 → 7 sets this up. It walks you through creating a Push monitor in Uptime Kuma (Heartbeat Interval `360`, Retry Interval `60`, Max Retries `2`), you paste the URL back into the terminal, and it installs `/usr/local/bin/disk-check.sh` with a 5-minute cron. Paste the URL exactly as Kuma shows it; the query string Kuma appends (`?status=up&msg=OK&ping=`) is stripped and the script sends exactly one `status`/`msg`, so `down` really registers.
+**Disk space alert:** `federver` → 16 → 7 sets this up. It walks you through creating a Push monitor in Uptime Kuma (Heartbeat Interval `360`, Retry Interval `60`, Max Retries `2`), you paste the URL back into the terminal, and it installs `/usr/local/bin/disk-check.sh` with a 5-minute cron. Paste the URL exactly as Kuma shows it; the query string Kuma appends (`?status=up&msg=OK&ping=`) is stripped and the script sends exactly one `status`/`msg`, so `down` really registers.
 
 **What it watches.** At every run the script reads `FILES_LOCATION`, `MUSIC_LOCATION`, `UPLOAD_LOCATION` and `DB_DATA_LOCATION` from the `.env` in the repo checkout (location baked in at install, file never sourced), maps each to its backing mount, and checks `/` plus those mounts, so moving a drive needs no reinstall. It sends `status=up` when all are under 85%, or `status=down` with the culprits in the message (e.g. `/mnt/federver 91%`) when any exceeds 85%, a configured path is missing, or a drive is absent (`<path> not mounted`). An absent drive is caught from `/etc/fstab`: if fstab declares a mountpoint that contains the path and the path resolves to `/` (or its directory is gone), it is not mounted whatever the leftover mountpoint folder holds. For a drive with no fstab line (udisks/automount), an *empty* folder under `/mnt`, `/media` or `/run/media` that resolves to `/` counts as absent; a non-empty plain folder there is treated as deliberate data. A location under those folders that sits on an automount placeholder (its source is not a real `/dev/...` device) also counts as `not mounted`; this is the same rule the mirror guard, file sharing and the data-drive start check use. The script also alerts, rather than quietly watching only `/`, when at run time the `.env` is missing or unreadable (`config not found: <path>`), has no data locations (`no data locations in <path>`), or `df` cannot be read for a mount (`<mount> usage unreadable`).
 
 **Install checks first.** Before anything is installed, the exact generated script is dry-run as your user (no curl, no writes) and prints `Watching: / (65%), /mnt/federver (76%), ...` and `Config: <path to .env>`. If it would be blind (the `.env` is missing or unreadable, has no `*_LOCATION` keys, or none of its paths exist) the install is **refused** and nothing is installed or scheduled; if a disk-check was already installed, the message says that previous monitor is **still installed and unchanged** (and may be outdated), so re-run 14 → 7 from the privcloud folder. A script bug (any dry-run result other than ok / alert / blind) is reported as a monitor script error and also refuses. If the dry-run finds a real alert (a full disk, an absent drive) the install **proceeds**, because that is the monitor's job: the first heartbeat is then sent as DOWN and Kuma goes red; with no problems it is sent immediately and Kuma goes green before you leave the step. If that first heartbeat cannot reach Kuma (wrong token, Kuma unreachable) the step says so and shows the recorded reason; the job stays scheduled and retries every 5 minutes. The script holds the Kuma token, so it is installed `root:root` mode `700` (root-only). **Re-running never asks for the URL again if it can find it.** Before prompting, the step looks for the Push URL in the installed script (read with sudo; skipped when nothing is installed) and then in Uptime Kuma's own database (read-only, no sudo; it needs exactly one active push monitor named "Disk Space", and two matches count as not found). If it finds one it shows a **Current** block (masked Push URL `…last4` and where it came from, the real root cron line or `not scheduled` / `unknown`, and the last run from `/var/log/disk-check.last` in green if ok, red otherwise, `(stale)` after 12 minutes, `never` if absent) and asks `Enter = use it, p = paste a different URL, r = remove the monitor, q = back`; Enter reinstalls with that URL. The seven-line Kuma settings box is always shown first, so you can see how the monitor should be configured: titled `Kuma monitor settings` when a URL was found, `Set up the Kuma monitor first` when not (and `p` does not print it again). Any lookup failure (Kuma or docker down, sudo refused) just means "not found". When nothing is found you get the paste prompt, where a blank answer or `q` goes back with **no changes**. **Kuma wins over a stale script.** When the URL came from the installed script, the step also asks Kuma for the monitor's Push URL; if the tokens differ it warns `Installed script's Push URL differs from Kuma's (…<last4> vs …<last4>)`, shows both masked in the Current block, and Enter installs Kuma's URL (a script holding an old token pushes into the void and the monitor never turns green). No answer from Kuma skips the comparison. End of input (a closed terminal or pipe) counts as `q`: back, no changes. Removal is only ever explicit: `r`, then type `disk-check` to confirm (blank cancels); it deletes the cron line and the script and verifies both are gone.
 
-**Where to look.** Every run overwrites a one-line state file, `/var/log/disk-check.last` (`<date> ok` or `<date> ALERT <msg>`, world-readable so the menu reads it without sudo); alerts and failed pushes are also appended to `/var/log/disk-check.log`. A failed Kuma push (wrong token, Kuma unreachable) is recorded as `ALERT Kuma push failed (curl exit N)`. `federver` → 14 → 1 (Status) shows the disk-check row with its real schedule, last run (`✓ ok`, `⚠ <alert>`, `⚠ stale`) and `not scheduled` if the script exists without a cron line. Uptime Kuma then alerts you via Telegram/email if configured.
+**Where to look.** Every run overwrites a one-line state file, `/var/log/disk-check.last` (`<date> ok` or `<date> ALERT <msg>`, world-readable so the menu reads it without sudo); alerts and failed pushes are also appended to `/var/log/disk-check.log`. A failed Kuma push (wrong token, Kuma unreachable) is recorded as `ALERT Kuma push failed (curl exit N)`. `federver` → 16 → 1 (Status) shows the disk-check row with its real schedule, last run (`✓ ok`, `⚠ <alert>`, `⚠ stale`) and `not scheduled` if the script exists without a cron line. Uptime Kuma then alerts you via Telegram/email if configured.
 
-**Immich backup (scheduled):** `federver` → 14 → 6 (a set up/change · status · run now · remove submenu) — or `federver` → i, whose flat menu lists the same actions (`Backup - Scheduled - Set up` / `Status` / `Run now` / `Remove`) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention — this also prunes older one-time dumps kept in the same `db/` folder; a failed dump fails the run and is logged as `DB dump FAILED`) **plus** a live `rsync` of your photos. Everything lands under `<dest>/immich/` — DB dumps in `<dest>/immich/db/`, photos in `<dest>/immich/photos/` (append-only — it never deletes from the backup). The photo copy backs up your **originals and metadata only**: it skips Immich's own DB-dump folder (`backups/`, already covered by the DB dump above) and the regenerable caches (`thumbs/`, `encoded-video/`) that Immich rebuilds after a restore — so the backup stays lean instead of mirroring tens of GB of throwaway data. `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to the one already configured (re-running Set up and pressing Enter keeps it), else to an external/USB drive, and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c <dest>/immich/db/immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
+**Immich backup (scheduled):** `federver` → 16 → 6 (a set up/change · status · run now · remove submenu) — or `federver` → 9, whose flat menu lists the same actions (`Backup - Scheduled - Set up` / `Status` / `Run now` / `Remove`) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention — this also prunes older one-time dumps kept in the same `db/` folder; a failed dump fails the run and is logged as `DB dump FAILED`) **plus** a live `rsync` of your photos. Everything lands under `<dest>/immich/` — DB dumps in `<dest>/immich/db/`, photos in `<dest>/immich/photos/` (append-only — it never deletes from the backup). The photo copy backs up your **originals and metadata only**: it skips Immich's own DB-dump folder (`backups/`, already covered by the DB dump above) and the regenerable caches (`thumbs/`, `encoded-video/`) that Immich rebuilds after a restore — so the backup stays lean instead of mirroring tens of GB of throwaway data. `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to the one already configured (re-running Set up and pressing Enter keeps it), else to an external/USB drive, and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c <dest>/immich/db/immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
 
 ### Periodic (manual)
 
 | Task | Command | When |
 |------|---------|------|
 | Check status | `federver` → **s** | Anytime |
-| Update Immich | `federver` → i → Update | Monthly |
+| Update Immich | `federver` → 9 → Update | Monthly |
 | Update other containers | `docker compose pull && docker compose up -d` | Monthly |
 | Update Fedora userspace | `sudo dnf upgrade --exclude='kernel*'` | Monthly (or skip — security fixes auto-apply) |
 | Update kernel + reboot | see [Kernel updates](#kernel-updates) | Every 1–2 months, when you're home |
@@ -1468,7 +1466,7 @@ Pre-v0.5.1 fstab entries used `defaults,nofail`, which silently skipped the moun
 
 If BIOS is set to auto-power-on (F10 → After Power Loss → Power On), the server boots automatically. Fedora auto-logs in, Docker restarts all containers. Nothing to do.
 
-If services aren't running: `cd ~/privcloud && docker compose up -d`, then check with `federver` → i → Status.
+If services aren't running: `cd ~/privcloud && docker compose up -d`, then check with `federver` → 9 → Status.
 
 ---
 
@@ -1516,10 +1514,10 @@ This updates `.env` and redeploys FileBrowser automatically.
 
 ### Changing Immich data location
 
-1. Stop Immich: `federver` → i → Stop
+1. Stop Immich: `federver` → 7 → 3 (Stop)
 2. Move files: `sudo rsync -ah --progress /old/immich/ /new/immich/`
 3. Change location: `federver` → **13** → **6** → enter `/new/immich`
-4. Verify: `federver` → i → Status
+4. Verify: `federver` → 9 → Status
 
 **Important:** the Postgres database password is baked in when first created. If you copy the database directory, keep the same `DB_PASSWORD` in `.env`. Changing it will cause `password authentication failed`.
 

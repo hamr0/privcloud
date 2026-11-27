@@ -25,7 +25,7 @@ This page covers two pieces of the single-source spec: Piece 5 (`.env` and compo
 ### D4: `patch_selinux`
 
 - privcloud's `patch_selinux` edits a tracked file, although the tracked compose file already carries `:Z`, and setup.sh never calls it even though `step_deploy` runs the same compose file (docs/archive/spec-single-source.md:345).
-- On a non-Enforcing host, `step_immich_start` (federver → i → Start) removes `:Z` with `sed -i` and leaves the tree dirty. A dirty compose file could make a later `git pull --ff-only` fail silently; this is marked UNVERIFIED and hypothetical (docs/archive/spec-single-source.md:346).
+- On a non-Enforcing host, starting the stack (federver → 7 → Start) removes `:Z` with `sed -i` and leaves the tree dirty. A dirty compose file could make a later `git pull --ff-only` fail silently; this is marked UNVERIFIED and hypothetical (docs/archive/spec-single-source.md:346).
 - Design: never edit the tracked compose file. Either keep `:Z` committed and drop `patch_selinux`, or generate a git-ignored `docker-compose.selinux.yml` passed with a second `-f` when SELinux is not Enforcing. The recommendation is to keep `:Z` committed if non-SELinux hosts accept it, otherwise the override file (docs/archive/spec-single-source.md:358).
 
 ### D33: defaults
@@ -43,7 +43,7 @@ This page covers two pieces of the single-source spec: Piece 5 (`.env` and compo
   - One `env_get`/`env_set`, used by `step_immich_config` and `_set_env` (done: `_set_env` is the one writer, `_env_get` the one reader).
   - No unanchored `grep KEY .env` remains.
   - `.env.example` has every key `step_deploy` writes and no `DATA_ROOT`.
-  - After federver → i → Start the tracked compose file is unmodified (`git status` clean).
+  - After federver → 7 → Start the tracked compose file is unmodified (`git status` clean).
 
 ## Piece 4: Service lifecycle and status
 

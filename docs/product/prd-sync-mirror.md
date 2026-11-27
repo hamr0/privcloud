@@ -1,4 +1,4 @@
-# PRD: Opt-in mirror mode for sync jobs and one-time backups (`federver` → 14)
+# PRD: Opt-in mirror mode for sync jobs and one-time backups (`federver` → 16)
 
 Status: **Built on `feat/smb-share`, not yet merged.**
 
@@ -10,7 +10,7 @@ ever making that destructive behaviour the default or a surprise.
 
 ## Background — the problem
 
-Every rsync transfer in `federver → 14` ran `rsync -avh` without `--delete`: add and
+Every rsync transfer in `federver → 16` ran `rsync -avh` without `--delete`: add and
 overwrite only. A file removed at the source stayed at the destination forever, so a
 "backup" of a curated folder slowly diverged from it (old mixes, renamed albums, junk the
 user had already cleaned up). The user's workflow is "update at the source, copies follow",

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tests for the opt-in mirror mode (rsync --delete) of federver -> 14 sync and
+# Tests for the opt-in mirror mode (rsync --delete) of federver -> 16 sync and
 # backups: the copy-mode question, source guard, dry-run preview + y/N, the tar
 # (sudo) route, scheduled jobs (stored MODE, cron guard, skip log), Status rows
 # and 14 -> 3 -> Change copy mode. Run: bash tests/sync-mirror.sh (non-zero on failure)

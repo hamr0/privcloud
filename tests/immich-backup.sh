@@ -278,7 +278,7 @@ check 7s "0 = Back: rc 2, nothing copied" '[ $RC = 2 ] && [ ! -s "$RS_LOG" ]'
 go "9\n" step_immich_backup_once
 check 7t "invalid scope: rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"Invalid choice"* ]]'
 mv "$T/app/.env" "$T/app/.env.bak"; go "\n" step_immich_backup_once
-check 7u "no .env (not installed): rc 1 with the install hint" '[ $RC = 1 ] && [[ "$OUT" == *"federver -> i -> Install"* ]]'
+check 7u "no .env (not installed): rc 1 with the install hint" '[ $RC = 1 ] && [[ "$OUT" == *"federver -> 9 -> Install"* ]]'
 mv "$T/app/.env.bak" "$T/app/.env"
 
 # one-time mirror: same guard, preview and typed confirmation as sync

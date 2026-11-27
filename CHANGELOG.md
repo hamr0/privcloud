@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **`federver -> Manage Immich -> Stop` took Navidrome, FileBrowser, Uptime Kuma and Watchtower down with Immich, and skipped the autostart rule.** The Immich menu ran `docker compose down` on the whole `docker-compose.yml`, which holds all eight containers, and Start and Update used `compose up -d` and `compose pull` the same way, so one Immich action touched every service. Start and Stop are gone from the Manage Immich menu: `federver -> 7` (Manage services) is now the only place that starts, stops or restarts anything, and it already sets restart=no on Stop and unless-stopped on Start. Update and Install now pull and recreate only Immich's four compose services (`immich-server`, `immich-machine-learning`, `redis`, `database`, defined once as `_IMMICH_SERVICES`), and the autostart pass after an update only touches those four, so a Navidrome you stopped on purpose stays stopped. The hints that said "Start it first: federver -> i -> Start" now point at `federver -> 7 -> 2`.
+
+### Changed
+
+- **Manage Immich moved into Extras, right after Tailscale (`federver -> 9`); the main menu is numbered 1 to 17 with no letter key for Immich.** Extras are now 8 Tailscale, 9 Immich, 10 WireGuard, 11 AdGuard, 12 storage, 13 Syncthing, 14 remote desktop, 15 Connect phone (Files app); Tools are 16 Manage sync and backups and 17 Save to pass. The separate "Immich photo management" section, the `i)` key and the `i) Immich` entry in the bottom bar are removed. Every `federver -> N` hint in the script, README, customer guide, wiki and PRDs was renumbered (old 14 is 16, old 16 is 15, old `i` is 9). The Manage Immich submenu is renumbered 1 to 11 without the old Start and Stop, uses the same `←` arrows as the other submenus, and the Remove row is aligned again. `tests/menu-refs.sh` now runs the real menu and dispatcher text and fails on a stale `federver -> N` hint.
+- **Every screen starts with the federver header.** `run_step` used to clear the screen and print only `=== step ===`; it now prints the same banner as the main menu (name, version, laptop or server, tagline, rule) and the step name beneath it, so a submenu or step never loses where you are. The banner is still printed by the one function `_show_menu_header`.
+
 ## v0.13.0 — 2026-11-27
 
 ### Fixed

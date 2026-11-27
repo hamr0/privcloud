@@ -1106,14 +1106,63 @@ _ts_start_both() {
     _ts_skip start Server "$rec" || { ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale up" || warn "Server: failed."; }
 }
 
+# tailscaled's last (re)start, monotonic microseconds: changes on every restart, so
+# "before != after" proves the restart happened. Shipped to the server with declare -f.
+_ts_started_at() { systemctl show -p ActiveEnterTimestampMonotonic --value tailscaled 2>/dev/null; }
+_ts_server_stamp() { _server_probe "$(declare -f _ts_started_at); _ts_started_at"; }
+
+# Poll up to 30s until tailscaled's start stamp differs from $2 AND the state reads
+# Running. Fails saying which part did not happen: not restarted / not connected.
+# Args: side(Server|Laptop) stamp-before stamp-fn state-fn.
+_ts_prove_restart() {
+    local side=$1 before=$2 now rec="" i restarted=0
+    info "Waiting for Tailscale on the ${side,,} (up to 30s)..."
+    for ((i = 0; i < 30; i++)); do
+        now=$("$3")
+        if [[ -n "$now" && "$now" != unreachable && "$now" != "$before" ]]; then
+            restarted=1
+            rec=$("$4")
+            _ts_running "$rec" && { ok "$side: restarted, connected"; return 0; }
+        elif [[ "$now" == unreachable && "$side" == Server ]]; then
+            # the link rode on the tailnet that is restarting: pick the address again
+            _ts_connected_via_ts && _resolve_server_endpoint >/dev/null 2>&1
+        fi
+        sleep 1
+    done
+    if (( restarted )); then
+        fail "$side: tailscaled restarted but did not reconnect (state: ${rec%% *}) - check: tailscale status"
+    else
+        fail "$side: Tailscale was NOT restarted (tailscaled start time unchanged)"
+    fi
+    return 1
+}
+
+# Server first, then the laptop: restarting the laptop's tailscaled drops the very
+# path to a server reached over Tailscale. The server restart is scheduled (systemd-run,
+# 2s) so the ssh command returns before its own link drops; the proof polls afterwards.
 _ts_restart_both() {
-    info "Restarting Tailscale on both laptop and server..."
-    local rec
-    rec=$(_ts_state)
-    _ts_skip restart Laptop "$rec" || { sudo systemctl restart tailscaled 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."; }
+    local rec before rc=0
     rec=$(_ts_server_state)
-    _ts_skip restart Server "$rec" || { ssh -t "$SERVER_USER@$SERVER_IP" "sudo systemctl restart tailscaled 2>/dev/null" \
-        && ok "Server: restarted." || warn "Server: failed."; }
+    _ts_skip restart Server "$rec" || {
+        before=$(_ts_server_stamp)
+        info "Restarting Tailscale on the server…"
+        if ssh -t "$SERVER_USER@$SERVER_IP" "sudo systemd-run --quiet --on-active=2 systemctl restart tailscaled"; then
+            _ts_prove_restart Server "$before" _ts_server_stamp _ts_server_state || rc=1
+        else
+            fail "Server: could not schedule the restart"; rc=1
+        fi
+    }
+    rec=$(_ts_state)
+    _ts_skip restart Laptop "$rec" || {
+        before=$(_ts_started_at)
+        info "Restarting Tailscale on the laptop…"
+        if sudo systemctl restart tailscaled; then
+            _ts_prove_restart Laptop "$before" _ts_started_at _ts_state || rc=1
+        else
+            fail "Laptop: could not restart tailscaled"; rc=1
+        fi
+    }
+    return $rc
 }
 
 # The server's _ts_state record, or "Unreachable - - -" when the ssh itself fails.

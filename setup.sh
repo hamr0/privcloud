@@ -5092,6 +5092,15 @@ _mirror_refuse() {
 # needs the exact count typed instead of a y/N (_mirror_preview).
 MIRROR_WIPE_MIN=1000
 
+# Drop keys typed ahead (a leftover Enter must not answer the next question).
+# Only on a terminal; a pipe or heredoc on stdin is left alone.
+_mirror_flush() {
+    if [[ -t 0 ]]; then
+        while read -r -t 0.05 -n 10000 _; do :; done
+    fi
+    return 0
+}
+
 # The one question. Sets sync_mode=append|mirror; only the exact word "delete"
 # selects mirror.
 _mirror_ask() {
@@ -5099,6 +5108,7 @@ _mirror_ask() {
     echo ""
     echo -e "  ${YELLOW}Deleted at source → also delete at destination?${NC}"
     echo -en "  Enter = no, ${GREEN}append only${NC} · type \"${RED}delete${NC}\" = ${RED}mirror${NC}: "
+    _mirror_flush
     IFS= read -r reply || reply=""
     if [[ "$reply" == delete ]]; then
         sync_mode=mirror
@@ -5213,6 +5223,7 @@ _mirror_preview() {
         (( ng > 5 )) && echo "    ... and $((ng - 5)) more folders"
         echo "  Full list: $list"
     fi
+    _mirror_flush   # keys typed during the dry run must not answer the question
     if (( _mirror_n > 0 && (nwhole > 0 || nf > MIRROR_WIPE_MIN) )); then
         # Wipe guard: a plain y/N is too easy to hit. Type the exact count.
         local want=$(( nf > 0 ? nf : nd ))

@@ -22,7 +22,7 @@ fn() { awk -v n="$1" '
   grep -m1 '^ssh()' "$SRC" >/dev/null && awk '/^ssh\(\) \{/{p=1} p{print} p&&/^}/{exit}' "$SRC"
   grep -m1 '^_shq()' "$SRC"
   grep -E '^MIRROR_WIPE_MIN=' "$SRC"
-  for f in _mirror_check_here _mirror_guard _mirror_refuse _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
+  for f in _mirror_check_here _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
            _mirror_preview _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
            _sync_mode_cell _sync_last_note _sync_last_result _sync_change_mode \
            _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \

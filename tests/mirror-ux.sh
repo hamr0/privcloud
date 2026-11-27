@@ -109,5 +109,21 @@ chk y "printf 'del.|a\\n'" save; check 6k "small save: y/N as before" '[ $RC = 0
 chk y "printf 'del.|e1/\\\\ndel.|a\\\\n'"; check 6m "an empty top-level folder alone is not a wipe: y/N" '[ $RC = 0 ] && [[ "$OUT" != *"Type "* ]]'
 check 6l "the limit is one named constant" '[ "$MIRROR_WIPE_MIN" = 1000 ] && [ "$(grep -c "1000" <<<"$(declare -f _mirror_preview)")" = 0 ]'
 
+# 7 keys typed ahead are dropped on a terminal, pipes are left alone
+cat > "$T/ahead.sh" <<X
+source "$T/fn.sh"
+_mirror_guard() { return 0; }
+_mirror_refuse() { :; }
+export XDG_STATE_HOME="$T/state"
+sleep 1                       # the keys below are already buffered when we ask
+if [ "\$1" = ask ]; then _mirror_ask >/dev/null; echo "MODE=\$sync_mode"
+else _mirror_preview local /s /d "printf 'del.|a\\\\n'" copy >/dev/null; echo "RC=\$?"; fi
+X
+RAW=$({ printf 'delete\n'; sleep 3; } | timeout 10 script -qec "bash $T/ahead.sh ask" /dev/null 2>&1; true)
+check 7a "tty: 'delete' typed ahead does not answer the copy-mode question" '[[ "$RAW" == *"MODE=append"* ]]'
+RAW=$({ printf 'y\n'; sleep 3; } | timeout 10 script -qec "bash $T/ahead.sh prev" /dev/null 2>&1; true)
+check 7b "tty: 'y' typed ahead does not answer the y/N" '[[ "$RAW" == *"RC=1"* ]]'
+check 7c "pipe on stdin still answers (not flushed)" 'OUT=$(printf "y\n" | _mirror_preview local /s /d "$LIST" copy 2>&1); [ $? = 0 ]'
+
 echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
 [ "$FAILN" = 0 ]

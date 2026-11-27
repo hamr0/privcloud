@@ -602,7 +602,7 @@ _show_laptop_menu() {
     echo -e "  ${BOLD}16)${NC} Connect phone (Files app)           ${DIM}← iPhone/Android open server folders over Tailscale${NC}"
     echo ""
     echo -e "  ${DIM}-- Immich photo management --${NC}"
-    echo -e "  ${BOLD}i)${NC}  Immich (privcloud)                  ${DIM}← start/stop/status/update/backup${NC}"
+    echo -e "  ${BOLD}i)${NC}  Manage Immich                       ${DIM}← status, start/stop, update, upload, backup${NC}"
     echo ""
     echo -e "  ${DIM}-- Tools --${NC}"
     echo -e "  ${BOLD}14)${NC} Manage sync and backups             ${DIM}← sync jobs, Immich backup, disk monitor${NC}"
@@ -655,19 +655,15 @@ EOF
     sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target > /dev/null 2>&1
     ok "Screen lock and sleep disabled"
 
-    # Create global commands: 'setup' and 'privcloud'
+    # Create the global command: 'federver'
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     sudo tee /usr/local/bin/federver > /dev/null << WRAPPER
 #!/bin/bash
 exec $SCRIPT_DIR/setup.sh "\$@"
 WRAPPER
     sudo chmod +x /usr/local/bin/federver
-    sudo tee /usr/local/bin/privcloud > /dev/null << WRAPPER
-#!/bin/bash
-exec $SCRIPT_DIR/privcloud "\$@"
-WRAPPER
-    sudo chmod +x /usr/local/bin/privcloud
-    ok "Commands available: 'federver' and 'privcloud' (from anywhere)"
+    _remove_stale_privcloud_cmd
+    ok "Command available: 'federver' (from anywhere)"
 
     IP=$(hostname -I | awk '{print $1}')
     echo ""
@@ -1858,7 +1854,7 @@ _storage_change_immich() {
 
     ok "Done. Immich now uses: $new_base"
     echo ""
-    warn "If you moved existing data, verify with: privcloud status"
+    warn "If you moved existing data, verify with: federver → i → Status"
 }
 
 _services_status() {
@@ -3782,26 +3778,65 @@ PersistentKeepalive = 25"
     echo -e "  ${BOLD}Mac:${NC}    WireGuard app (brew or App Store) → import config"
 }
 
+# ── Manage Immich (the former `privcloud` script, merged in) ─────────────
+# federver -> i. Every action runs on the server (_on_server hops there, so
+# `setup.sh --run step_immich_<action>` is also the scripting entry point) and
+# reads and writes the repo's own .env / docker-compose.yml on the server.
+# Single pass, like the other submenus: run one action, then back to the main menu.
 step_immich() {
-    if _is_server; then
-        if command -v privcloud &>/dev/null; then
-            privcloud
-        else
-            SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-            "$SCRIPT_DIR/privcloud"
-        fi
-    else
-        info "Opening Immich manager on the server via SSH..."
-        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && GIT_TERMINAL_PROMPT=0 git pull --ff-only -q 2>/dev/null; ./privcloud"
-    fi
+    echo ""
+    echo -e "  ${BOLD}1)${NC}  Status                          ${DIM}<- containers, storage, recent errors${NC}"
+    echo -e "  ${BOLD}2)${NC}  Start                           ${DIM}<- bring Immich up, autostart on${NC}"
+    echo -e "  ${BOLD}3)${NC}  Stop                            ${DIM}<- down; stops Docker if nothing else runs${NC}"
+    echo -e "  ${BOLD}4)${NC}  Update                          ${DIM}<- pull new images, apply${NC}"
+    echo -e "  ${BOLD}5)${NC}  Install                         ${DIM}<- check Docker, first-time config, pull images${NC}"
+    echo -e "  ${BOLD}6)${NC}  Config                          ${DIM}<- change the photo storage location${NC}"
+    echo ""
+    echo -e "  ${BOLD}7)${NC}  Upload photos                   ${DIM}<- bulk-upload a folder on the server (Immich CLI)${NC}"
+    echo -e "  ${BOLD}8)${NC}  Fix Google Photos metadata      ${DIM}<- Takeout export: dates and GPS${NC}"
+    echo ""
+    echo -e "  ${BOLD}9)${NC}  Backup - One-time               ${DIM}<- copy photos + database to a drive now${NC}"
+    echo -e "  ${BOLD}10)${NC} Backup - Scheduled - Set up     ${DIM}<- weekly systemd timer, no downtime${NC}"
+    echo -e "  ${BOLD}11)${NC} Backup - Scheduled - Status     ${DIM}<- schedule, next/last run, recent runs${NC}"
+    echo -e "  ${BOLD}12)${NC} Backup - Scheduled - Run now    ${DIM}<- start a backup in the background${NC}"
+    echo -e "  ${BOLD}13)${NC} ${RED}Backup - Scheduled - Remove${NC}    ${DIM}<- delete the schedule (keeps files)${NC}"
+    echo -e "  ${BOLD}0)${NC}  Back"
+    echo ""
+    local c
+    read -p "  Choice [0-13]: " c
+    case "$c" in
+        1)  _on_server step_immich_status ;;
+        2)  _on_server step_immich_start ;;
+        3)  _on_server step_immich_stop ;;
+        4)  _on_server step_immich_update ;;
+        5)  _on_server step_immich_install ;;
+        6)  _on_server step_immich_config ;;
+        7)  _on_server step_immich_upload ;;
+        8)  _on_server step_immich_fix_gp ;;
+        9)  _on_server step_immich_backup_once ;;
+        10) _on_server step_immich_backup ;;
+        11) _on_server _immich_backup_status ;;
+        12) _on_server _immich_backup_run ;;
+        13) _on_server _immich_backup_remove ;;
+        0|"") return 2 ;;
+        *)  fail "Invalid choice."; return 2 ;;
+    esac
 }
 
-# ── Manage Immich (the former `privcloud` script, merged in) ─────────────
-# Every action below runs on the server (federver -> i hops with _on_server, so
-# `setup.sh --run step_immich_<action>` is also the scripting entry point). They
-# read and write the repo's own .env / docker-compose.yml on the server.
 _IMMICH_ENV="$(dirname "$_FV_SELF")/.env"
 _IMMICH_COMPOSE="$(dirname "$_FV_SELF")/docker-compose.yml"
+
+# The `privcloud` command is gone (federver -> i replaces it). Older installs
+# left a wrapper behind that now points at a file that no longer exists; remove it.
+_STALE_PRIVCLOUD_CMD=/usr/local/bin/privcloud
+_remove_stale_privcloud_cmd() {
+    [[ -e "$_STALE_PRIVCLOUD_CMD" || -L "$_STALE_PRIVCLOUD_CMD" ]] || return 0
+    if sudo rm -f "$_STALE_PRIVCLOUD_CMD"; then
+        info "Removed the old 'privcloud' command - Immich is now: federver -> i (Manage Immich)."
+    else
+        warn "Could not remove the old 'privcloud' command ($_STALE_PRIVCLOUD_CMD) - it no longer works; remove it with sudo."
+    fi
+}
 
 _immich_compose() { docker compose -f "$_IMMICH_COMPOSE" --env-file "$_IMMICH_ENV" "$@"; }
 _immich_up()      { curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; }
@@ -3903,6 +3938,7 @@ _immich_need_env() {
 }
 
 step_immich_install() {
+    _remove_stale_privcloud_cmd
     info "Checks Docker, sets up the config and pulls the Immich images."
     echo ""
     if ! command -v docker &>/dev/null; then
@@ -4163,6 +4199,7 @@ EOF
 }
 
 step_immich_update() {
+    _remove_stale_privcloud_cmd
     _immich_need_env || return 1
     _immich_ensure_docker "$FUNCNAME" || return 1
 
@@ -4344,7 +4381,7 @@ step_immich_fix_gp() {
     bash "$(dirname "$_FV_SELF")/scripts/google-takeout-fix.sh" "$input_path"
 }
 
-# One-time Immich backup to a drive (moved as-is from `privcloud backup` -> 1;
+# One-time Immich backup to a drive (moved as-is from the former privcloud CLI, backup -> 1;
 # step 6 of the single-source plan unifies it with the scheduled backup).
 step_immich_backup_once() {
     _immich_docker_group "$FUNCNAME"
@@ -9297,7 +9334,7 @@ else
             15) run_step "[15] Save to pass" step_save_to_pass ;;
             16) run_step "[16] Connect phone (Files app)" "_on_server step_samba" ;;
             s)  run_step "[s] Status" step_status ;;
-            i)  run_step "[i] Immich (privcloud)" step_immich ;;
+            i)  run_step "[i] Manage Immich" step_immich ;;
             p)  run_step "[p] Power" step_power ;;
             r)  run_step "[r] Reset password" "_on_server step_reset_password" ;;
             a)  run_step "Run all (3-7)" "_on_server run_all" ;;

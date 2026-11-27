@@ -111,4 +111,16 @@ check 7a "status lists only the four Immich services and reads only their logs (
 : > "$DLOG"; OUT=$(NO_CTR=1 step_immich_status 2>&1)
 check 7b "no Immich containers: the message says Immich, not the whole stack" '[[ "$OUT" == *"No Immich containers running."* ]]'
 
+
+# 8 Install (federver -> 9 -> 3): summary, then ONE [Y/n] before anything is changed or pulled
+for f in step_immich_install _confirm_yn; do extract_fn "$f" "$S"; done > "$T/inst.sh"
+source "$T/inst.sh"
+_remove_stale_privcloud_cmd() { :; }; _immich_ensure_docker() { :; }; _immich_needs_selinux() { return 1; }
+_immich_fix_permissions() { echo FIXPERM >> "$T/inst.log"; }
+_immich_compose() { echo "compose $*" >> "$T/inst.log"; }
+printf 'UPLOAD_LOCATION=/x\n' > "$T/x.env"
+: > "$T/inst.log"; OUT=$(printf 'n\n' | step_immich_install 2>&1); RC=$?
+check 8a "Install: summary lists the config path and the four services; n = nothing pulled, no permission fix, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Install summary"* && "$OUT" == *"Config:  $T/x.env"* && "$OUT" == *"immich-server immich-machine-learning redis database"* && "$OUT" == *"Cancelled - nothing pulled"* ]] && [ ! -s "$T/inst.log" ]'
+: > "$T/inst.log"; OUT=$(printf '\n' | step_immich_install 2>&1); RC=$?
+check 8b "Install: Enter = pull the four services, announced first ('Pulling 4 images')" '[ $RC = 0 ] && grep -qx "compose pull immich-server immich-machine-learning redis database" "$T/inst.log" && [[ "$OUT" == *"Pulling 4 images"* ]]'
 check_total

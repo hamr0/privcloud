@@ -4054,6 +4054,33 @@ _immich_need_env() {
     return 1
 }
 
+# The one prompt rule of Manage Immich (federver -> 9): a path prompt names the current value
+# ("Enter keeps it") and accepts q = back; a write or a long step shows ONE summary, then ONE
+# confirm - [Y/n] when safe, [y/N] ("N" as 2nd arg) when destructive.
+# _ask_path OUTVAR LABEL [CURRENT]: sets OUTVAR (~ expanded, pasted quotes stripped); rc 2 on q.
+_ask_path() {
+    local -n _ap_out=$1
+    local _ap_ans
+    if [[ -n "${3:-}" ]]; then
+        read -rp "  $2 (Enter keeps it: $3, q = back): " _ap_ans
+        _ap_ans="${_ap_ans:-$3}"
+    else
+        read -rp "  $2 (q = back): " _ap_ans
+    fi
+    [[ "$_ap_ans" == q ]] && return 2
+    _ap_ans="${_ap_ans/#\~/$HOME}"
+    _ap_ans="${_ap_ans//\'/}"
+    _ap_out="${_ap_ans//\"/}"
+}
+_confirm_yn() { # question [N]
+    local a
+    if [[ "${2:-Y}" == N ]]; then
+        read -rp "  $1 [y/N]: " a; [[ "$a" =~ ^[Yy] ]]
+    else
+        read -rp "  $1 [Y/n]: " a; [[ ! "$a" =~ ^[Nn] ]]
+    fi
+}
+
 step_immich_install() {
     _remove_stale_privcloud_cmd
     info "Checks Docker, sets up the config and pulls the Immich images."
@@ -4081,11 +4108,20 @@ step_immich_install() {
         ok "Config: $(_env_get UPLOAD_LOCATION "$_IMMICH_ENV")"
     fi
 
+    echo ""
+    echo -e "  ${BOLD}Install summary${NC}"
+    echo "    Config:  $_IMMICH_ENV"
+    echo "    Images:  ${_IMMICH_SERVICES[*]}  (several GB the first time)"
+    if ! _confirm_yn "Pull the images now?"; then
+        warn "Cancelled - nothing pulled."
+        return 0
+    fi
+
     _immich_fix_permissions
     _immich_needs_selinux && ok "SELinux: Enforcing (the compose file's :Z labels apply)"
 
     echo ""
-    echo -e "  ${BOLD}Pulling images (first time takes a few minutes)...${NC}"
+    echo -e "  ${BOLD}Pulling ${#_IMMICH_SERVICES[@]} images (first time takes a few minutes)...${NC}"
     _immich_compose pull "${_IMMICH_SERVICES[@]}" || { fail "Pulling the images failed."; return 1; }
     echo ""
     ok "Install complete. Next: federver -> 7 -> 6 (Deploy) starts Immich"
@@ -4326,6 +4362,10 @@ step_immich_update() {
     ok "Done."
 }
 
+# True when Immich accepts the API key. It goes in on stdin (-H @-), never on the arg list
+# (visible to other local users via `ps`).
+_immich_key_ok() { curl -sf -H @- http://localhost:2283/api/users/me <<<"x-api-key: $1" &>/dev/null; }
+
 step_immich_upload() {
     info "Bulk-uploads a photo folder on the server into Immich (Immich CLI)."
     echo ""
@@ -4351,10 +4391,26 @@ step_immich_upload() {
     ok "Immich CLI: $(docker run --rm "$cli_image" --version 2>/dev/null)"
     echo ""
 
-    # Get API key (3 attempts)
-    local api_key attempts=0
+    # API key: a saved one is checked first (/api/users/me); valid = Enter keeps it. The file is
+    # 600 under a 700 dir, the key is read silently and only ever on stdin / by env name.
+    local api_key="" saved="" attempts=0 keyf="${XDG_CONFIG_HOME:-$HOME/.config}/federver/immich-api-key"
+    [[ -r "$keyf" ]] && saved="$(<"$keyf")"
+    if [[ -n "$saved" ]]; then
+        if _immich_key_ok "$saved"; then
+            ok "API key: saved (Enter keeps it, or paste a new one)"
+        else
+            warn "The saved API key was rejected - paste a new one."
+            saved=""
+        fi
+    fi
     while (( attempts < 3 )); do
-        read -rp "  API key (from http://localhost:2283 -> Account Settings -> API Keys): " api_key
+        read -rsp "  API key${saved:+ (Enter keeps the saved one)} (from http://localhost:2283 -> Account Settings -> API Keys, q = back): " api_key
+        echo ""
+        [[ "$api_key" == q ]] && return 2
+        if [[ -z "$api_key" && -n "$saved" ]]; then
+            api_key="$saved"
+            break
+        fi
 
         if [[ -z "$api_key" ]]; then
             fail "No API key provided."
@@ -4362,9 +4418,9 @@ step_immich_upload() {
             continue
         fi
 
-        # Pass the key via stdin (-H @-) so it never appears in the process arg list
-        # (visible to other local users via `ps`).
-        if curl -sf -H @- http://localhost:2283/api/users/me <<<"x-api-key: $api_key" &>/dev/null; then
+        if _immich_key_ok "$api_key"; then
+            ( umask 077; mkdir -p "$(dirname "$keyf")"; printf '%s\n' "$api_key" > "$keyf" )
+            chmod 600 "$keyf" 2>/dev/null || true
             break
         fi
 
@@ -4381,11 +4437,7 @@ step_immich_upload() {
     echo ""
 
     local photo_path
-    read -rp "  Path to photos folder: " photo_path
-    photo_path="${photo_path/#\~/$HOME}"
-    # Strip quotes the user may have pasted
-    photo_path="${photo_path//\'/}"
-    photo_path="${photo_path//\"/}"
+    _ask_path photo_path "Path to photos folder" || return 2
 
     if [[ -z "$photo_path" || ! -d "$photo_path" ]]; then
         fail "Not a valid directory: $photo_path"
@@ -4400,7 +4452,7 @@ step_immich_upload() {
     echo "  How should the folders under this path be imported?"
     echo -e "    ${BOLD}1)${NC} Albums  ${DIM}<- one album per subfolder (keeps your folder names)${NC}"
     echo -e "    ${BOLD}2)${NC} Flat    ${DIM}<- everything into the timeline, no albums${NC}"
-    read -rp "  Choose [1/2]: " album_choice
+    read -rp "  Choose [1/2] (Enter = Flat): " album_choice
     if [[ "$album_choice" == 1 ]]; then
         album_flag="--album"
         ok "Albums: one per folder."
@@ -4408,14 +4460,13 @@ step_immich_upload() {
         ok "Flat import (no albums)."
     fi
 
-    local file_count confirm
+    local file_count
     file_count="$(find "$photo_path" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.heic' -o -iname '*.heif' -o -iname '*.gif' -o -iname '*.mp4' -o -iname '*.mov' -o -iname '*.avi' \) | wc -l)"
     echo ""
     echo -e "  ${BOLD}Ready to upload $file_count media files from:${NC}"
     echo "    $photo_path"
     echo ""
-    read -rp "  Continue? [Y/n]: " confirm
-    if [[ "$confirm" =~ ^[Nn] ]]; then
+    if ! _confirm_yn "Continue?"; then
         warn "Cancelled."
         return 0
     fi
@@ -4446,8 +4497,7 @@ step_immich_fix_gp() {
     echo ""
 
     local input_path
-    read -rp "  Path to folder with takeout zips (or a single .zip): " input_path
-    input_path="${input_path/#\~/$HOME}"
+    _ask_path input_path "Path to folder with takeout zips (or a single .zip)" || return 2
 
     if [[ -z "$input_path" ]]; then
         fail "No path provided."
@@ -4458,6 +4508,30 @@ step_immich_fix_gp() {
         fail "Not found: $input_path"
         return 1
     fi
+
+    # Same zip rule as scripts/google-takeout-fix.sh: takeout-*.zip, else any zip, in the folder.
+    local zdir zips=() z total=0 avail
+    [[ -f "$input_path" ]] && zdir="$(dirname "$(realpath "$input_path")")" || zdir="$(realpath "$input_path")"
+    shopt -s nullglob
+    zips=("$zdir"/takeout-*.zip)
+    (( ${#zips[@]} )) || zips=("$zdir"/*.zip)
+    shopt -u nullglob
+    if (( ${#zips[@]} == 0 )); then
+        fail "No zip files found in $zdir"
+        return 1
+    fi
+    for z in "${zips[@]}"; do total=$(( total + $(stat -c %s "$z" 2>/dev/null || echo 0) )); done
+    avail="$(df -B1 --output=avail "$zdir" 2>/dev/null | tail -n 1 | tr -d ' ')"
+    echo ""
+    echo -e "  ${BOLD}Takeout fix summary${NC}"
+    echo "    Zips:    ${#zips[@]} ($(numfmt --to=iec "$total"))"
+    echo "    Output:  $zdir/extracted"
+    echo "    Free:    $(numfmt --to=iec "${avail:-0}") on that disk"
+    if [[ -n "$avail" ]] && (( avail < total )); then
+        fail "Not enough free space: the zips unpack to at least their own size ($(numfmt --to=iec "$total")). Free up space or move them - nothing was started."
+        return 1
+    fi
+    _confirm_yn "Extract and fix now?" || { warn "Cancelled."; return 0; }
 
     bash "$(dirname "$_FV_SELF")/scripts/google-takeout-fix.sh" "$input_path"
 }
@@ -4550,13 +4624,6 @@ step_immich_backup_once() {
         pg_running=true
     fi
 
-    local confirm
-    read -rp "  Start backup? [Y/n]: " confirm
-    if [[ "$confirm" =~ ^[Nn] ]]; then
-        warn "Cancelled."
-        return 0
-    fi
-
     # Photo copy mode (only relevant when copying photos): append, or a mirror that
     # first passes the source guard + preview and then the deletion question.
     local sync_mode=append mirror_flag=()
@@ -4569,6 +4636,17 @@ step_immich_backup_once() {
             _mirror_banner
             _mirror_confirm || return 2
         fi
+    fi
+
+    # One summary, one question. A mirror already passed its own typed deletion question, which
+    # is the confirmation for the whole run, so it is not asked a second time.
+    if [[ "$sync_mode" != mirror ]]; then
+        echo ""
+        echo -e "  ${BOLD}Backup summary${NC}"
+        echo "    Scope:        $scope_name"
+        echo "    Destination:  $backup_dir/"
+        echo "    Mode:         append only"
+        _confirm_yn "Start backup?" || { warn "Cancelled."; return 0; }
     fi
 
     # The ONE script: the installed one when it is current, else the same generator
@@ -5251,18 +5329,23 @@ step_immich_backup() {
     [ -n "$default_dir" ] || default_dir=$(_pick_backup_default "$src_dir")
     default_dir=${default_dir:-$(realpath -m "${DB_DATA_LOCATION:-$(_data_defaults DB_DATA_LOCATION)}/../backups")}
 
-    read -rp "  Backup destination [${default_dir}, q=back]: " BACKUP_DIR   # -r: a backslash in a path is kept
+    # The current schedule, read the same way Status does (systemctl cat, not show -p OnCalendar).
+    local cur_oncal cur_dest
+    cur_oncal=$(systemctl cat immich-backup.timer 2>/dev/null | sed -n 's/^OnCalendar=//p' | head -1)
+    cur_dest=$(_configured_backup_dir)
+    [[ -n "$cur_oncal" ]] && echo "  Current schedule: $cur_oncal${cur_dest:+ -> $cur_dest}"
+    local keep_hint="Enter = "; [[ -n "$cur_dest" ]] && keep_hint="Enter keeps it: "
+    read -rp "  Backup destination (${keep_hint}${default_dir}, q = back): " BACKUP_DIR   # -r: a backslash in a path is kept
     [[ "$BACKUP_DIR" == "q" ]] && return 2
     BACKUP_DIR="${BACKUP_DIR:-$default_dir}"
     BACKUP_DIR=$(realpath -m "$BACKUP_DIR")
     [[ "$BACKUP_DIR" != *$'\n'* ]] || { fail "A destination cannot contain a line break."; return 1; }
-    sudo mkdir -p "$BACKUP_DIR"
 
     # A backup on the same disk as the photos dies with that disk. Warn loudly.
     if [ -n "$src_dir" ] && [ -e "$src_dir" ]; then
         local src_fs dst_fs
         src_fs=$(df -P "$src_dir" 2>/dev/null | awk 'NR==2{print $1}')
-        dst_fs=$(df -P "$BACKUP_DIR" 2>/dev/null | awk 'NR==2{print $1}')
+        dst_fs=$(df -P "$(_existing_ancestor "$BACKUP_DIR")" 2>/dev/null | awk 'NR==2{print $1}')
         if [ -n "$src_fs" ] && [ "$src_fs" == "$dst_fs" ]; then
             warn "Destination is on the SAME drive as your photos ($src_fs)."
             warn "A disk failure would lose the originals AND the backup."
@@ -5279,9 +5362,15 @@ step_immich_backup() {
     echo -e "    ${BOLD}0)${NC} Back"
     echo ""
     local cadence oncal retention_days
-    read -p "  Choice [0-2]: " cadence
+    if [[ -n "$cur_oncal" ]]; then
+        read -p "  Choice [0-2] (Enter keeps the current: $cur_oncal): " cadence
+        [[ -z "$cadence" ]] && cadence=keep
+    else
+        read -p "  Choice [0-2]: " cadence
+    fi
     case $cadence in
         0|"") return 2 ;;
+        keep) oncal="$cur_oncal"; [[ "$cur_oncal" == "*-*-* "* ]] && retention_days=7 || retention_days=21 ;;
         1) oncal="*-*-* 03:00:00"; retention_days=7 ;;
         2)
             echo ""
@@ -5289,7 +5378,14 @@ step_immich_backup() {
             echo -e "    ${BOLD}1)${NC} Sunday  ${BOLD}2)${NC} Monday  ${BOLD}3)${NC} Saturday"
             echo -e "    ${BOLD}0)${NC} Back"
             echo ""
-            local day; read -p "  Choice [0-3]: " day
+            local day cur_day=""
+            case "$cur_oncal" in Sun\ *) cur_day=1 ;; Mon\ *) cur_day=2 ;; Sat\ *) cur_day=3 ;; esac
+            if [[ -n "$cur_day" ]]; then
+                read -p "  Choice [0-3] (Enter keeps the current: ${cur_oncal%% *}): " day
+                day="${day:-$cur_day}"
+            else
+                read -p "  Choice [0-3]: " day
+            fi
             case $day in
                 0|"") return 2 ;;
                 1) oncal="Sun *-*-* 03:00:00" ;;
@@ -5301,6 +5397,15 @@ step_immich_backup() {
             ;;
         *) fail "Invalid choice."; return 1 ;;
     esac
+
+    # One summary, one confirm; nothing is created or installed before it.
+    echo ""
+    echo -e "  ${BOLD}Backup schedule summary${NC}"
+    echo "    Destination: $BACKUP_DIR"
+    echo "    Schedule:    $oncal"
+    echo "    Retention:   ${retention_days} days of DB dumps (photos: append-only copy)"
+    _confirm_yn "Set up this backup?" || { warn "Cancelled - nothing changed."; return 0; }
+    sudo mkdir -p "$BACKUP_DIR"
 
     # Tear down the legacy step-8 cron line if it exists, so we don't double-run.
     local cur new cron_lines
@@ -5379,9 +5484,8 @@ TIMEREOF
     # catches up a tick missed while the box was off — it never triggers an
     # initial run). So offer to run once now: confirms it works and seeds the
     # first backup instead of waiting up to a week.
-    local run_now; read -p "  Run the first backup now to verify it works? [Y/n]: " run_now
-    if [[ ! "$run_now" =~ ^[Nn] ]]; then
-        _immich_backup_run || true   # a start failure must not skip the hints below
+    if _confirm_yn "Run the first backup now to verify it works?"; then
+        _immich_backup_run --yes || true   # a start failure must not skip the hints below
     fi
 
     echo ""
@@ -5391,11 +5495,19 @@ TIMEREOF
 
 # Start the scheduled backup now, detached under systemd so it keeps running
 # even if the SSH session closes. Shows a few log lines for confidence.
-_immich_backup_run() {
+_immich_backup_run() { # [--yes]  (--yes: the caller just asked)
     if [ ! -x "$_IMMICH_BACKUP_BIN" ]; then
         warn "No scheduled Immich backup is configured yet."
         info "Set one up first: federver → 9 → Backup - Scheduled - Set up  (or federver → 16 → 6)."
         return 0
+    fi
+    local last_run
+    last_run=$(grep -E 'Backup (complete|FAILED)' "$_IMMICH_BACKUP_LOG" 2>/dev/null | tail -1)
+    if [[ "${1:-}" != --yes ]]; then
+        echo -e "  ${BOLD}Run the scheduled backup now${NC}"
+        echo "    Destination: $(_configured_backup_dir)"
+        echo "    Last run:    ${last_run:-none logged yet}"
+        _confirm_yn "Start it now?" || { warn "Cancelled."; return 0; }
     fi
     if ! sudo -v; then
         fail "Need sudo to start the backup — nothing was started."

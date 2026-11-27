@@ -22,7 +22,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T
 rw() { sed -e "s|/usr/local/bin/immich-backup.sh|$BIN|g" -e "s|/var/log/immich-backup.log|$LOG|g" \
            -e "s|/etc/systemd/system/|$UNITS/|g" -e "s|/etc/immich-backup.conf|$CONF|g"; }
 fns() { local f; for f in "$@"; do extract_fn "$f" "$SRC" | rw; done; }
-FNS="ok fail info warn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove _immich_docker_group _immich_compose step_immich_backup_once _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
+FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove _immich_docker_group _immich_compose step_immich_backup_once _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
 mkrun() {  # rebuild run.sh from the CURRENT $SRC (functions that do not exist yet are skipped)
   {
     printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC= BLUE=\nDRY_RUN=0\nMIRROR_WIPE_MIN=1000\n_FV_SELF=%q\n' "$T/app/setup.sh"
@@ -97,7 +97,7 @@ mkup() {  # a small library: originals, regenerable dirs, and a nested folder th
 }
 fresh() { rm -rf "$DEST" "$CONF" "$BIN" "$CRON_FILE" "$UNITS"/* "$LOG"; : > "$RS_LOG"; mkup; }
 setup_sched() {  # $1 = cadence input (default daily). Runs the real Set up.
-  go "$DEST\ny\n${1:-1}\nn\n" step_immich_backup
+  go "$DEST\ny\n${1:-1}\n\nn\n" step_immich_backup
 }
 runbk() {  # run the installed script like systemd does; its output goes to the log
   : > "$LOG"; : > "$RS_LOG"; bash "$BIN" "$@" >"$T/bk.out" 2>&1; RC=$?; LOGTXT=$(cat "$LOG"); OUT=$(cat "$T/bk.out")
@@ -129,7 +129,7 @@ fresh
 check 2a "no schedule installed: _configured_backup_dir is empty" '[ -z "$(bash "$T/app/run.sh" --run _configured_backup_dir)" ]'
 setup_sched
 check 2b "after Set up: _configured_backup_dir returns the destination" '[ "$(bash "$T/app/run.sh" --run _configured_backup_dir)" = "$DEST" ]'
-go "\ny\n1\nn\n" step_immich_backup
+go "\ny\n1\n\nn\n" step_immich_backup
 check 2c "Set up again, Enter at the destination: keeps the configured one" '[ $RC = 0 ] && [ "$(bash "$T/app/run.sh" --run _configured_backup_dir)" = "$DEST" ]'
 
 # ── 3  Status and Remove, timer and legacy cron ────────────────────────────
@@ -167,7 +167,7 @@ setup_sched
 check 4a "Set up removes a legacy cron line that only runs an immich-db dump (it used to be left: both ran)" '[ -e "$UNITS/immich-backup.timer" ] && ! grep -q immich-db "$CRON_FILE" && grep -q other.sh "$CRON_FILE"'
 fresh; : > "$T/sudo.log"; go "" _immich_backup_status
 check 4b "Status reads root's crontab without a sudo password prompt (sudo -n crontab)" 'grep -q "^sudo -n crontab -l" "$T/sudo.log"'
-fresh; : > "$T/sudo.log"; go "$DEST\ny\n1\nn\n" step_immich_backup
+fresh; : > "$T/sudo.log"; go "$DEST\ny\n1\n\nn\n" step_immich_backup
 check 4c "Set up reads it through the same reader (sudo crontab, may prompt)" 'grep -q "^sudo crontab -l" "$T/sudo.log" && ! grep -q "^sudo -n crontab" "$T/sudo.log"'
 fresh; go "" _immich_backup_status
 check 4d "Status, root has no crontab at all: 'not configured' (was misread as unreadable)" '[[ "$OUT" == *"not configured"* && "$OUT" != *"unreadable"* ]]'
@@ -185,7 +185,7 @@ check 4i "Remove: legacy-cron-only schedule is detected, removed and verified" '
 # ── 5  one generated script, values read at run time (D3, D7) ──────────────
 for odd in 'a|b' 'a&b' 'a\b' 'a b' 'a|&\ b$c'; do
   fresh; D="$T/drive/$odd"; mkdir -p "$D"
-  go "${D//\\/\\\\}\ny\n1\nn\n" step_immich_backup; runbk   # go() runs printf %b: double the backslash
+  go "${D//\\/\\\\}\ny\n1\n\nn\n" step_immich_backup; runbk   # go() runs printf %b: double the backslash
   check "5a" "destination '$odd' round-trips: configured dir, conf, and the run lands there" '[ "$(bash "$T/app/run.sh" --run _configured_backup_dir)" = "$D" ] && [ -f "$D/immich/photos/library/u1/a.jpg" ] && ls "$D"/immich/db/immich-db-*.sql.gz >/dev/null 2>&1 && ! grep -q "__BACKUP_DIR__" "$BIN"'
 done
 fresh; setup_sched
@@ -195,11 +195,11 @@ printf 'UPLOAD_LOCATION=%s/up2\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$
 BEFORE=$(cksum < "$BIN"); runbk
 check 5c ".env UPLOAD_LOCATION changed: the next run uses it, script not regenerated" '[ $RC = 0 ] && [ -f "$DEST/immich/photos/library/m.jpg" ] && [ "$(cksum < "$BIN")" = "$BEFORE" ]'
 printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T" "$T" > "$T/app/.env"
-echo "# tampered" >> "$BIN"; go "\ny\n1\nn\n" step_immich_backup
+echo "# tampered" >> "$BIN"; go "\ny\n1\n\nn\n" step_immich_backup
 check 5d "every Set up regenerates the script (a hand-edit does not survive)" '! grep -q tampered "$BIN" && bash -c "source $T/app/run.sh; _immich_backup_script $CONF $LOG" | cmp -s - "$BIN"'
 check 5e "the installed script has no sed placeholders and parses" '! grep -q "__[A-Z_]*__" "$BIN" && bash -n "$BIN"'
 rm -f "$BIN" "$CONF"
-printf '%s\ny\n1\nn\n' "$DEST" | bash -c "source $T/app/run.sh; _immich_backup_script() { echo 'if then'; }; step_immich_backup" >"$T/o.txt" 2>&1; RC=$?; OUT=$(cat "$T/o.txt")
+printf '%s\ny\n1\n\nn\n' "$DEST" | bash -c "source $T/app/run.sh; _immich_backup_script() { echo 'if then'; }; step_immich_backup" >"$T/o.txt" 2>&1; RC=$?; OUT=$(cat "$T/o.txt")
 check 5f "a generated script that does not parse is never installed" '[ $RC = 1 ] && [ ! -e "$BIN" ] && [ ! -e "$CONF" ] && [[ "$OUT" == *"syntax error"* ]]'
 fresh; setup_sched; FAIL_DUMP=1 runbk
 check 5g "DB dump fails (pg_dumpall exit 1 behind gzip): rc non-zero, logged FAILED, no dump file left" '[ $RC != 0 ] && [[ "$LOGTXT" == *"DB dump FAILED"* ]] && tail -n 1 "$LOG" | grep -q "Backup FAILED" && ! ls "$DEST"/immich/db/immich-db-* >/dev/null 2>&1 && [ -f "$DEST/immich/photos/library/u1/a.jpg" ]'
@@ -219,7 +219,7 @@ go "" _immich_backup_status
 check 6a "Status: an installed script with no conf is flagged 'outdated - run Set up again'" '[[ "$OUT" == *"outdated - run Set up again"* ]]'
 check 6b "its destination is still found (baked in the old script), so Set up keeps offering it" '[ "$(bash "$T/app/run.sh" --run _configured_backup_dir)" = "$DEST" ]'
 check 6c "Status does not rewrite root files: script and conf untouched" '[ ! -e "$CONF" ] && ! grep -q "Format: 2" "$BIN"'
-go "\ny\n1\nn\n" step_immich_backup
+go "\ny\n1\n\nn\n" step_immich_backup
 check 6d "Set up again (Enter keeps the destination) upgrades it" '[ -r "$CONF" ] && grep -q "^# Format: 2" "$BIN" && [ "$(bash "$T/app/run.sh" --run _configured_backup_dir)" = "$DEST" ]'
 go "" _immich_backup_status
 check 6e "after the upgrade Status is clean" '[[ "$OUT" != *outdated* ]]'
@@ -271,7 +271,7 @@ check 7p "postgres not up but a container still running: refuses the cold copy, 
 rm -f "$COMPOSE_UP"; : > "$PG_UP"
 one_fresh; go "\n$T/nodir\n" step_immich_backup_once
 check 7q "destination that is not a directory: rc 1, nothing copied" '[ $RC = 1 ] && [[ "$OUT" == *"Not a valid directory"* ]] && [ ! -s "$RS_LOG" ]'
-go "\n$ONE\nn\n" step_immich_backup_once
+go "\n$ONE\n\nn\n" step_immich_backup_once
 check 7r "answering n cancels: rc 0, nothing copied" '[ $RC = 0 ] && [[ "$OUT" == *"Cancelled"* ]] && [ ! -s "$RS_LOG" ] && [ ! -e "$ONE/immich" ]'
 go "0\n" step_immich_backup_once
 check 7s "0 = Back: rc 2, nothing copied" '[ $RC = 2 ] && [ ! -s "$RS_LOG" ]'
@@ -283,28 +283,28 @@ mv "$T/app/.env.bak" "$T/app/.env"
 
 # one-time mirror: same guard, preview and typed confirmation as sync
 one_fresh; mkdir -p "$ONE/immich/photos"; echo stray > "$ONE/immich/photos/stray"
-go "\n$ONE\n\ndelete\ny\n" step_immich_backup_once
+go "\n$ONE\ndelete\ny\n" step_immich_backup_once
 check 7v "mirror: guard, preview of the deletion, y: rsync --delete runs, the stray file at the destination is gone" '[ $RC = 0 ] && [[ "$OUT" == *"1 file would be deleted at $ONE/immich/photos"* && "$OUT" == *"Mode: mirror"* && "$OUT" == *"Delete these 1 file and copy? [y/N]"* ]] && grep -q -- "--delete" "$RS_LOG" && [ ! -e "$ONE/immich/photos/stray" ] && [ -f "$ONE/immich/photos/library/u1/a.jpg" ]'
 one_fresh; mkdir -p "$ONE/immich/photos"; echo stray > "$ONE/immich/photos/stray"
-go "\n$ONE\n\ndelete\n\n" step_immich_backup_once
+go "\n$ONE\ndelete\n\n" step_immich_backup_once
 check 7w "mirror, Enter at the deletion question: cancelled, rc 2, nothing deleted or copied" '[ $RC = 2 ] && [ -e "$ONE/immich/photos/stray" ] && [ ! -e "$ONE/immich/photos/library" ] && [[ "$OUT" == *"Cancelled - nothing changed"* ]]'
 one_fresh; mkdir -p "$ONE/immich/photos"; echo stray > "$ONE/immich/photos/stray"
-go "\n$ONE\n\nno thanks\n" step_immich_backup_once
+go "\n$ONE\nno thanks\n" step_immich_backup_once
 check 7x "anything but the word delete = append: nothing deleted" '[ $RC = 0 ] && [ -e "$ONE/immich/photos/stray" ] && ! grep -q -- --delete "$RS_LOG" && [[ "$OUT" == *"Append only"* ]]'
 one_fresh; rm -rf "$T/up"; mkdir -p "$T/up"; mkdir -p "$ONE/immich/photos"; echo precious > "$ONE/immich/photos/stray"
-go "\n$ONE\n\ndelete\ny\n" step_immich_backup_once
+go "\n$ONE\ndelete\ny\n" step_immich_backup_once
 check 7y "mirror with an EMPTY source: refused up front, rc 2, destination untouched" '[ $RC = 2 ] && [[ "$OUT" == *"Refused"* ]] && [ "$(cat "$ONE/immich/photos/stray")" = precious ]'
 one_fresh; rm -rf "$T/up"; mkdir -p "$ONE/immich/photos"; echo precious > "$ONE/immich/photos/stray"
-go "\n$ONE\n\ndelete\ny\n" step_immich_backup_once
+go "\n$ONE\ndelete\ny\n" step_immich_backup_once
 check 7z "mirror with a MISSING source: refused, destination untouched" '[ $RC = 2 ] && [[ "$OUT" == *"Refused"* ]] && [ "$(cat "$ONE/immich/photos/stray")" = precious ]'
 # a source on a drive that is not mounted (bare folder on the system disk)
 stub_findmnt ok "$T/mnt/usb" /dev/sdb1 bare / /dev/sda2
 one_fresh; mkdir -p "$T/mnt/usb/photos/library"; echo m > "$T/mnt/usb/photos/library/m.jpg"
 printf 'UPLOAD_LOCATION=%s/mnt/usb/photos\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T" "$T" > "$T/app/.env"
 mkdir -p "$ONE/immich/photos"; echo precious > "$ONE/immich/photos/stray"
-FM_MODE=bare go "\n$ONE\n\ndelete\ny\n" step_immich_backup_once
+FM_MODE=bare go "\n$ONE\ndelete\ny\n" step_immich_backup_once
 check 7aa "mirror with the source drive NOT mounted: refused (interactive), destination untouched" '[ $RC = 2 ] && [[ "$OUT" == *"Refused"* ]] && [ "$(cat "$ONE/immich/photos/stray")" = precious ]'
-FM_MODE=ok go "\n$ONE\n\ndelete\ny\n" step_immich_backup_once
+FM_MODE=ok go "\n$ONE\ndelete\ny\n" step_immich_backup_once
 check 7ab "same source on a mounted drive: the mirror goes ahead" '[ $RC = 0 ] && [ ! -e "$ONE/immich/photos/stray" ] && [ -f "$ONE/immich/photos/library/m.jpg" ]'
 # the script refuses on its own (defence in depth) when called directly
 setup_sched; echo precious > "$ONE/immich/photos/stray"
@@ -352,5 +352,30 @@ sched_to "$T/mnt/bare/sub"; FM_MODE=bare runbk; go "" _immich_backup_status
 check 8h "Status shows the refusal reason from the log, run listed as failed" '[[ "$OUT" == *"Last run: Backup SKIPPED - destination $T/mnt/bare/sub is not on a mounted drive (unmounted)"* && "$OUT" == *"✗ failed"* ]]'
 sched_to "$T/mnt/usb/old"; FM_MODE=ok runbk; go "" _immich_backup_status
 check 8i "Status after a good run: no refusal line" '[[ "$OUT" != *"Last run: Backup SKIPPED"* ]]'
+
+
+# ── 9  one prompt rule (decision 14): current value shown, Enter keeps, q = back, one summary then one confirm,
+#       nothing created before the confirm ──
+NEWD=$T/drive/newdest
+fresh; rm -rf "$NEWD" "$T/sudo.log"; go "$NEWD\ny\n1\nn\n" step_immich_backup
+check 9a "Set up, n at the final confirm: nothing created (no mkdir, no unit, no script), rc 0, summary shown first" '[ $RC = 0 ] && [ ! -e "$NEWD" ] && ! grep -q "mkdir" "$T/sudo.log" 2>/dev/null && [ ! -e "$BIN" ] && [ ! -e "$UNITS/immich-backup.timer" ] && [[ "$OUT" == *"Backup schedule summary"* && "$OUT" == *"Destination: $NEWD"* && "$OUT" == *"Retention:"* && "$OUT" == *Cancelled* ]]'
+fresh; rm -rf "$NEWD" "$T/sudo.log"; go "q\n" step_immich_backup
+check 9b "Set up: q at the destination = back (rc 2), nothing created" '[ $RC = 2 ] && [ ! -e "$NEWD" ] && [ ! -e "$BIN" ]'
+fresh; rm -rf "$NEWD"; go "$NEWD\ny\n1\n\nn\n" step_immich_backup
+check 9c "Set up, y at the confirm: now it is created (mkdir after the summary)" '[ $RC = 0 ] && [ -d "$NEWD" ] && [ -x "$BIN" ]'
+fresh; setup_sched "2\n1"
+go "\ny\n\n\n\nn\n" step_immich_backup
+check 9d "Set up again with a weekly schedule: shows the current one; Enter keeps destination, cadence and day (still Sun, 21 days)" '[ $RC = 0 ] && [[ "$OUT" == *"Current schedule: Sun *-*-* 03:00:00 -> $DEST"* ]] && grep -q "OnCalendar=Sun \*-\*-\* 03:00:00" "$UNITS/immich-backup.timer" && [ "$(_env() { sed -n "s/^RETENTION_DAYS=//p" "$CONF"; }; _env)" = 21 ]'
+check 9e "prompts: destination says 'Enter keeps it' when one exists, 'q = back' always (read -p is silent off a tty: source checked)" 'extract_fn step_immich_backup "$SRC" | grep -q "Enter keeps it: " && extract_fn step_immich_backup "$SRC" | grep -q "q = back" && extract_fn step_immich_backup "$SRC" | grep -q "Enter keeps the current"'
+fresh; setup_sched; : > "$T/systemctl.log"; go "n\n" _immich_backup_run
+check 9f "Run now: shows destination and last run, n = nothing started" '[ $RC = 0 ] && [[ "$OUT" == *"Destination: $DEST"* && "$OUT" == *"Last run:"* && "$OUT" == *Cancelled* ]] && [ ! -s "$T/systemctl.log" ]'
+go "\n" _immich_backup_run
+check 9g "Run now: Enter = start" '[ $RC = 0 ] && grep -q "start --no-block immich-backup.service" "$T/systemctl.log"'
+one_fresh; go "\n$ONE\n\n\n" step_immich_backup_once
+check 9h "one-time: summary (scope, destination, mode) is printed before the single Start question" '[ $RC = 0 ] && [[ "$OUT" == *"Backup summary"* && "$OUT" == *"Scope:        both"* && "$OUT" == *"Mode:         append only"* ]]'
+one_fresh; go "\n$ONE\n\nn\n" step_immich_backup_once
+check 9i "one-time: mode answered first, then ONE Start question; n = nothing created at the destination" '[ $RC = 0 ] && [ ! -e "$ONE/immich" ] && [ ! -s "$RS_LOG" ]'
+one_fresh; go "q\n" step_immich_backup_once
+check 9j "one-time: q at the scope = back (rc 2)" '[ $RC = 2 ]'
 
 check_total

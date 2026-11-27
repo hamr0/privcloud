@@ -16,7 +16,7 @@ mkdir -p "$T/bin" "$T/app/scripts" "$T/photos/trip"
 touch "$T/photos/trip/a.jpg" "$T/photos/b.mp4"
 {
   printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC=\nDRY_RUN=0\n_FV_SELF=%q\n' "$T/app/setup.sh"
-  for f in ok fail info warn _immich_up _immich_docker_group step_immich_upload step_immich_fix_gp; do extract_fn "$f" "$SRC"; done
+  for f in ok fail info warn _immich_up _immich_docker_group _immich_key_ok _ask_path _confirm_yn step_immich_upload step_immich_fix_gp; do extract_fn "$f" "$SRC"; done
   printf '[ "$1" = --run ] && { "$2"; exit $?; }\n'
 } > "$T/app/run.sh"
 printf '#!/bin/bash\necho "fixgp $*" >> "$FIX_LOG"\n' > "$T/app/scripts/google-takeout-fix.sh"
@@ -41,6 +41,7 @@ esac
 exit 0
 X
 chmod +x "$T/bin/"*
+export XDG_CONFIG_HOME=$T/cfg
 export PATH="$T/bin:$PATH" UP=$T/up RUN_LOG=$T/run.log FIX_LOG=$T/fix.log
 CHECK_DIAG="rc=\$RC out='\$OUT' log='\$(cat \$RUN_LOG 2>/dev/null)'"
 go() { local input="$1"; shift; : > "$RUN_LOG"; OUT=$(printf '%b' "$input" | bash "$T/app/run.sh" --run "$@" 2>&1); RC=$?; }
@@ -71,7 +72,34 @@ go '\n' step_immich_fix_gp
 check 6a "fix-gp: no path -> rc 1, script not called" '[ $RC = 1 ] && [ ! -s "$FIX_LOG" ]'
 go '/no/such/zip\n' step_immich_fix_gp
 check 6b "fix-gp: missing path -> rc 1, script not called" '[ $RC = 1 ] && [[ "$OUT" == *"Not found"* ]] && [ ! -s "$FIX_LOG" ]'
-go "$T/photos\n" step_immich_fix_gp
-check 6c "fix-gp: valid path -> scripts/google-takeout-fix.sh gets it" '[ $RC = 0 ] && grep -qx "fixgp $T/photos" "$FIX_LOG"'
+mkdir -p "$T/zips"; head -c 2048 /dev/zero > "$T/zips/takeout-001.zip"
+go "$T/zips\ny\n" step_immich_fix_gp
+check 6c "fix-gp: zips found, summary, y -> scripts/google-takeout-fix.sh gets the path" '[ $RC = 0 ] && grep -qx "fixgp $T/zips" "$FIX_LOG" && [[ "$OUT" == *"Zips:    1 (2.0K)"* && "$OUT" == *"Output:  $T/zips/extracted"* && "$OUT" == *"Free:"* ]]'
+: > "$FIX_LOG"; go "$T/zips\nn\n" step_immich_fix_gp
+check 6d "fix-gp: n at the summary -> nothing run, nothing created" '[ $RC = 0 ] && [ ! -s "$FIX_LOG" ] && [ ! -e "$T/zips/extracted" ] && [[ "$OUT" == *Cancelled* ]]'
+go "q\n" step_immich_fix_gp
+check 6e "fix-gp: q = back (rc 2), script not called" '[ $RC = 2 ] && [ ! -s "$FIX_LOG" ]'
+go "$T/photos\ny\n" step_immich_fix_gp
+check 6f "fix-gp: a folder without zips is refused before any question" '[ $RC = 1 ] && [[ "$OUT" == *"No zip files found"* ]] && [ ! -s "$FIX_LOG" ]'
+stub_cmd df 'echo Avail; echo 1024'
+go "$T/zips\ny\n" step_immich_fix_gp
+check 6g "fix-gp: free space below the zip total -> clear refusal, script not called" '[ $RC = 1 ] && [[ "$OUT" == *"Not enough free space"* ]] && [ ! -s "$FIX_LOG" ]'
+rm -f "$T/bin/df"
+
+# 7 API key remembered (decision 14): file 600 in a 700 dir, never on argv, saved valid key = no typing
+KEYF=$XDG_CONFIG_HOME/federver/immich-api-key; rm -rf "$XDG_CONFIG_HOME"
+go "goodkey\n$T/photos\n2\ny\n" step_immich_upload
+check 7a "a valid typed key is saved: mode 600 file, 700 dir, content = key" '[ "$(cat "$KEYF")" = goodkey ] && [ "$(stat -c %a "$KEYF")" = 600 ] && [ "$(stat -c %a "$(dirname "$KEYF")")" = 700 ]'
+check 7b "the key never shows in the output or on the docker argv" '[[ "$OUT" != *goodkey* ]] && ! grep "^ARGV:" "$RUN_LOG" | grep -q goodkey'
+go "\n$T/photos\n2\ny\n" step_immich_upload
+check 7c "saved valid key: 'saved (Enter keeps it...)', Enter alone is enough, upload runs" '[ $RC = 0 ] && [[ "$OUT" == *"API key: saved (Enter keeps it, or paste a new one)"* ]] && grep -qx "ENVKEY: goodkey" "$RUN_LOG"'
+echo staleKey > "$KEYF"
+go "goodkey\n$T/photos\n2\ny\n" step_immich_upload
+check 7d "saved key rejected: says so, asks, saves the new valid one" '[[ "$OUT" == *"saved API key was rejected"* ]] && [ "$(cat "$KEYF")" = goodkey ]'
+go "q\n" step_immich_upload
+check 7e "q at the key prompt = back (rc 2), nothing uploaded" '[ $RC = 2 ] && [ ! -s "$RUN_LOG" ]'
+go "\nq\n" step_immich_upload
+check 7f "q at the photos path = back (rc 2), nothing uploaded" '[ $RC = 2 ] && [ ! -s "$RUN_LOG" ]'
+check 7g "album prompt says Enter = Flat; path prompt says q = back (read -p is silent off a tty: source checked)" 'extract_fn step_immich_upload "$SRC" | grep -q "(Enter = Flat)" && extract_fn _ask_path "$SRC" | grep -q "q = back"'
 
 check_total

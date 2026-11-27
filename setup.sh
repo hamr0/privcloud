@@ -4642,7 +4642,8 @@ step_immich_backup_menu() {
 # Split from step_disk_monitor so the exact script that gets installed can be
 # dry-run (DISKCHECK_DRYRUN=1) before it is ever scheduled.
 _disk_check_script() {
-    printf '#!/bin/bash\nPUSH_URL=%q\nENV_FILE=%q\n' "$1" "$2"
+    # DRIVE_ROOTS: the same roots as _drive_verdict (this script runs standalone from cron).
+    printf '#!/bin/bash\nPUSH_URL=%q\nENV_FILE=%q\nDRIVE_ROOTS=%q\n' "$1" "$2" "$_DRIVE_ROOTS"
     cat <<'DISKEOF'
 # Exit codes: 0 healthy | 1 alert (Kuma down) | 3 healthy but the Kuma push
 # failed | 4 blind config (dry-run only: nothing checkable). Not 2: bash itself
@@ -4682,6 +4683,15 @@ fstab_mount_for() {
     printf '%s' "$best"
 }
 
+# Is $1 under a removable-drive root (so it must sit on a real /dev mount)?
+on_drive() {
+    local r
+    for r in $DRIVE_ROOTS; do
+        case "$1" in "$r"/*) return 0 ;; esac
+    done
+    return 1
+}
+
 MOUNTS=(/)
 WATCH=()
 PROBLEMS=()
@@ -4719,11 +4729,14 @@ else
             fi
             # No fstab line (udisks/automount): an EMPTY dir under a removable-drive
             # prefix is the leftover stub of an absent drive.
-            case "$p" in /mnt/*|/media/*|/run/media/*)
-                if [ -z "$(ls -A "$p" 2>/dev/null)" ]; then
-                    PROBLEMS+=("$p not mounted"); continue
-                fi ;;
-            esac
+            if on_drive "$p" && [ -z "$(ls -A "$p" 2>/dev/null)" ]; then
+                PROBLEMS+=("$p not mounted"); continue
+            fi
+        elif on_drive "$p"; then
+            # A mount point that is not a /dev device is an autofs placeholder
+            # (SOURCE systemd-1) of a drive that never mounted.
+            s=$(findmnt -n -o SOURCE -T "$p" 2>/dev/null | tail -n 1)
+            case "$s" in /dev/*) ;; *) PROBLEMS+=("$p not mounted"); continue ;; esac
         fi
         seen=false
         for m in "${MOUNTS[@]}"; do [ "$m" = "$t" ] && seen=true; done

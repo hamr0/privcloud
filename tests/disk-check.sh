@@ -14,7 +14,10 @@ mkdir -p "$T/bin" "$T/log" "$T/tmpd"
 export TMPDIR=$T/tmpd   # mktemp in the installer lands here so leaks are visible
 # Only the generator; its heredoc has col-0 '}' lines (extract_fn skips heredoc bodies).
 extract_fn _disk_check_script "$SRC" > "$T/gen.sh"
+extract_fn _drive_verdict "$SRC" >> "$T/gen.sh"; grep -E '^_DRIVE_ROOTS=' "$SRC" >> "$T/gen.sh"
 source "$T/gen.sh"
+PROD_ROOTS=$_DRIVE_ROOTS
+_DRIVE_ROOTS="$T/mnt $T/media"   # the sandbox stands in for /mnt and /media (generated into the script as DRIVE_ROOTS)
 cat > "$T/bin/findmnt" <<'X'
 #!/bin/bash
 # $FM_MAP lines: "<mountpoint> [<source>]" (source defaults to a real /dev/ disk). Answers
@@ -224,7 +227,6 @@ check 4c "one of two paths missing -> ALERT mentions missing one, other still wa
 
 # 5 absent drive, empty stub, no fstab line (udisks fallback)
 reset; mkdir -p "$T/media/x"; mkenv "FILES_LOCATION=$T/media/x"; gen "$T/env"; run
-sed -i "s#/mnt/\*|/media/\*#$T/media/*|/media/*#" $T/dc.sh; run
 check 5 "empty stub on / (no fstab) under removable prefix -> 'not mounted', down" 'grep -q "ALERT $T/media/x not mounted" $T/log/dc.last'
 # 6a absent drive, stub has files, fstab declares mount
 reset; touch "$D/leftover"; echo "UUID=abcd $T/mnt/federver ext4 nofail,x-systemd.automount 0 0" > $T/fstab; mkenv "FILES_LOCATION=$D/photos"; mkdir -p "$D/photos"; gen "$T/env"; run
@@ -233,7 +235,7 @@ check 6a "fstab declares mount, path resolves to / and stub non-empty -> 'not mo
 reset; echo "UUID=abcd $T/mnt/federver ext4 nofail 0 0" > $T/fstab; echo "$T/mnt/federver" > $T/fm; printf '/ 40\n%s 50\n' "$D" > $DF_MAP; mkenv "FILES_LOCATION=$D/photos"; gen "$T/env"; run
 check 6b "fstab mount present and mounted -> ok, up" '[ $RC = 0 ] && grep -q " ok" $T/log/dc.last && grep -q "status=up" $CURL_LOG'
 # 6c fstab: commented line ignored, swap/none ignored, space (\040) mountpoint, no fstab line + non-empty plain dir under /mnt = deliberate -> ok
-reset; touch "$D/photos/f1"; printf '#UUID=z %s ext4 0 0\nnone swap swap 0 0\n/dev/x / ext4 0 0\n' "$D" > $T/fstab; mkenv "FILES_LOCATION=$D/photos"; gen "$T/env"; sed -i "s#/mnt/\*|/media/\*#$T/mnt/*|/media/*#" $T/dc.sh; run
+reset; touch "$D/photos/f1"; printf '#UUID=z %s ext4 0 0\nnone swap swap 0 0\n/dev/x / ext4 0 0\n' "$D" > $T/fstab; mkenv "FILES_LOCATION=$D/photos"; gen "$T/env"; run
 check 6c "commented/swap/'/' fstab lines ignored; non-empty plain dir w/o real intent -> ok" '[ $RC = 0 ] && grep -q " ok" $T/log/dc.last'
 reset; mkdir -p "$T/My Music/lib"; echo "/dev/x $T/My\\040Music ext4 0 0" > $T/fstab; mkenv "FILES_LOCATION=$T/My Music/lib"; gen "$T/env"; run
 check 6d "fstab field2 with \\040 (space) matches path with space, resolves to / -> not mounted" 'grep -q "My Music/lib not mounted" $T/log/dc.last'
@@ -265,9 +267,26 @@ check 9d "healthy run: curl -G urlencoded status/msg, exactly one query (no '?' 
 reset; echo "$D" > $T/fm; printf '/ 40\n%s 50\n' "$D" > $DF_MAP; mkenv "FILES_LOCATION=$D"; gen "$T/env"; DISKCHECK_DRYRUN=1 bash $T/dc.sh > $T/dry.out; RC=$?; OUT=$(cat $T/dry.out)
 check 2c "dry-run: prints Watching/Config, rc 0, no curl, no log/state files" '[ $RC = 0 ] && [[ "$OUT" == "Watching: / (40%), $D (50%)"* ]] && [ ! -e $CURL_LOG ] && [ -z "$(ls $T/log)" ]'
 
-# 10 drive-mount pins (cleanup step 3): what the check says about SOURCE today
+# 10 drive-mount (cleanup step 3): the check requires a real /dev SOURCE, like _drive_verdict
 reset; echo "$D /dev/sdb1" > $T/fm; printf '/ 40\n%s 50\n' "$D" > $DF_MAP; mkenv "FILES_LOCATION=$D"; gen "$T/env"; run
 check 10a "location on a real /dev mount -> ok" '[ $RC = 0 ] && grep -q " ok" $T/log/dc.last'
 reset; echo "$D systemd-1" > $T/fm; printf '/ 40\n%s 50\n' "$D" > $DF_MAP; mkenv "FILES_LOCATION=$D"; gen "$T/env"; run
-check 10b "autofs stub (target is the mount, SOURCE systemd-1) passes today: SOURCE is not looked at (the D8 gap)" '[ $RC = 0 ] && grep -q " ok" $T/log/dc.last'
+check 10b "autofs stub (target is the mount, SOURCE systemd-1) -> 'not mounted', down (SOURCE is required now, like _drive_verdict)" '[ $RC = 1 ] && grep -q "ALERT $D not mounted" $T/log/dc.last && grep -q "status=down" $CURL_LOG'
+
+# 11 agreement with _drive_verdict: the same four fixtures, the same answer
+mkdir -p "$T/nosleep"; printf '#!/bin/bash\nexit 0\n' > "$T/nosleep/sleep"; chmod +x "$T/nosleep/sleep"
+vd() { PATH="$T/nosleep:$PATH" _drive_verdict "$1"; }
+# what the generated check says about one location: ok | missing | unmounted
+dc_says() { local o; o=$(DISKCHECK_DRYRUN=1 bash "$T/dc.sh" 2>&1)
+  case "$o" in *"Problem: $1 not mounted"*) echo unmounted ;; *"Problem: $1 missing"*) echo missing ;; *) echo ok ;; esac; }
+fx() { # name fm-line  (fixture dir $T/mnt/<name>; fm-line "" = no mount known to findmnt)
+  reset; P=$T/mnt/$1; rm -rf "$P"
+  case "$1" in missing) ;; bare) mkdir -p "$P" ;; *) mkdir -p "$P"; echo f > "$P/f" ;; esac
+  [ -n "$2" ] && echo "$P $2" > "$T/fm"
+  printf '/ 40\n%s 50\n' "$P" > "$DF_MAP"; mkenv "FILES_LOCATION=$P"; gen "$T/env"; }
+fx real "/dev/sdb1";  A=$(dc_says "$P"); B=$(vd "$P"); check 11a "agree on a real mount: check '$A', verdict '$B'" '[ "$A" = ok ] && [ "$B" = ok ]'
+fx bare "";           A=$(dc_says "$P"); B=$(vd "$P"); check 11b "agree on a bare folder left by an unplugged drive: check '$A', verdict '$B'" '[ "$A" = unmounted ] && [ "$B" = unmounted ]'
+fx stub "systemd-1";  A=$(dc_says "$P"); B=$(vd "$P"); check 11c "agree on an autofs stub (SOURCE not /dev/*): check '$A', verdict '$B'" '[ "$A" = unmounted ] && [ "$B" = unmounted ]'
+fx missing "";        A=$(dc_says "$P"); B=$(vd "$P"); check 11d "agree on a missing folder: check '$A', verdict '$B'" '[ "$A" = missing ] && [ "$B" = missing ]'
+check 11e "the generated script's roots are the one _DRIVE_ROOTS constant" '[ "$(. /dev/stdin <<<"$(grep -E "^DRIVE_ROOTS=" <(_DRIVE_ROOTS=$PROD_ROOTS _disk_check_script u e))"; echo "$DRIVE_ROOTS")" = "/mnt /media /run/media" ]'
 check_total

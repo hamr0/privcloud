@@ -6,13 +6,14 @@
 # helpers: no sudo, no network, no real cron, no real fstab or logs.
 # SETUP_SH=<file> tests another copy of setup.sh (used for mutation checks).
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$H/lib.sh"
 SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/log" "$T/tmpd"
 export TMPDIR=$T/tmpd   # mktemp in the installer lands here so leaks are visible
-# Only the generator (up to step_disk_monitor); its heredoc has col-0 '}' lines.
-awk '/^_disk_check_script\(\)/{p=1} p{print} p&&/^DISKEOF/{d=1} d&&/^}/{exit}' "$SRC" > "$T/gen.sh"   # ends at the function's own closing brace
+# Only the generator; its heredoc has col-0 '}' lines (extract_fn skips heredoc bodies).
+extract_fn _disk_check_script "$SRC" > "$T/gen.sh"
 source "$T/gen.sh"
 cat > "$T/bin/findmnt" <<'X'
 #!/bin/bash
@@ -46,12 +47,11 @@ printf '%s' "$DOCKER_OUT"
 X
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH" CURL_LOG=$T/curl.log FM_MAP=$T/fm DF_MAP=$T/df.map
-PASS=0; FAILN=0
 gen() { # envfile [url] -> $T/dc.sh
   _disk_check_script "${2:-http://example.invalid/api/push/SECRETTOKEN}" "$1" | sed "s#/var/log/disk-check#$T/log/dc#g; s#FSTAB=\"/etc/fstab\"#FSTAB=\"$T/fstab\"#" > "$T/dc.sh"; }
 reset() { rm -f "$T"/log/* "$CURL_LOG"; : > "$T/fm"; : > "$T/fstab"; printf '/ 40\n' > "$DF_MAP"; unset CURL_RC CURL_SLEEP; }
-check() { # id desc cond(true/false)
-  if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rc=$RC state='$(cat $T/log/dc.last 2>/dev/null)' curl='$(cat $CURL_LOG 2>/dev/null)' out='$OUT']"; FAILN=$((FAILN+1)); fi; }
+# tmpd = what the installer's mktemp left in $TMPDIR (name size mtime), so a flaky leak check explains itself.
+CHECK_DIAG="rc=\$RC tmpd='\$(find \$T/tmpd -mindepth 1 -printf '%P %sB %TT; ' 2>&1)' state='\$(cat \$T/log/dc.last 2>/dev/null)' curl='\$(cat \$CURL_LOG 2>/dev/null)' out='\$OUT'"
 run() { OUT=$(bash "$T/dc.sh" 2>&1); RC=$?; }
 mkenv() { printf '%s\n' "$@" > "$T/env"; }
 D=$T/mnt/federver; mkdir -p "$D" "$T/other"
@@ -61,14 +61,16 @@ reset; gen /nonexistent/.env; OUT=$(DISKCHECK_DRYRUN=1 bash "$T/dc.sh" 2>&1); RC
 check 1a "install dry-run, wrong .env path -> rc4 'config not found', no writes/curl" '[ $RC = 4 ] && [[ "$OUT" == *"config not found: /nonexistent/.env"* ]] && [ ! -e $T/log/dc.last ] && [ ! -e $CURL_LOG ]'
 # 1b step_disk_monitor end-to-end with wrong location: refuses, installs nothing
 mkdir -p "$T/copy"
-awk '/^_disk_check_script\(\)/{p=1} p && /^step_/ && !/^step_disk_monitor\(\)/{exit} p{print} /^step_disk_monitor\(\)/{d=1} d&&/^}/{exit}' "$SRC" > "$T/copy/setup.sh"   # ends with step_disk_monitor (or at the next step_* if renamed); no .env beside it
+for f in _disk_check_script _disk_check_existing_note _disk_check_url_from_script _disk_check_url_from_kuma _disk_check_remove \
+         _disk_check_last_age _disk_check_current step_disk_monitor; do extract_fn "$f" "$SRC"; done > "$T/copy/setup.sh"   # no .env beside it
 cat > "$T/step.sh" <<'X'
 info(){ echo "I:$*"; }; warn(){ echo "W:$*"; }; fail(){ echo "F:$*"; }; ok(){ echo "O:$*"; }
 YELLOW= NC= BLUE= BOLD= DIM= GREEN= RED=
 hostname(){ echo 1.2.3.4; }
 sudo(){ echo "SUDO $*" >> $T/sudo.log; case "$1" in grep) command grep "${@:2}"; return;; rm) command rm "${@:2}";; install) eval "$INSTALL_HOOK"; cp "${@: -2:1}" "$T/installed.sh"; chmod "$7" "$T/installed.sh";; esac; return 0; }
-_cron_get(){ echo ""; }; _cron_drop(){ :; }; _cron_set(){ echo "CRONSET $2" >> $T/sudo.log; return 0; }
+_cron_get(){ echo ""; }; _cron_set(){ echo "CRONSET $2" >> $T/sudo.log; return 0; }
 X
+extract_fn _cron_drop "$SRC" >> "$T/step.sh"   # the real helper (honours $2), not a copy
 # Run step_disk_monitor from the sandbox copy; $1 = sudo behaviour hook (optional
 # shell snippet run inside the install stub, e.g. to simulate Ctrl-C), $2 = sed
 # expression applied to the copy (used to inject a script bug), $3 = e for set -e.
@@ -115,7 +117,7 @@ check 1g "sudo install fails under set -e (the --run path) -> reported, temp fil
 
 # 1h-1q existing Push URL is reused; removal only ever explicit (setup.sh:
 # _disk_check_url_from_script/_from_kuma/_remove). Good .env is still in place.
-STEP_PRE='_cron_get(){ cat "$T/cron"; }; _cron_drop(){ grep -v -- "$3" <<<"$1" || true; }; _cron_set(){ printf "%s" "$2" > "$T/cron"; }'
+STEP_PRE='_cron_get(){ cat "$T/cron"; }; _cron_set(){ printf "%s" "$2" > "$T/cron"; }'
 newstep() { # stdin-lines script-url(optional) kuma-rows(optional, "" = docker down)
   rm -f "$T/bin-dc.sh"; printf '0 1 * * * other\n*/5 * * * * /usr/local/bin/disk-check.sh\n' > "$T/cron"
   [ -n "$2" ] && _disk_check_script "$2" /x > "$T/bin-dc.sh"
@@ -131,9 +133,9 @@ rm -f "$LASTF"; printf '%s ok\n' "$now" > "$LASTF"; newstep "" "$SCRIPTURL"
 check 1r "found + cron line + fresh ok .last -> Current block: masked URL, cron line, last run ok, no stale" '[[ "$OUT" == *"Current"* && "$OUT" == *"http://example.invalid/api/push/…9999"* && "$OUT" == *"*/5 * * * * "*"disk-check.sh"* && "$OUT" == *"Last run:  $now ok"* && "$OUT" != *"(stale)"* && "$OUT" != *"not scheduled"* ]]'
 CUROUT=$OUT
 STEP_PRE_SAVE=$STEP_PRE
-STEP_PRE='_cron_get(){ printf "0 1 * * * other\n"; }; _cron_drop(){ :; }; _cron_set(){ :; }'; newstep "" "$SCRIPTURL"
+STEP_PRE='_cron_get(){ printf "0 1 * * * other\n"; }; _cron_set(){ :; }'; newstep "" "$SCRIPTURL"
 check 1s "found + no disk-check cron line -> 'not scheduled'" '[[ "$OUT" == *"Cron:      "*"not scheduled"* ]]'
-STEP_PRE='_cron_get(){ return 1; }; _cron_drop(){ :; }; _cron_set(){ :; }'; newstep "" "$SCRIPTURL"
+STEP_PRE='_cron_get(){ return 1; }; _cron_set(){ :; }'; newstep "" "$SCRIPTURL"
 check 1s2 "crontab unreadable -> 'unknown (could not read root...)'" '[[ "$OUT" == *"unknown (could not read root"* ]]'
 STEP_PRE=$STEP_PRE_SAVE
 printf '%s ALERT / 91%%\n' "$now" > "$LASTF"; newstep "" "$SCRIPTURL"
@@ -260,5 +262,4 @@ reset; echo "$D" > $T/fm; printf '/ 40\n%s 50\n' "$D" > $DF_MAP; mkenv "FILES_LO
 check 9d "healthy run: curl -G urlencoded status/msg, exactly one query (no '?' in URL arg)" 'grep -q -- "-G --data-urlencode status=up --data-urlencode msg=OK http://example.invalid/api/push/SECRETTOKEN$" $CURL_LOG'
 reset; echo "$D" > $T/fm; printf '/ 40\n%s 50\n' "$D" > $DF_MAP; mkenv "FILES_LOCATION=$D"; gen "$T/env"; DISKCHECK_DRYRUN=1 bash $T/dc.sh > $T/dry.out; RC=$?; OUT=$(cat $T/dry.out)
 check 2c "dry-run: prints Watching/Config, rc 0, no curl, no log/state files" '[ $RC = 0 ] && [[ "$OUT" == "Watching: / (40%), $D (50%)"* ]] && [ ! -e $CURL_LOG ] && [ -z "$(ls $T/log)" ]'
-echo "TOTAL pass=$PASS fail=$FAILN"
-[ "$FAILN" -eq 0 ]
+check_total

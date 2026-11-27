@@ -23,7 +23,7 @@ fn() { awk -v n="$1" '
   grep -m1 '^_shq()' "$SRC"
   grep -E '^MIRROR_WIPE_MIN=' "$SRC"
   for f in _mirror_check_here _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
-           _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
+           _mirror_preview _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
            _sync_mode_cell _sync_last_note _sync_last_result _sync_change_mode \
            _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _cron_to_english _sync_one_time_backup; do fn "$f"; done; } > "$T/fn.sh"
@@ -207,6 +207,17 @@ mk; run "4\n\ny\n" LOCALCMD
 check 5jl "server -> server append: unchanged, Proceed? answered (not cancelled)" '[[ "$OUT" != *"Cancelled"* ]] && extras_kept'
 mk; run "1\ny\n" _sync_execute_or_schedule upload "$T/s" "$T/d" "rsync -avh --progress -s $(_shq "$T/s/") $(_shq "$T/d/")" "" mirror local
 check 5jm "Run now (no box): the deletion question is the only one" 'copied && extras_gone && [ "$(nq)" = 1 ] && [[ "$OUT" != *"Proceed?"* ]]'
+
+# ── 5c  From: size of a symlinked source ──────────────────────────────────
+mk; head -c 3000000 /dev/zero > "$T/s/big"; ln -s "$T/s" "$T/lnk"; P_SRC=$T/lnk
+run "${ONE}\ny" LOCALCMD
+check 5ka "symlink to a folder: From: shows the folder's size, not (0)" '[[ "$OUT" == *"From: $T/lnk (2.9M)"* ]]'
+mk; head -c 3000000 /dev/zero > "$T/s/big"; P_SRC=$T/s/
+run "${ONE}\ny" LOCALCMD
+check 5kb "plain folder size unchanged" '[[ "$OUT" == *"From: $T/s/ (2.9M)"* ]]'
+mk; head -c 3000000 /dev/zero > "$T/s/big"
+run "" bash -c 'source "$T/fn.sh"; echo "[$(_src_size "$T/s/big")] [$(_src_size "$T/nope")]"'
+check 5kc "a single file and a missing path do not break" '[ "$OUT" = "[2.9M] []" ]'
 
 # ── 6  tar (sudo) route: no prompt, info line ─────────────────────────────
 if [ "$(id -u)" != 0 ]; then

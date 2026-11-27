@@ -5295,6 +5295,14 @@ _mirror_confirm() {
     [[ $REPLY =~ ^[Yy]$ ]] || { info "Cancelled."; return 1; }
 }
 
+# Source size for the "From:" line. A symlink to a folder is measured as the
+# folder (trailing slash); plain `du -sh link` measures the link itself: 0.
+_src_size() {
+    local p=$1
+    [[ -d "$p" ]] && p=${p%/}/
+    du -sh "$p" 2>/dev/null | awk '{print $1}'
+}
+
 # MODE=/DELFLAG/guard block of a sync-job script, between markers so
 # _sync_job_set_mode (14 → 3) can swap it. Append: just the two assignments.
 _sync_mirror_block() {  # mode loc src_path job_name
@@ -6546,7 +6554,7 @@ _sync_one_time_backup() {
             fi
             _mirror_gate local "$src_path" "$dest_display" "rsync -avh --progress $(_shq "$rsync_src") $(_shq "$SERVER_USER@$SERVER_IP:$dst_path/")" || return
 
-            local src_size=$(du -sh "$src_path" 2>/dev/null | awk '{print $1}')
+            local src_size=$(_src_size "$src_path")
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↑ One-time upload: laptop → server${NC}"
@@ -6753,7 +6761,7 @@ _sync_one_time_backup() {
             fi
             _mirror_gate local "$src_path" "$dest_display" "rsync -avh --progress $(_shq "$rsync_src") $(_shq "$dst_path/")" || return
 
-            local src_size=$(du -sh "$src_path" 2>/dev/null | awk '{print $1}')
+            local src_size=$(_src_size "$src_path")
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↪ One-time local copy: laptop → laptop${NC}"
@@ -6900,7 +6908,7 @@ step_sync() {
             fi
             _mirror_ask
 
-            src_size=$(du -sh "$local_path" 2>/dev/null | awk '{print $1}')
+            src_size=$(_src_size "$local_path")
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↑ Upload: laptop → server${NC}"

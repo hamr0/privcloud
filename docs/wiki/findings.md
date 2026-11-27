@@ -114,10 +114,3 @@ Product decisions live in `docs/product/`; this page records *why things are the
 - Unattended backups are append-only on purpose: a deletion by mistake must survive in the backup.
 - Exclude regenerable caches (thumbnails, encoded video, Immich's own DB dumps) or the backup drive
   fills up.
-
-## Tooling (for agents working on this repo)
-
-- Trust a tool's own authoritative counts; don't re-derive them from raw IDs (a resumed conversation
-  can span several files).
-- When cross-checking a delegated count, compare against your own recount of every item, not a sample.
-- Before treating missing or changed files as an incident, ask: the user may be testing something.

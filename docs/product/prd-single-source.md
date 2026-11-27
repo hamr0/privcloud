@@ -37,10 +37,10 @@ code-proven), **15 P2** (maintenance drift), **10 P3** (cosmetic / scaffolding).
 | 2 | One sync-job generator | D1, D2, D6, D13, D23, part of D12 | create and every edit render the script from one record; legacy scripts are imported then re-rendered (never patched); names validated; scripts resolve the server endpoint at run time (LAN → Tailscale) and use the `ssh()` rules |
 | 3 | One Immich backup | D3, D7, D14, D20 | one implementation for scheduled and one-time; reads `.env` at run time; same excludes, layout and guards |
 | 4 | Service lifecycle and status | D9, D10, D11, D19, D25, D28, D30 | dead picker removed; one container-state probe, one service list, one renderer for rows and URLs |
-| 5 | `.env` and compose files | D5, D4, D33 | one reader and one key-updating writer; compose never edited in place; `.env.example` matches what deploy writes |
+| 5 | `.env` and compose files | D5, D4, D33 | one reader and one key-updating writer in `lib/env.sh`, sourced by both tools (needed even if piece 8 is declined); compose never edited in place; `.env.example` matches what deploy writes |
 | 6 | Uninstall / firewall / confirm helpers | D18, D21, D22, D24 | shared helpers, adopted as each service is next touched |
 | 7 | Menu table and doc checks | D29, D31, D32 | menu numbers come from one table; a test fails on a stale `federver -> N` in docs |
-| 8 | privcloud ↔ setup.sh shared lib (optional) | D26, D15, D16, D17 | only if a sourced `lib/common.sh` is accepted under the "lightweight" rule |
+| 8 | privcloud ↔ setup.sh shared lib (optional) | D26, D15, D16, D17 | only if a sourced `lib/common.sh` is accepted under the "lightweight" rule; `lib/env.sh` (piece 5) stays either way |
 
 Order: QW → 0 → 1 → 2 → 3 → 5 → 4 → 6 → 7 → (8). Pieces 1 and 2 get a design review with the
 user before any code.
@@ -50,6 +50,8 @@ user before any code.
 1. **Reuse before new.** Search for the job, not just the name; extend the existing helper. A new
    function must say why nothing existing fits.
 2. **Regenerate, don't patch.** A generated file has one generator used for create and update.
+   Re-rendering a file already on disk writes atomically (temp file + `mv`) and keeps the old file as
+   `<name>.bak`, so a hand-edited script is never lost.
 3. **No behaviour change hidden in a refactor.** Pure merges are proven by pinning every caller path
    with a test that fails on a deliberate break first; behaviour changes are listed in the piece's
    CHANGELOG entry.
@@ -63,9 +65,10 @@ user before any code.
   Recommended: success with `last: ok (some files vanished)`.
 - Legacy job scripts: re-render on first edit only, or on first Status view with a one-line notice.
   Recommended: on first Status view (old scripts carry the exit-code bug).
-- Piece 8 (`lib/common.sh` sourced by both tools): yes / no.
+- Piece 8 (`lib/common.sh` sourced by both tools): yes / no. A "no" does not remove piece 5's `lib/env.sh`.
 - `privcloud config` on a federver server: keep (key-updating only) or remove in favour of
-  `federver -> 11`. Recommended: keep, update only its own keys.
+  `federver -> 11`. Recommended: keep, update only its own keys
+  (`UPLOAD_LOCATION`, `DB_DATA_LOCATION`); every other `.env` key is left untouched.
 
 ## Non-goals
 

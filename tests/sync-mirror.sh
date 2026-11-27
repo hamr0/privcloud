@@ -8,6 +8,7 @@
 # hop are stubbed (a fake `ssh` runs the remote command locally). No network, no
 # sudo. SETUP_SH=<file> tests another copy of setup.sh.
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$H/lib.sh"
 SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
 trap 'chmod -R u+rwx "$T" 2>/dev/null; rm -rf "$T"' EXIT
@@ -15,18 +16,13 @@ mkdir -p "$T/bin" "$T/home/.local/bin" "$T/home/.local/share/sync-jobs"
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 CR=$'\033[R]'; CY=$'\033[Y]'   # status() swaps these in for RED/YELLOW
 
-fn() { awk -v n="$1" '
-  p==0 && index($0, n "() {")==1 { p=1; print; if ($0 ~ /\}[ \t]*$/ && $0 !~ /\{[ \t]*$/ && $0 !~ /^[^#]*\{[ \t]*#/) exit; next }
-  p { print } p && /^}/ { exit }' "$SRC"; }
-{ grep -E '^(ok|fail|info|warn)\(\)' "$SRC"
-  grep -m1 '^ssh()' "$SRC" >/dev/null && awk '/^ssh\(\) \{/{p=1} p{print} p&&/^}/{exit}' "$SRC"
-  grep -m1 '^_shq()' "$SRC"
+{ for f in ok fail info warn ssh _shq; do extract_fn "$f" "$SRC"; done   # ssh may be missing in an old copy: skipped
   grep -E '^MIRROR_WIPE_MIN=' "$SRC"
   for f in _mirror_check_here _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
            _mirror_preview _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
            _sync_mode_cell _sync_last_note _sync_last_result _sync_change_mode \
            _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
-           _cron_to_english _sync_one_time_backup; do fn "$f"; done; } > "$T/fn.sh"
+           _cron_to_english _sync_one_time_backup; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 source "$T/fn.sh"
 type _sync_one_time_backup >/dev/null 2>&1 || echo "FAIL  setup: mirror functions not found in $SRC (older setup.sh?)"
 
@@ -39,14 +35,7 @@ shift
 [ $# -gt 0 ] || exit 0
 exec bash -c "$*"
 X
-cat > "$T/bin/findmnt" <<'X'
-#!/bin/bash
-case "$*" in *TARGET*) col=T;; *) col=S;; esac
-case "${FM_MODE:-ok}" in
-  ok)   [ $col = T ] && echo "$FM_ROOT" || echo /dev/sdb1 ;;
-  stub) [ $col = T ] && echo "$FM_ROOT" || echo systemd-1 ;;
-esac
-X
+stub_findmnt ok '$FM_ROOT' /dev/sdb1  stub '$FM_ROOT' systemd-1
 cat > "$T/bin/crontab" <<'X'
 #!/bin/bash
 [ "$1" = -l ] && { cat "$CRON_FILE" 2>/dev/null; exit 0; }
@@ -71,8 +60,7 @@ _cron_add_sync() { echo "$2 $3" >> "$CRON_FILE"; }          # job_name sched scr
 _server_sudo_pw_prompt() { _SRV_PW=fake; return 0; }
 _server_sudo_run() { bash -c "$1"; }                         # "root on the server" = this shell
 
-PASS=0; FAILN=0
-check() { if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rc=$RC]"; FAILN=$((FAILN+1)); fi; }
+CHECK_DIAG='rc=$RC'
 # run <stdin-text> cmd...  (runs in a subshell: filesystem + output are what we assert on)
 run() { local in=$1; shift; OUT=$(printf '%b' "$in" | "$@" 2>&1); RC=$?; }
 # fresh source (a, sub/b) and a destination holding extras (gone, sub/old, "we ird")
@@ -448,8 +436,7 @@ bash "$JOB3" >/dev/null 2>&1
 check 10k "edited download job guards the SERVER source and skips on empty" '[ "$(sed -n "s/^MODE=//p" "$JOB3")" = mirror ] && grep -q "^_mirror_guard server" "$JOB3" && [ -e "$T/d/stray" ] && grep -q "SKIPPED dl" "$T/home/.local/share/sync-jobs/dl.log"'
 
 # ── 11  Immich backup stays append-only ───────────────────────────────────
-IMM=$(for f in step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove step_immich_backup_menu; do fn "$f"; done)
+IMM=$(for f in step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove step_immich_backup_menu; do extract_fn "$f" "$SRC"; done)
 check 11a "Immich backup functions exist and never touch the mirror question" '[ -n "$IMM" ] && ! grep -Eq "_mirror_|sync_mode" <<<"$IMM"'
 
-echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
-[ "$FAILN" = 0 ]
+check_total

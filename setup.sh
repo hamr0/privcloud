@@ -251,11 +251,19 @@ EOF
 _svc_power_all_body() { # action
     local list="d ps -a --format '{{.Names}}'"
     [[ "$1" == restart ]] && list="d ps --format '{{.Names}}'"
+    local verb past
+    case "$1" in
+        start)   verb=Starting;   past=started ;;
+        stop)    verb=Stopping;   past="stopped (autostart off)" ;;
+        restart) verb=Restarting; past=restarted ;;
+    esac
     printf '%s\n' \
         "$(_svc_docker_fn)" \
-        "rc=0; for n in \$($list); do (" \
+        "set -- \$($list)" \
+        "echo \"$verb \$# containers on the server…\"" \
+        "rc=0; for n in \"\$@\"; do if (" \
         "$(_svc_power_body "$1" '"$n"')" \
-        ") || rc=1; done; exit \$rc"
+        "); then echo \"✓ \$n $past\"; else rc=1; fi; done; exit \$rc"
 }
 _svc_power()            { # action container   (on the server itself)
     if [[ "${DRY_RUN:-0}" == 1 ]]; then echo "    [dry-run] container $1 $2" >&2; return 0; fi
@@ -458,7 +466,7 @@ _on_server() {
         echo ""
         local dry=""
         [[ "$DRY_RUN" == "1" ]] && dry="--dry-run "
-        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && GIT_TERMINAL_PROMPT=0 git pull --ff-only -q 2>/dev/null; ./setup.sh ${dry}--run $step"
+        ssh -o LogLevel=ERROR -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && GIT_TERMINAL_PROMPT=0 git pull --ff-only -q 2>/dev/null; ./setup.sh ${dry}--run $step"
     fi
 }
 
@@ -2149,12 +2157,7 @@ _unified_service_picker() {
     local action="$1"
 
     # ── 1. Collect laptop service states ──
-    local ts_laptop="disconnected" st_laptop="stopped" ts_rec
-    ts_rec=$(_ts_state)
-    case "$ts_rec" in
-        Running*)    ts_laptop="connected ($(_ts_ip "$ts_rec"))" ;;
-        NeedsLogin*) ts_laptop="logged out" ;;
-    esac
+    local st_laptop="stopped"
     if systemctl --user is-active syncthing &>/dev/null; then
         st_laptop="running"
     elif ! command -v syncthing &>/dev/null; then
@@ -2168,15 +2171,6 @@ _unified_service_picker() {
         fail "Could not reach server."
         return 1
     }
-
-    # ── 3. Extract Tailscale server state ──
-    local ts_server="disconnected"
-    local ts_server_raw
-    ts_server_raw=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_ipv4 _ts_state); _ts_state" 2>/dev/null) || true
-    case "$ts_server_raw" in
-        Running*)    ts_server="connected" ;;
-        NeedsLogin*) ts_server="logged out" ;;
-    esac
 
     # ── 4. Extract Syncthing server state from docker data ──
     local st_server="not created"
@@ -2204,13 +2198,9 @@ _unified_service_picker() {
 
     # Both-sides: fully running only if ALL sides are up. If any side is
     # down, the service shows in the Start picker (needs starting somewhere).
-    local ts_running=0 st_running=0
-    [[ "$ts_laptop" == connected* && "$ts_server" == "connected" ]] && ts_running=1
+    # Tailscale is not here: it carries remote access, so it lives only in federver -> 8.
+    local st_running=0
     [[ "$st_laptop" == "running" && "$st_server" == Up* ]] && st_running=1
-
-    # Tailscale
-    entries[$idx]="tailscale|Tailscale|B|laptop: $ts_laptop / server: $ts_server|$ts_running"
-    idx=$((idx + 1))
 
     # Syncthing (both-sides)
     entries[$idx]="syncthing|Syncthing|B|laptop: $st_laptop / server: $st_server|$st_running"
@@ -2291,25 +2281,46 @@ _unified_service_picker() {
     done
 
     echo -e "  ${BOLD}0)${NC} Back"
+    echo -e "  ${DIM}Tailscale: federver -> 8${NC}"
     echo ""
     read -p "  Choose: " pick
 
     # ── 9. Execute choice ──
     if [[ "$pick" == "a" || "$pick" == "A" ]]; then
-        # All
+        # All = what the picker already collected: the laptop Syncthing plus every
+        # server container (the server's Syncthing is one of them). Skips are
+        # listed first, then ONE question (stop only; start/restart never ask).
+        local n_ctr=0 ctr_names="" cn cs lap_act=0 past
+        case "$action" in start) past=started ;; stop) past=stopped ;; *) past=restarted ;; esac
+        while IFS='|' read -r cn cs; do
+            [[ -z "$cn" ]] && continue
+            [[ "$action" == restart && "$cs" != Up* ]] && continue
+            n_ctr=$((n_ctr + 1)); ctr_names+="${ctr_names:+, }$cn"
+        done <<< "$server_data"
+        echo ""
+        case "$st_laptop:$action" in
+            "not installed":*) info "Syncthing (laptop): not installed - skipped" ;;
+            running:start)     info "Syncthing (laptop): already running - skipped" ;;
+            stopped:stop)      info "Syncthing (laptop): already stopped - skipped" ;;
+            *)                 lap_act=1 ;;
+        esac
+        [[ -z "$st_server_line" ]] && info "Syncthing (server): not installed - skipped"
+        info "Tailscale: not touched (manage it in federver -> 8)"
+        info "${action^} all: $( ((lap_act)) && echo "Syncthing on this laptop + ")$n_ctr server containers${ctr_names:+ ($ctr_names)}"
         if [[ "$action" == "stop" ]]; then
-            echo ""
-            warn "This will stop ALL services (laptop + server)."
-            read -p "  Continue? [y/N] " -n 1 -r
+            printf '  Continue? [y/N] '; read -n 1 -r
             echo ""
             [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
         fi
         [[ "$action" == start ]] && { _picker_data_guard all || return 1; }
-        # Both-sides services
-        "_ts_${action}_both"
-        "_syncthing_${action}_both"
-        # Server containers via SSH
         local all_rc=0
+        if ((lap_act)); then
+            if systemctl --user "$action" syncthing 2>/dev/null; then
+                ok "syncthing (laptop) $past"
+            else
+                fail "syncthing (laptop): $action failed"; all_rc=1
+            fi
+        fi
         if [[ "$action" == start ]]; then
             # compose up -d creates what is missing but never re-applies a
             # restart policy; the per-container rule after it does.
@@ -2355,7 +2366,6 @@ _unified_service_picker() {
     # Both-sides services
     if [[ "$section" == "B" ]]; then
         case "$cname" in
-            tailscale)  "_ts_${action}_both" ;;
             syncthing)  "_syncthing_${action}_both" ;;
         esac
         return 0
@@ -3897,8 +3907,9 @@ _IMMICH_SERVICES=(immich-server immich-machine-learning redis database)
 _STALE_PRIVCLOUD_CMD=/usr/local/bin/privcloud
 _remove_stale_privcloud_cmd() {
     [[ -e "$_STALE_PRIVCLOUD_CMD" || -L "$_STALE_PRIVCLOUD_CMD" ]] || return 0
+    info "Removing the old 'privcloud' command (one-time, needs sudo)..."
     if sudo rm -f "$_STALE_PRIVCLOUD_CMD"; then
-        info "Removed the old 'privcloud' command - Immich is now: federver -> 9 (Manage Immich)."
+        ok "Removed. Immich is now: federver -> 9"
     else
         warn "Could not remove the old 'privcloud' command ($_STALE_PRIVCLOUD_CMD) - it no longer works; remove it with sudo."
     fi
@@ -4106,10 +4117,10 @@ step_immich_status() {
             else
                 echo -e "  ${YELLOW}  $line${NC}"
             fi
-        done < <(_immich_compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null)
+        done < <(_immich_compose ps --format "table {{.Name}}\t{{.Status}}" "${_IMMICH_SERVICES[@]}" 2>/dev/null)
 
         if ! $has_containers; then
-            warn "No containers running."
+            warn "No Immich containers running."
             echo ""
             info "Run: federver -> 7 -> 2 (Start Immich)"
             return 0
@@ -4131,9 +4142,9 @@ step_immich_status() {
     echo ""
     echo -e "  ${BOLD}Recent errors${NC}"
     local errors_found=false container err_lines eline
-    for container in immich_server immich_postgres immich_machine_learning immich_redis; do
-        if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
-            err_lines="$(docker logs "$container" --tail 50 2>&1 | grep -iE 'error|fatal|panic|failed|exception|denied' | tail -3)"
+    for container in "${_IMMICH_SERVICES[@]}"; do
+        if $compose_ok && [[ -n "$(_immich_compose ps -aq "$container" 2>/dev/null)" ]]; then
+            err_lines="$(_immich_compose logs --no-color --no-log-prefix --tail 50 "$container" 2>&1 | grep -iE 'error|fatal|panic|failed|exception|denied' | tail -3)"
             if [[ -n "$err_lines" ]]; then
                 errors_found=true
                 echo -e "  ${RED}-- $container --${NC}"

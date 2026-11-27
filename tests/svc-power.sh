@@ -173,6 +173,16 @@ check 7f "bulk with nothing running: ok" '[ $RC = 0 ]'
 reset; mk a true no; export SUDO_FAIL=1; run _svc_power_all stop
 check 7h "D10 bulk: sudo is never called, the stop still works" '[ $RC = 0 ] && [ "$(st a)" = "false no" ] && [ ! -s "$SUDO_LOG" ]'
 
+# 7i per-container result lines, same text local and over ssh; failures keep the body's stderr line
+reset; mk a true unless-stopped; mk b true unless-stopped
+OUT=$(_svc_power_all stop 2>&1); OUT2=$(_svc_power_all_remote stop 2>&1)
+check 7i "stop all: announces the count first, then one success line per container (autostart off), local = remote" '[ "$(sed -n 1p <<<"$OUT")" = "Stopping 2 containers on the server…" ] && grep -qx "✓ a stopped (autostart off)" <<<"$OUT" && grep -qx "✓ b stopped (autostart off)" <<<"$OUT"'
+reset; mk a false no
+OUT=$(_svc_power_all_remote start 2>&1)
+check 7j "start all over ssh prints the same kind of line: 'started'" '[[ "$OUT" == *"✓ a started"* && "$OUT" == "Starting 1 containers"* ]]'
+reset; mk a true no; mk b true no; export FAIL_ACTION=1; OUT=$(_svc_power_all restart 2>&1); RC=$?
+check 7k "a failed container prints its failure and no success line; exit code still 1" '[ $RC = 1 ] && [[ "$OUT" == *"a: docker restart failed"* && "$OUT" != *"✓"* ]]'
+
 # 8 Status marker
 reset; mk adguard false no; mk navidrome false unless-stopped; mk immich_server true always; mk fresh false no
 printf 'created\n' >/dev/null

@@ -20,9 +20,14 @@ grep -E '^_DRIVE_ROOTS=' "$SRC" >> "$T/fn.sh"
 source "$T/fn.sh"
 type _unified_service_picker >/dev/null 2>&1 || echo "FAIL  setup: _unified_service_picker not found in $SRC"
 # laptop-side stubs
-_ts_state() { echo NeedsLogin; }
-_ts_ip() { echo 100.64.0.1; }
+# Tailscale is federver -> 8 only: any call to it from the picker is a bug, so every entry point logs
+_ts_state() { echo "TS_STATE" >> "$T/acts.log"; }
 _ts_start_both() { echo "TS_START" >> "$T/acts.log"; }
+_ts_stop_both() { echo "TS_STOP" >> "$T/acts.log"; }
+_ts_restart_both() { echo "TS_RESTART" >> "$T/acts.log"; }
+_syncthing_stop_both() { echo "ST_STOP" >> "$T/acts.log"; }
+stub_cmd tailscale 'echo "tailscale $*" >> "$ACTS"; exit 0'
+export ACTS=$T/acts.log
 _syncthing_start_both() { echo "ST_START" >> "$T/acts.log"; }
 systemctl() { return 1; }
 stub_findmnt <<'X'
@@ -38,8 +43,7 @@ cat > "$T/bin/ssh" <<'X'
 #!/bin/bash
 for a in "$@"; do last=$a; done
 case "$last" in
-  *"_ps_autostart docker"*) printf 'navidrome|Exited (0) 1 hour ago\nfilebrowser|Exited (0) 1 hour ago\n'; exit 0 ;;
-  *"_ts_state"*) echo Running; exit 0 ;;
+  *"_ps_autostart docker"*) printf '%b' "${PS_OUT:-navidrome|Exited (0) 1 hour ago\\nfilebrowser|Exited (0) 1 hour ago\\n}"; exit 0 ;;
   *"_require_data_mount"*) HOME=$FAKE_HOME exec bash -c "$last" ;;
 esac
 echo "$last" >> "$SSH_LOG"
@@ -49,21 +53,38 @@ chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH" SSH_LOG=$T/ssh.log FAKE_HOME=$T/home
 SERVER_USER=tester SERVER_IP=192.0.2.1
 CHECK_DIAG='rc=$RC out='"'"'${OUT:0:200}'"'"
-# pick: 3=navidrome 4=filebrowser a=All (Start list: tailscale, syncthing, navidrome, filebrowser, adguard)
+# pick: 2=navidrome 3=filebrowser a=All (Start list: syncthing, navidrome, filebrowser, adguard - Tailscale is federver -> 8 only)
 go() { : > "$SSH_LOG"; : > "$T/acts.log"; OUT=$(printf '%s\n' "$1" | _unified_service_picker start 2>&1); RC=$?; }
 started() { grep -qE 'docker start|compose up' "$SSH_LOG"; }
 
 setdata files; export FINDMNT_SRC=""   # data drive not mounted
-go 3; check 1a "navidrome, drive unmounted: refused, nothing started" '[ $RC != 0 ] && ! started && [[ "$OUT" == *"not mounted"* ]]'
-go 4; check 1b "filebrowser, drive unmounted: refused, nothing started" '[ $RC != 0 ] && ! started && [[ "$OUT" == *"not mounted"* ]]'
+go 2; check 1a "navidrome, drive unmounted: refused, nothing started" '[ $RC != 0 ] && ! started && [[ "$OUT" == *"not mounted"* ]]'
+go 3; check 1b "filebrowser, drive unmounted: refused, nothing started" '[ $RC != 0 ] && ! started && [[ "$OUT" == *"not mounted"* ]]'
 go a; check 1c "All, drive unmounted: refused, no compose up, no laptop-side start" '[ $RC != 0 ] && ! started && [ ! -s "$T/acts.log" ] && [[ "$OUT" == *"not mounted"* ]]'
 export FINDMNT_SRC=systemd-1   # autofs placeholder, not a device
-go 3; check 1d "navidrome, autofs stub on the drive: refused, nothing started" '[ $RC != 0 ] && ! started && [[ "$OUT" == *"not mounted"* ]]'
+go 2; check 1d "navidrome, autofs stub on the drive: refused, nothing started" '[ $RC != 0 ] && ! started && [[ "$OUT" == *"not mounted"* ]]'
 export FINDMNT_SRC=/dev/sdb1; setdata missing   # mount point gone
-go 4; check 1e "filebrowser, mount point missing: refused, nothing started" '[ $RC != 0 ] && ! started && [[ "$OUT" == *"not mounted"* ]]'
+go 3; check 1e "filebrowser, mount point missing: refused, nothing started" '[ $RC != 0 ] && ! started && [[ "$OUT" == *"not mounted"* ]]'
 export FINDMNT_SRC=/dev/sdb1; setdata files
-go 3; check 2a "navidrome, drive mounted: started" '[ $RC = 0 ] && grep -q "docker start" "$SSH_LOG"'
-go 4; check 2b "filebrowser, drive mounted: started" '[ $RC = 0 ] && grep -q "docker start" "$SSH_LOG"'
+go 2; check 2a "navidrome, drive mounted: started" '[ $RC = 0 ] && grep -q "docker start" "$SSH_LOG"'
+go 3; check 2b "filebrowser, drive mounted: started" '[ $RC = 0 ] && grep -q "docker start" "$SSH_LOG"'
 go a; check 2c "All, drive mounted: compose up runs" '[ $RC = 0 ] && grep -q "compose up" "$SSH_LOG"'
 
+
+# 3 All = one question. Stop All, Syncthing installed nowhere, Tailscale up: skips listed BEFORE the single
+# confirmation, one 'y' is enough, no Tailscale or Syncthing prompt, no tailscale command, one line per container.
+export PS_OUT='navidrome|Up 2 hours\nfilebrowser|Up 2 hours\n'
+# stdin 'a','y' then a sentinel line: whatever the picker did not read is echoed back as REST=, so a second read shows
+stopgo() { : > "$SSH_LOG"; : > "$T/acts.log"; OUT=$(printf 'a\ny\nSENTINEL\n' | { _unified_service_picker stop; echo "RC=$? REST=$(cat | tr -d '\n')"; } 2>&1); RC=${OUT##*RC=}; RC=${RC%% *}; }
+stopgo
+echo "---- sample: Stop All screen ----"; echo "$OUT"; echo "---------------------------------"
+check 3a "Stop All: exactly one confirmation, answered by a single 'y' (the sentinel line is never read)" '[ $RC = 0 ] && [[ "$OUT" == *"REST=SENTINEL"* ]] && [ "$(grep -c "\[y/N\]" <<<"$OUT")" = 1 ] && [[ "$OUT" != *Disconnect* && "$OUT" != *"Stop Syncthing"* && "$OUT" != *Cancelled* ]]'
+check 3b "Stop All: Syncthing skips are printed before the question" 'awk "/Syncthing \(laptop\): not installed - skipped/{a=NR} /Syncthing \(server\): not installed - skipped/{b=NR} /\[y\/N\]/{c=NR} END{exit !(a&&b&&a<c&&b<c)}" <<<"$OUT"'
+check 3c "Stop All: no tailscale command, no _ts_* call; the containers are stopped over one ssh" '! grep -q "TS\|tailscale" "$T/acts.log" && [ "$(grep -c "docker stop\|docker update" "$SSH_LOG")" -ge 1 ] && [[ "$OUT" == *"Tailscale: not touched"* && "$OUT" == *"2 server containers (navidrome, filebrowser)"* ]]'
+: > "$SSH_LOG"; OUT=$(printf 'a\nn\n' | _unified_service_picker stop 2>&1)
+check 3d "Stop All answered n: Cancelled, nothing sent to the server" '[[ "$OUT" == *Cancelled* ]] && ! grep -q "docker stop" "$SSH_LOG"'
+export FINDMNT_SRC=/dev/sdb1; setdata files
+: > "$T/acts.log"; OUT=$(printf 'a\n' | _unified_service_picker restart 2>&1)
+check 3e "Restart All: no question at all, no tailscale" '[[ "$OUT" != *"[y/N]"* ]] && ! grep -q "TS\|tailscale" "$T/acts.log"'
+check 3f "the picker lists no Tailscale row and points at federver -> 8" '! grep -qE "^ +[0-9]+\) +Tailscale" <<<"$OUT" && ! grep -q "ts_laptop\|ts_server" <(extract_fn _unified_service_picker "$SRC") && [[ "$OUT" == *"Tailscale: federver -> 8"* ]]'
 check_total

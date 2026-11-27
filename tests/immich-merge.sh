@@ -11,7 +11,7 @@ S=${SETUP_SH:-$H/../setup.sh}
 SETUP_SH=$S
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
-for f in _fv_pkg_version _set_env ok fail info warn step_immich _remove_stale_privcloud_cmd; do extract_fn "$f" "$S"; done > "$T/fn.sh"
+for f in _fv_pkg_version _env_quote _set_env ok fail info warn step_immich _remove_stale_privcloud_cmd; do extract_fn "$f" "$S"; done > "$T/fn.sh"
 GREEN= RED= YELLOW= BOLD= DIM= NC=
 source "$T/fn.sh"
 ROOT=$(dirname "$S")

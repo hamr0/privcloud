@@ -17,9 +17,11 @@ extract_fn _disk_check_script "$SRC" > "$T/gen.sh"
 source "$T/gen.sh"
 cat > "$T/bin/findmnt" <<'X'
 #!/bin/bash
-p="${@: -1}"; best=/
-while read -r m; do case "$p" in "$m"|"$m"/*) [ ${#m} -gt ${#best} ] && best=$m;; esac; done < "$FM_MAP"
-echo "$best"
+# $FM_MAP lines: "<mountpoint> [<source>]" (source defaults to a real /dev/ disk). Answers
+# TARGET or SOURCE for the longest mountpoint holding the path (last arg); / when none.
+p="${@: -1}"; best=/; src=/dev/fake-root
+while read -r m s; do case "$p" in "$m"|"$m"/*) if [ ${#m} -gt ${#best} ]; then best=$m; src=${s:-/dev/fake-disk}; fi;; esac; done < "$FM_MAP"
+case "$*" in *SOURCE*) echo "$src" ;; *) echo "$best" ;; esac
 X
 cat > "$T/bin/df" <<'X'
 #!/bin/bash
@@ -262,4 +264,10 @@ reset; echo "$D" > $T/fm; printf '/ 40\n%s 50\n' "$D" > $DF_MAP; mkenv "FILES_LO
 check 9d "healthy run: curl -G urlencoded status/msg, exactly one query (no '?' in URL arg)" 'grep -q -- "-G --data-urlencode status=up --data-urlencode msg=OK http://example.invalid/api/push/SECRETTOKEN$" $CURL_LOG'
 reset; echo "$D" > $T/fm; printf '/ 40\n%s 50\n' "$D" > $DF_MAP; mkenv "FILES_LOCATION=$D"; gen "$T/env"; DISKCHECK_DRYRUN=1 bash $T/dc.sh > $T/dry.out; RC=$?; OUT=$(cat $T/dry.out)
 check 2c "dry-run: prints Watching/Config, rc 0, no curl, no log/state files" '[ $RC = 0 ] && [[ "$OUT" == "Watching: / (40%), $D (50%)"* ]] && [ ! -e $CURL_LOG ] && [ -z "$(ls $T/log)" ]'
+
+# 10 drive-mount pins (cleanup step 3): what the check says about SOURCE today
+reset; echo "$D /dev/sdb1" > $T/fm; printf '/ 40\n%s 50\n' "$D" > $DF_MAP; mkenv "FILES_LOCATION=$D"; gen "$T/env"; run
+check 10a "location on a real /dev mount -> ok" '[ $RC = 0 ] && grep -q " ok" $T/log/dc.last'
+reset; echo "$D systemd-1" > $T/fm; printf '/ 40\n%s 50\n' "$D" > $DF_MAP; mkenv "FILES_LOCATION=$D"; gen "$T/env"; run
+check 10b "autofs stub (target is the mount, SOURCE systemd-1) passes today: SOURCE is not looked at (the D8 gap)" '[ $RC = 0 ] && grep -q " ok" $T/log/dc.last'
 check_total

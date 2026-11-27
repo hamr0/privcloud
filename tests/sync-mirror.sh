@@ -21,6 +21,7 @@ fn() { awk -v n="$1" '
 { grep -E '^(ok|fail|info|warn)\(\)' "$SRC"
   grep -m1 '^ssh()' "$SRC" >/dev/null && awk '/^ssh\(\) \{/{p=1} p{print} p&&/^}/{exit}' "$SRC"
   grep -m1 '^_shq()' "$SRC"
+  grep -E '^MIRROR_WIPE_MIN=' "$SRC"
   for f in _mirror_check_here _mirror_guard _mirror_refuse _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
            _mirror_preview _mirror_gate _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode \
            _sync_mode_cell _sync_last_note _sync_last_result _sync_change_mode \
@@ -139,7 +140,7 @@ mk; mkdir -p "$T/mnt/usb/data"; echo q > "$T/mnt/usb/data/f"; P_SRC=$T/mnt/usb/d
 run "${ONE}delete\ny\n$Y" LOCALCMD
 check 4f "non-empty source on a stub/autofs mountpoint (source systemd-1) refused" 'extras_kept && [[ "$OUT" == *"Refused."* ]]'
 mk; mkdir -p "$T/mnt/usb/data"; echo q > "$T/mnt/usb/data/f"; P_SRC=$T/mnt/usb/data; export FM_MODE=ok
-run "${ONE}delete\ny\n$Y" LOCALCMD
+run "${ONE}delete\n4\n$Y" LOCALCMD   # sub/ goes whole: type the count
 check 4g "same path on a real /dev mount is accepted" '[ -e "$T/d/f" ] && [ ! -e "$T/d/gone" ]'
 mk; run "" bash -c 'source "$T/fn.sh"; _mirror_guard server "$P_SRC/nope"'
 check 4h "server-side guard (over ssh) refuses a missing path" '[ "$RC" != 0 ]'
@@ -172,8 +173,8 @@ mkempty; rm -rf "$T/d/e2"
 run "${ONE}delete\nn\n$Y" LOCALCMD
 check 5g "one empty folder is singular" '[[ "$OUT" == *"⚠ 1 empty folder would be removed at $T/d:"* && "$OUT" == *"Delete these 1 empty folder at the destination? [y/N]: "* ]]'
 mk; mkdir "$T/d/e1" "$T/d/full"; echo f > "$T/d/full/f"
-run "${ONE}delete\ny\n$Y" LOCALCMD
-check 5h "files and empty folders: file count kept, '(+ N empty folder)' added; a folder holding deleted files is not counted" '[[ "$OUT" == *"⚠ 4 files (+ 1 empty folder) would be deleted at $T/d:"* && "$OUT" == *"Delete these 4 files (+ 1 empty folder) at the destination? [y/N]: "* ]] && extras_gone && [ ! -e "$T/d/e1" ] && [ ! -e "$T/d/full" ]'
+run "${ONE}delete\n4\n$Y" LOCALCMD   # full/ goes whole: type the count
+check 5h "files and empty folders: file count kept, '(+ N empty folder)' added; a folder holding deleted files is not counted" '[[ "$OUT" == *"⚠ 4 files (+ 1 empty folder) would be deleted at $T/d:"* && "$OUT" == *"Type 4 to delete, Enter = cancel: "* ]] && extras_gone && [ ! -e "$T/d/e1" ] && [ ! -e "$T/d/full" ]'
 mk; rm -rf "$T/d"; mkdir -p "$T/d/sub"; echo a > "$T/d/a"; echo b > "$T/d/sub/b"
 run "${ONE}delete\n$Y" LOCALCMD
 check 5i "nothing at all to delete still says so (no folders either)" '[[ "$OUT" == *"✓ Nothing to delete - destination has no extra files."* && "$OUT" != *"empty folder"* && "$OUT" != *"Delete these"* ]]'
@@ -250,7 +251,7 @@ cmd="rsync -avh --progress -s $(_shq "$T/mnt/usb/data/") $(_shq "$T/d/")"
 run "2\nj2\ny\n" _sync_execute_or_schedule upload "$T/mnt/usb/data" "$T/d" "$cmd" "" mirror local
 check 8m "unmounted source refused at creation" '[ ! -e "$T/home/.local/bin/sync-j2.sh" ] && extras_kept && [[ "$OUT" == *"Refused."* ]]'
 mk; mkdir -p "$T/mnt/usb/data"; echo q > "$T/mnt/usb/data/f"; export FM_MODE=ok
-run "2\nj2\ny\n" _sync_execute_or_schedule upload "$T/mnt/usb/data" "$T/d" "$cmd" "" mirror local
+run "2\nj2\n4\n" _sync_execute_or_schedule upload "$T/mnt/usb/data" "$T/d" "$cmd" "" mirror local   # sub/ goes whole: type the count
 echo k > "$T/d/stray"; export FM_MODE=stub
 bash "$T/home/.local/bin/sync-j2.sh" >/dev/null 2>&1
 check 8n "cron run after the drive vanished (stub mount) skips" '[ -e "$T/d/stray" ] && grep -q "SKIPPED j2" "$T/home/.local/share/sync-jobs/j2.log"'

@@ -5088,6 +5088,10 @@ _mirror_refuse() {
     info "Check the drive is plugged in and mounted, or press Enter at the copy-mode question for append only."
 }
 
+# A mirror that would delete more files than this, or a whole top-level folder,
+# needs the exact count typed instead of a y/N (_mirror_preview).
+MIRROR_WIPE_MIN=1000
+
 # The one question. Sets sync_mode=append|mirror; only the exact word "delete"
 # selects mirror.
 _mirror_ask() {
@@ -5163,7 +5167,7 @@ _mirror_preview() {
     # folder (count, files, empty folders, whole-folder flag, name). A folder is
     # "whole" when its own "name/" entry is in the list (rsync prints it when
     # the directory goes entirely).
-    local sum
+    local sum nwhole
     sum=$(awk 'function top(x,   j) { j = index(x, "/"); return j ? substr(x, 1, j) : "(top level)" }
         /^del\.\|/ { p = substr($0, 6)
             if (p ~ /\/$/) { d[++nd] = p; next }
@@ -5171,11 +5175,12 @@ _mirror_preview() {
             while ((i = match(p, /\/[^\/]*$/)) > 0) { p = substr(p, 1, i - 1); if ((p "/") in has) break; has[p "/"] = 1 } }
         END { for (i = 1; i <= nd; i++) { t = top(d[i]); seen[t] = 1
                 if (!(d[i] in has)) { ne++; em[t]++ }
-                if (index(d[i], "/") == length(d[i])) whole[t] = 1 }
+                if ((d[i] in has) && index(d[i], "/") == length(d[i])) whole[t] = 1 }
               print "T", nf + 0, ne + 0
               for (t in seen) { if (t in whole) nw++; printf "G %d %d %d %d %s\n", cnt[t] + em[t], cnt[t] + 0, em[t] + 0, (t in whole), t }
               print "W", nw + 0 }' "$list")
     read -r _ nf nd <<<"$(grep '^T ' <<<"$sum")"
+    read -r _ nwhole <<<"$(grep '^W ' <<<"$sum")"
     _mirror_n=$((nf + nd))
     if (( _mirror_n == 0 )); then rm -f "$list"; else
         local old=()   # keep only the newest 5 lists
@@ -5207,6 +5212,19 @@ _mirror_preview() {
         done < <(grep '^G ' <<<"$sum" | sort -k2,2nr -k6)
         (( ng > 5 )) && echo "    ... and $((ng - 5)) more folders"
         echo "  Full list: $list"
+    fi
+    if (( _mirror_n > 0 && (nwhole > 0 || nf > MIRROR_WIPE_MIN) )); then
+        # Wipe guard: a plain y/N is too easy to hit. Type the exact count.
+        local want=$(( nf > 0 ? nf : nd ))
+        if [[ "$ask" == save ]]; then
+            echo -en "  ${RED}Type ${want} to save this job as mirror, Enter = cancel:${NC} "
+        else
+            echo -en "  ${RED}Type ${want} to delete, Enter = cancel:${NC} "
+        fi
+        read -r reply || reply=""
+        if [[ "$reply" == "$want" ]]; then return 0; fi
+        info "Cancelled - nothing changed."
+        return 1
     fi
     if [[ "$ask" == save ]]; then
         printf '  Save this job as mirror? [y/N]: '

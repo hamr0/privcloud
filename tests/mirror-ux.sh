@@ -89,5 +89,25 @@ check 5d "total line unchanged and the file names are not dumped" '[[ "$OUT" == 
 OUT=$(plain "$(echo n | _mirror_preview local /s /d "printf 'del.|a\\ndel.|b\\n'" copy 2>&1)")
 check 5e "files directly at the top level are grouped as (top level)" '[[ "$OUT" == *"    (top level)  2 files"* ]]'
 
+# 6 wipe guard: whole top-level folder or > MIRROR_WIPE_MIN files = type the exact count
+gen() { echo "awk 'BEGIN{for(i=1;i<=$1;i++) print \"del.|f\" i}'"; }   # n top-level files
+chk() { OUT=$(printf '%s\n' "$1" | _mirror_preview local /s /d "$2" "${3:-copy}" 2>&1); RC=$?; OUT=$(plain "$OUT"); }
+chk "" "$(gen 1500)"
+check 6a "1500 files: typed-count prompt, no y/N" '[ $RC = 1 ] && [[ "$OUT" == *"Type 1500 to delete, Enter = cancel: "* && "$OUT" != *"[y/N]"* ]]'
+check 6b "prompt is red" '[[ "$(printf "%s\n" 1500 | _mirror_preview local /s /d "$(gen 1500)" copy 2>&1)" == *"$(printf "${RED}Type 1500 to delete")"* ]]'
+chk 1500 "$(gen 1500)"; check 6c "exact count accepted -> rc 0" '[ $RC = 0 ]'
+for ans in y yes 1499 1501 ""; do chk "$ans" "$(gen 1500)"
+  check 6d "answer [$ans] cancels" '[ $RC = 1 ] && [[ "$OUT" == *"Cancelled - nothing changed."* ]]'; done
+chk y "$(gen 1000)"; check 6e "exactly $MIRROR_WIPE_MIN files: still the plain y/N" '[ $RC = 0 ] && [[ "$OUT" != *"Type "* ]]'
+chk 1001 "$(gen 1001)"; check 6f "one over the limit: typed count" '[ $RC = 0 ] && [[ "$OUT" == *"Type 1001 to delete"* ]]'
+WH="printf 'del.|keep/a\\ndel.|gone/x\\ndel.|gone/y\\ndel.|gone/\\n'"
+chk 3 "$WH"; check 6g "3 files but a whole folder goes: typed count 3 accepted" '[ $RC = 0 ] && [[ "$OUT" == *"gone/  2 files  ← whole folder deleted"* && "$OUT" == *"Type 3 to delete"* ]]'
+chk y "$WH"; check 6h "whole folder + y -> cancelled" '[ $RC = 1 ]'
+chk 1500 "$(gen 1500)" save; check 6i "save mode: typed count to save the job" '[ $RC = 0 ] && [[ "$OUT" == *"Type 1500 to save this job as mirror, Enter = cancel: "* ]]'
+chk y "$(gen 1500)" save; check 6j "save mode + y -> cancelled" '[ $RC = 1 ]'
+chk y "printf 'del.|a\\n'" save; check 6k "small save: y/N as before" '[ $RC = 0 ] && [[ "$OUT" == *"Save this job as mirror? [y/N]: "* ]]'
+chk y "printf 'del.|e1/\\\\ndel.|a\\\\n'"; check 6m "an empty top-level folder alone is not a wipe: y/N" '[ $RC = 0 ] && [[ "$OUT" != *"Type "* ]]'
+check 6l "the limit is one named constant" '[ "$MIRROR_WIPE_MIN" = 1000 ] && [ "$(grep -c "1000" <<<"$(declare -f _mirror_preview)")" = 0 ]'
+
 echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
 [ "$FAILN" = 0 ]

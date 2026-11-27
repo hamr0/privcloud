@@ -3796,6 +3796,418 @@ step_immich() {
     fi
 }
 
+# ── Manage Immich (the former `privcloud` script, merged in) ─────────────
+# Every action below runs on the server (federver -> i hops with _on_server, so
+# `setup.sh --run step_immich_<action>` is also the scripting entry point). They
+# read and write the repo's own .env / docker-compose.yml on the server.
+_IMMICH_ENV="$(dirname "$_FV_SELF")/.env"
+_IMMICH_COMPOSE="$(dirname "$_FV_SELF")/docker-compose.yml"
+
+_immich_compose() { docker compose -f "$_IMMICH_COMPOSE" --env-file "$_IMMICH_ENV" "$@"; }
+_immich_up()      { curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; }
+_immich_urls() {
+    local ip
+    ip=$(hostname -I | awk '{print $1}')
+    echo -e "  ${BOLD}Web UI:${NC}      http://localhost:2283"
+    echo -e "  ${BOLD}iPhone app:${NC}  http://${ip}:2283"
+}
+_immich_needs_selinux() { command -v getenforce &>/dev/null && [[ "$(getenforce 2>/dev/null)" == Enforcing ]]; }
+
+_immich_patch_selinux() {
+    if _immich_needs_selinux; then
+        sed -i.bak \
+            -e 's|\(\${UPLOAD_LOCATION}:/usr/src/app/upload\)$|\1:Z|' \
+            -e 's|\(\${DB_DATA_LOCATION}:/var/lib/postgresql/data\)$|\1:Z|' \
+            "$_IMMICH_COMPOSE" && rm -f "${_IMMICH_COMPOSE}.bak"
+    else
+        sed -i.bak \
+            -e 's|\(\${UPLOAD_LOCATION}:/usr/src/app/upload\):Z|\1|' \
+            -e 's|\(\${DB_DATA_LOCATION}:/var/lib/postgresql/data\):Z|\1|' \
+            "$_IMMICH_COMPOSE" && rm -f "${_IMMICH_COMPOSE}.bak"
+    fi
+}
+
+_immich_fix_permissions() {
+    local upload_loc db_loc
+    upload_loc="$(_env_get UPLOAD_LOCATION "$_IMMICH_ENV")"
+    db_loc="$(_env_get DB_DATA_LOCATION "$_IMMICH_ENV")"
+    mkdir -p "$upload_loc" "$db_loc"
+    # 700, not 777: the Immich containers run as root, so they read/write these
+    # dirs regardless of owner - no reason to expose private photos or the
+    # database to every local user. (Postgres also requires its data dir to be
+    # 0700 and resets it on init, so 777 here was a misleading no-op anyway.)
+    chmod 700 "$db_loc" 2>/dev/null || true
+    chmod 700 "$upload_loc" 2>/dev/null || true
+}
+
+# Docker works for this user only after `sg docker` when the group was added in
+# this very login. Re-run the step (setup.sh --run <step>) under `sg docker`, once.
+_immich_docker_group() { # step
+    [[ "$DRY_RUN" == 1 || "${_IMMICH_SG_DONE:-}" == 1 ]] && return 0
+    docker info &>/dev/null && return 0
+    id -nG "$USER" 2>/dev/null | grep -qw docker || return 0
+    export _IMMICH_SG_DONE=1
+    exec sg docker "$(printf '%q ' "$_FV_SELF" --run "$1")"
+}
+
+# Make docker usable: start the daemon, add the user to the docker group, then
+# the same one-shot sg re-run as above. Start/stop/update/install call this;
+# status, upload and backup only use the group guard (they never start Docker).
+_immich_ensure_docker() { # step
+    _immich_docker_group "$1"
+    docker info &>/dev/null && return 0
+    local started=0
+    if ! systemctl is-active docker &>/dev/null; then
+        warn "Starting Docker..."
+        sudo systemctl start docker
+        sleep 2
+        started=1
+    fi
+    if ! docker info &>/dev/null; then
+        if ! id -nG "$USER" | grep -qw docker; then
+            warn "Adding you to the docker group..."
+            sudo usermod -aG docker "$USER"
+        fi
+        _immich_docker_group "$1"
+    fi
+    if docker info &>/dev/null; then
+        (( started )) && ok "Docker started."
+        return 0
+    fi
+    fail "Could not start Docker. Start it manually and try again."
+    return 1
+}
+
+# Compose gives some services restart: always, and an earlier Stop leaves
+# restart=no. After bringing the stack up, make every container of it
+# unless-stopped with the same rule the Services menu's Start applies
+# (_svc_power start: sets the policy, starts, reads both back). The stack is
+# already up, so a failure warns (visibly) and returns 0: it must not abort the
+# caller before it waits for Immich / reports the update.
+_immich_keep_autostart() {
+    local ids id rc=0
+    ids="$(_immich_compose ps -aq)" || rc=1
+    if (( rc == 0 )); then
+        for id in $ids; do _svc_power start "$id" || rc=1; done
+    fi
+    if (( rc )); then
+        warn "Could not set autostart on the containers - they're running now but may not come back after a reboot. Re-run start or use federver -> Manage services -> Start."
+    fi
+    return 0
+}
+
+_immich_need_env() {
+    [[ -f "$_IMMICH_ENV" ]] && return 0
+    fail "Not set up yet. Run: federver -> i -> Install"
+    return 1
+}
+
+step_immich_install() {
+    info "Checks Docker, sets up the config and pulls the Immich images."
+    echo ""
+    if ! command -v docker &>/dev/null; then
+        warn "Docker not found. Installing..."
+        step_docker
+        fail "Docker was just installed - log out, SSH back in, then run Install again."
+        return 1
+    fi
+    ok "Docker: $(docker --version)"
+    _immich_ensure_docker "$FUNCNAME" || return 1
+    if ! docker compose version &>/dev/null; then
+        fail "Docker Compose not found. Run federver -> 5 (Install Docker)."
+        return 1
+    fi
+    ok "Docker Compose: found"
+
+    if [[ ! -f "$_IMMICH_ENV" ]]; then
+        echo ""
+        echo -e "  ${BOLD}First-time setup${NC}"
+        echo ""
+        step_immich_config || return 1
+    else
+        ok "Config: $(_env_get UPLOAD_LOCATION "$_IMMICH_ENV")"
+    fi
+
+    _immich_patch_selinux
+    _immich_fix_permissions
+    _immich_needs_selinux && ok "SELinux: patched"
+
+    echo ""
+    echo -e "  ${BOLD}Pulling images (first time takes a few minutes)...${NC}"
+    _immich_compose pull || { fail "Pulling the images failed."; return 1; }
+    echo ""
+    ok "Install complete. Next: federver -> i -> Start"
+}
+
+step_immich_start() {
+    _immich_need_env || return 1
+    _immich_ensure_docker "$FUNCNAME" || return 1
+
+    if _immich_up; then
+        ok "Already running."
+        echo ""
+        _immich_urls
+        return 0
+    fi
+
+    _immich_patch_selinux
+    _immich_fix_permissions
+
+    _immich_compose up -d || { fail "docker compose up failed."; return 1; }
+    _immich_keep_autostart
+
+    echo ""
+    printf "  Waiting for Immich"
+    local attempts=0
+    while (( attempts < 30 )); do
+        if _immich_up; then
+            echo ""
+            echo ""
+            ok "Immich is running."
+            echo ""
+            _immich_urls
+            echo ""
+            info "Both devices must be on the same WiFi."
+            info "Stop with: federver -> i -> Stop"
+            return 0
+        fi
+        sleep 2
+        attempts=$((attempts + 1))
+        printf "."
+    done
+    echo ""
+    warn "Taking longer than expected. Check: federver -> i -> Status"
+}
+
+step_immich_stop() {
+    _immich_need_env || return 1
+    _immich_ensure_docker "$FUNCNAME" || return 1
+
+    _immich_compose down || { fail "docker compose down failed."; return 1; }
+
+    # Stop the Docker daemon if no other containers are running
+    if [[ -z "$(docker ps -q 2>/dev/null)" ]]; then
+        info "No other containers running. Stopping Docker..."
+        sudo systemctl stop docker docker.socket
+        ok "Docker stopped."
+    fi
+
+    ok "Stopped. Your photos are safe on disk."
+}
+
+step_immich_status() {
+    _immich_docker_group "$FUNCNAME"
+
+    echo -e "  ${BOLD}System${NC}"
+    echo "    OS:       $(uname -sr)"
+    if command -v getenforce &>/dev/null; then
+        local se
+        se="$(getenforce 2>/dev/null)"
+        if [[ "$se" == Enforcing ]]; then
+            if grep -q ':Z' "$_IMMICH_COMPOSE" 2>/dev/null; then
+                ok "SELinux:  Enforcing (patched)"
+            else
+                fail "SELinux:  Enforcing (NOT patched - run: federver -> i -> Install)"
+            fi
+        else
+            echo "    SELinux:  $se"
+        fi
+    fi
+    echo ""
+
+    echo -e "  ${BOLD}Docker${NC}"
+    if command -v docker &>/dev/null; then
+        ok "Engine:   $(docker --version | sed 's/Docker version //')"
+    else
+        fail "Engine:   not installed"
+    fi
+    local compose_ok=false
+    if docker compose version &>/dev/null; then
+        compose_ok=true
+        ok "Compose:  found"
+    else
+        fail "Compose:  not found"
+    fi
+    echo ""
+
+    echo -e "  ${BOLD}Storage${NC}"
+    local upload_loc db_loc
+    upload_loc="$(_env_get UPLOAD_LOCATION "$_IMMICH_ENV")"
+    db_loc="$(_env_get DB_DATA_LOCATION "$_IMMICH_ENV")"
+
+    if [[ -n "$upload_loc" && -d "$upload_loc" ]]; then
+        local usage avail
+        usage="$(du -sh "$upload_loc" 2>/dev/null | awk '{print $1}')"
+        avail="$(df -h "$upload_loc" 2>/dev/null | awk 'NR==2{print $4}')"
+        ok "Photos:   $upload_loc ($usage used, $avail free)"
+    elif [[ -n "$upload_loc" ]]; then
+        fail "Photos:   $upload_loc (missing)"
+    else
+        fail "Photos:   not configured"
+    fi
+
+    if [[ -n "$db_loc" && -d "$db_loc" ]]; then
+        ok "Database: $db_loc"
+    elif [[ -n "$db_loc" ]]; then
+        fail "Database: $db_loc (missing)"
+    fi
+
+    echo "    Version:  $(_env_get IMMICH_VERSION "$_IMMICH_ENV" | grep . || echo "not set")"
+    echo "    Change:   federver -> i -> Config"
+    echo ""
+
+    echo -e "  ${BOLD}Containers${NC}"
+    if $compose_ok; then
+        local has_containers=false line
+        while IFS= read -r line; do
+            has_containers=true
+            if grep -q "(healthy)" <<<"$line"; then
+                echo -e "  ${GREEN}  $line${NC}"
+            elif grep -q "NAME" <<<"$line"; then
+                echo "    $line"
+            elif grep -qi "exit\|restart\|unhealthy" <<<"$line"; then
+                echo -e "  ${RED}  $line${NC}"
+            else
+                echo -e "  ${YELLOW}  $line${NC}"
+            fi
+        done < <(_immich_compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null)
+
+        if ! $has_containers; then
+            warn "No containers running."
+            echo ""
+            info "Run: federver -> i -> Start"
+            return 0
+        fi
+    fi
+    echo ""
+
+    if _immich_up; then
+        ok "Immich is responding"
+        echo ""
+        local ip
+        ip=$(hostname -I | awk '{print $1}')
+        echo -e "  ${BOLD}Web UI:${NC}   http://localhost:2283"
+        echo -e "  ${BOLD}Network:${NC}  http://${ip}:2283"
+    else
+        fail "Immich is NOT responding on port 2283"
+    fi
+
+    echo ""
+    echo -e "  ${BOLD}Recent errors${NC}"
+    local errors_found=false container err_lines eline
+    for container in immich_server immich_postgres immich_machine_learning immich_redis; do
+        if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
+            err_lines="$(docker logs "$container" --tail 50 2>&1 | grep -iE 'error|fatal|panic|failed|exception|denied' | tail -3)"
+            if [[ -n "$err_lines" ]]; then
+                errors_found=true
+                echo -e "  ${RED}-- $container --${NC}"
+                while IFS= read -r eline; do
+                    echo "    $eline"
+                done <<<"$err_lines"
+            fi
+        fi
+    done
+    $errors_found || ok "No recent errors."
+    return 0
+}
+
+step_immich_config() {
+    local current_loc default_loc upload_loc db_loc db_pass
+    current_loc="$(_env_get UPLOAD_LOCATION "$_IMMICH_ENV")"
+    [[ -n "$current_loc" ]] && echo "  Current photo storage: $current_loc"
+
+    default_loc="${current_loc:-$HOME/privcloud/photos}"
+    read -rp "  Photo storage path [$default_loc]: " upload_loc
+    upload_loc="${upload_loc:-$default_loc}"
+    upload_loc="${upload_loc/#\~/$HOME}"
+
+    if ! mkdir -p "$upload_loc" 2>/dev/null; then
+        fail "Cannot create directory: $upload_loc"
+        return 1
+    fi
+
+    db_loc="$(dirname "$upload_loc")/postgres"
+    mkdir -p "$db_loc"
+
+    db_pass="$(_env_get DB_PASSWORD "$_IMMICH_ENV")"
+    if [[ -z "$db_pass" || "$db_pass" == changeme_use_a_real_password ]]; then
+        db_pass="privcloud_$(head -c 16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c 16)"
+    fi
+
+    if [[ -f "$_IMMICH_ENV" ]]; then
+        # Existing .env: touch only what this step asks for; MEDIA/MUSIC/FILES
+        # and every other key stay as they are. The password changes only when it
+        # is still the .env.example placeholder (the documented flow).
+        _set_env UPLOAD_LOCATION "$upload_loc" "$_IMMICH_ENV"
+        _set_env DB_DATA_LOCATION "$db_loc" "$_IMMICH_ENV"
+        [[ "$db_pass" == "$(_env_get DB_PASSWORD "$_IMMICH_ENV")" ]] || _set_env DB_PASSWORD "$db_pass" "$_IMMICH_ENV"
+        chmod 600 "$_IMMICH_ENV" 2>/dev/null || true
+    else
+        # First time: holds the DB password - create it 0600 from the start (umask
+        # in a subshell, no world-readable window) rather than create-then-chmod.
+        ( umask 077
+          cat > "$_IMMICH_ENV" << EOF
+UPLOAD_LOCATION=${upload_loc}
+DB_DATA_LOCATION=${db_loc}
+IMMICH_VERSION=v3
+DB_PASSWORD=${db_pass}
+DB_USERNAME=postgres
+DB_DATABASE_NAME=immich
+EOF
+        )
+    fi
+
+    ok "Config saved."
+    echo "    Photos:   $upload_loc"
+    echo "    Database: $db_loc"
+}
+
+step_immich_update() {
+    _immich_need_env || return 1
+    _immich_ensure_docker "$FUNCNAME" || return 1
+
+    # Snapshot current image IDs. Track the tag actually in use (IMMICH_VERSION),
+    # not a hardcoded :release, so the update diff is meaningful when pinned to v3.
+    local ver before_server before_ml after_server after_ml
+    ver="$(_env_get IMMICH_VERSION "$_IMMICH_ENV")"
+    ver="${ver:-release}"
+    before_server="$(docker images -q "ghcr.io/immich-app/immich-server:${ver}" 2>/dev/null || echo "")"
+    before_ml="$(docker images -q "ghcr.io/immich-app/immich-machine-learning:${ver}" 2>/dev/null || echo "")"
+
+    info "Checking for updates..."
+    _immich_compose pull --quiet 2>/dev/null || { fail "Could not pull the images. Check the server's internet connection."; return 1; }
+
+    after_server="$(docker images -q "ghcr.io/immich-app/immich-server:${ver}" 2>/dev/null || echo "")"
+    after_ml="$(docker images -q "ghcr.io/immich-app/immich-machine-learning:${ver}" 2>/dev/null || echo "")"
+
+    if [[ "$before_server" == "$after_server" && "$before_ml" == "$after_ml" ]]; then
+        ok "Already up to date."
+        return 0
+    fi
+
+    echo ""
+    [[ "$before_server" != "$after_server" ]] && warn "Server:           $before_server -> $after_server"
+    [[ "$before_ml" != "$after_ml" ]]         && warn "Machine Learning: $before_ml -> $after_ml"
+    echo ""
+
+    local confirm
+    read -rp "  Apply update? [Y/n]: " confirm
+    if [[ "$confirm" =~ ^[Nn] ]]; then
+        warn "Cancelled. New images are pulled but containers unchanged."
+        return 0
+    fi
+
+    echo ""
+    _immich_compose up -d || { fail "docker compose up failed."; return 1; }
+    _immich_keep_autostart
+
+    echo ""
+    ok "Update applied. Pruning old images..."
+    docker image prune -f 2>/dev/null | tail -1
+    echo ""
+    ok "Done."
+}
+
 step_adguard() {
     info "AdGuard Home is a network-wide DNS ad & tracker blocker."
     info "Runs in Docker, blocks ads on every device that uses it as DNS."

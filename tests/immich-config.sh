@@ -1,22 +1,24 @@
 #!/bin/bash
-# Tests for `privcloud config` (cmd_config) and env_set in the privcloud script.
+# Tests for the Immich config step (step_immich_config) and the one .env writer
+# (_set_env) in setup.sh.
 # On an existing .env only UPLOAD_LOCATION and DB_DATA_LOCATION change (plus the
 # DB password when it is empty/the placeholder); every other line stays
 # byte-identical. A missing .env is created the first-time way, mode 600.
-# Run: bash tests/privcloud-config.sh   (non-zero on any failure)
-# PRIVCLOUD=<file> tests another copy of the script (fail-first check).
+# Run: bash tests/immich-config.sh   (non-zero on any failure)
+# SETUP_SH=<file> tests another copy of setup.sh (fail-first check).
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$H/lib.sh"
-SRC=${PRIVCLOUD:-$H/../privcloud}
+SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
-for f in red green yellow bold env_get env_set cmd_config; do extract_fn "$f" "$SRC"; done > "$T/fn.sh"
+GREEN= RED= YELLOW= BOLD= DIM= NC=
+for f in ok fail info warn _env_get _set_env step_immich_config; do extract_fn "$f" "$SRC"; done > "$T/fn.sh"
 source "$T/fn.sh"
-type env_set >/dev/null 2>&1 || echo "FAIL  setup: env_set not found in $SRC (unfixed copy?)"
-ENV_FILE=$T/.env
+type _set_env >/dev/null 2>&1 && type step_immich_config >/dev/null 2>&1 || echo "FAIL  setup: _set_env/step_immich_config not found in $SRC (unfixed copy?)"
+ENV_FILE=$T/.env; _IMMICH_ENV=$ENV_FILE
 CHECK_DIAG='rc=$RC'
 mode() { stat -c %a "$1"; }
-cfg() { RC=0; ( set -euo pipefail; printf '%s\n' "$1" | cmd_config ) >"$T/out" 2>&1 || RC=$?; }
+cfg() { RC=0; ( set -e; printf '%s\n' "$1" | step_immich_config ) >"$T/out" 2>&1 || RC=$?; }
 others() { grep -vE '^(UPLOAD_LOCATION|DB_DATA_LOCATION)=' "$1"; }
 
 # 1 existing .env: media/music/files keys survive, only the two asked keys change
@@ -42,13 +44,13 @@ check 1d "every other line byte-identical (MEDIA/MUSIC/FILES/password/version ke
 check 1e "mode tightened to 600" '[ "$(mode "$ENV_FILE")" = 600 ]'
 check 1f "no temp file left behind" '[ "$(ls -A "$T" | grep -c "^\.env\.")" = 0 ]'
 
-# 2 env_set on its own
+# 2 _set_env on its own
 printf 'A=1\nB=2\n' > "$ENV_FILE"
-env_set B 'v|a&l\ue'; env_set C 3
-check 2a "env_set replaces literally" '[ "$(grep ^B= "$ENV_FILE")" = "B=v|a&l\\ue" ]'
-check 2b "env_set appends a missing key, leaves A" '[ "$(cat "$ENV_FILE")" = "$(printf "A=1\nB=v|a&l\\\\ue\nC=3")" ]'
-printf 'AB=1\nA=2\n' > "$ENV_FILE"; env_set A 9
-check 2c "env_set matches the whole key (AB untouched)" '[ "$(cat "$ENV_FILE")" = "$(printf "AB=1\nA=9")" ]'
+_set_env B 'v|a&l\ue' "$ENV_FILE"; _set_env C 3 "$ENV_FILE"
+check 2a "_set_env replaces literally" '[ "$(grep ^B= "$ENV_FILE")" = "B=v|a&l\\ue" ]'
+check 2b "_set_env appends a missing key, leaves A" '[ "$(cat "$ENV_FILE")" = "$(printf "A=1\nB=v|a&l\\\\ue\nC=3")" ]'
+printf 'AB=1\nA=2\n' > "$ENV_FILE"; _set_env A 9 "$ENV_FILE"
+check 2c "_set_env matches the whole key (AB untouched)" '[ "$(cat "$ENV_FILE")" = "$(printf "AB=1\nA=9")" ]'
 
 # 3 placeholder password is still regenerated on an existing .env
 printf 'UPLOAD_LOCATION=/o\nDB_DATA_LOCATION=/p\nDB_PASSWORD=changeme_use_a_real_password\nFILES_LOCATION=/f\n' > "$ENV_FILE"

@@ -7149,7 +7149,7 @@ _smb_ask_password() { # prompt-text
     local a b why
     while true; do
         printf '  %s' "$1"
-        read -r -s a || { echo ""; return 1; }
+        IFS= read -r -s a || { echo ""; return 1; }
         echo ""
         if [[ -z "$a" || "$a" == g ]]; then
             _SMB_PW=$(_smb_gen_password) || { fail "Could not generate a password (openssl failed)."; return 1; }
@@ -7157,7 +7157,7 @@ _smb_ask_password() { # prompt-text
         fi
         if ! why=$(_smb_pw_check "$a"); then fail "Password $why."; continue; fi
         printf '  Type it again to confirm: '
-        read -r -s b || { echo ""; return 1; }
+        IFS= read -r -s b || { echo ""; return 1; }
         echo ""
         if [[ "$a" != "$b" ]]; then fail "The two passwords did not match. Try again."; continue; fi
         _SMB_PW=$a
@@ -7689,7 +7689,7 @@ _smb_manage_password() {
     ip=$(_ts_ipv4)
     _smb_connect_box "${ip:-<server tailscale ip>}" "$_SMB_USER" "$_SMB_PW"
     printf '  New password (Enter = keep, g = generate, or type one): '
-    read -r -s in || in=""
+    IFS= read -r -s in || in=""
     echo ""
     [[ -z "$in" ]] && { info "Password kept."; return 0; }
     if [[ "$in" == g ]]; then
@@ -7698,7 +7698,7 @@ _smb_manage_password() {
         local why b
         if ! why=$(_smb_pw_check "$in"); then fail "Password $why. Nothing changed."; return 1; fi
         printf '  Type it again to confirm: '
-        read -r -s b || b=""
+        IFS= read -r -s b || b=""
         echo ""
         if [[ "$in" != "$b" ]]; then fail "The two passwords did not match. Nothing changed."; return 1; fi
         _SMB_PW=$in

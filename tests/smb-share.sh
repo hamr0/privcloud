@@ -201,6 +201,9 @@ reset; run $'1\ny'"$T/files/docs"$'\n\n'"$WEIRD"$'\n'"$WEIRD"$'\n' 0 step_samba
 check 3k "password with spaces, \$, quotes, ;, #, | round-trips through the env file" '[ "$(PWOF)" = "$WEIRD" ] && ! grep -qF "$WEIRD" "$DOCKER_LOG"'
 reset; run $'1\ny'"$T/files/docs"$'\n\n\n' 0 step_samba; run $'3\n' 0 step_samba
 check 3l "Manage password shows the stored weird/generated password in full" '[[ "$OUT" == *"$(PWOF)"* ]]'
+reset; run $'1\ny'"$T/files/docs"$'\n\n GoodPass12345\nGoodPass12345 \nGood Pass12345\nGood Pass12345\n' 0 step_samba
+check 3q "space-padded typed passwords (leading, trailing) rejected with the space message and re-asked; inner space works" \
+  '[ "$(grep -o "no space at the start or end" <<<"$OUT" | wc -l)" = 2 ] && [ "$(PWOF)" = "Good Pass12345" ]'
 reset; export FAIL_RUN=1; run "$SI"$'\n' 0 step_samba
 check 3m "docker run fails: loud failure, no success line" '[ $RC != 0 ] && [[ "$OUT" == *"NOT RUNNING"* && "$OUT" != *"File sharing set up"* ]]'
 reset; export NO_LISTEN=1; run "$SI"$'\n' 0 step_samba
@@ -287,6 +290,14 @@ mkset; run $'3\nshort\n' 0 step_samba
 check 7f "too short: nothing changed" '[[ "$OUT" == *"too short"* ]] && [ "$(PWOF)" = FakePass0123456x ]'
 mkset; run $'3\nbad\\slash12345\n' 0 step_samba
 check 7g "backslash rejected: nothing changed" '[[ "$OUT" == *backslash* ]] && [ "$(PWOF)" = FakePass0123456x ]'
+mkset; run $'3\n GoodPass12345\n' 0 step_samba
+check 7i "Manage password: leading space rejected with the space message, nothing changed" '[[ "$OUT" == *"no space at the start or end"* ]] && [ "$(PWOF)" = FakePass0123456x ]'
+mkset; run $'3\nGoodPass12345 \n' 0 step_samba
+check 7j "Manage password: trailing space rejected with the space message, nothing changed" '[[ "$OUT" == *"no space at the start or end"* ]] && [ "$(PWOF)" = FakePass0123456x ]'
+mkset; run $'3\nGood Pass12345\nGood Pass12345 \n' 0 step_samba
+check 7k "Manage password: confirm with a trailing space does not match, nothing changed" '[[ "$OUT" == *"did not match"* ]] && [ "$(PWOF)" = FakePass0123456x ]'
+mkset; run $'3\nGood Pass12345\nGood Pass12345\n' 0 step_samba
+check 7l "Manage password: inner space accepted and stored" '[ "$(PWOF)" = "Good Pass12345" ]'
 mkset; run $'3\nBrandNew-pass9\nBrandNew-pass9\n' 0 step_samba >/dev/null; export FAIL_RUN=1
 mkset; export FAIL_RUN=1; run $'3\ng\n' 0 step_samba
 check 7h "recreate fails after password change: loud, no success" '[ $RC != 0 ] && [[ "$OUT" == *"NOT RUNNING"* && "$OUT" != *"Password changed"* ]]'

@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- **A file-sharing password with a space at the start or end is now rejected instead of silently trimmed.** The password prompts in Set up and Manage password read the line with plain `read`, which strips leading and trailing spaces, so typing `hunter22 ` stored `hunter22` and the "no space at the start or end" rule could never fire. They now keep the typed line as is: a space-padded password is refused with that message and asked again (Manage password changes nothing), a space inside the password still works, and Enter on its own still means generate (Set up) or keep (Manage password). `tests/smb-share.sh` pins both prompts.
+
 - **Changing the file-sharing folders or password after a Stop no longer turns sharing back on.** Manage folders and Manage password always recreated the `samba` container with autostart on and started it, so a share you had Stopped came back up (and would survive a reboot) as soon as you changed anything. If it was stopped, the change is now saved and the container is recreated with the new settings, then stopped again with autostart off through the same path as Stop, and the menu says `Saved. File sharing is stopped - Start (4) to use it.`; a running share behaves as before. `tests/smb-share.sh` pins both cases.
 
 ### Added

@@ -6070,6 +6070,41 @@ _drive_mount_point() {
     echo "$p"
 }
 
+# _dest_check <local|server> <path>: may anything be written under <path> there? rc 0 = yes.
+# One call asks _dest_drive_verdict (and _drive_mount_point, for the message) on this
+# machine or, for server, over one ssh (declare -f, same pattern as _mirror_guard). Sets
+# _dest_v (the verdict word; "unreachable" when no answer came back) and _dest_mp (the
+# mount point <path> belongs to). Needs no sudo and no terminal: cron runs it too.
+_dest_check() {
+    local loc=$1 p=$2 out
+    if [[ "$loc" == server ]]; then
+        out=$({ declare -p _DRIVE_ROOTS; declare -f _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point
+                echo "_dest_drive_verdict $(_shq "$p"); _drive_mount_point $(_shq "$p")"; } \
+              | ssh "$SERVER_USER@$SERVER_IP" 'bash -s' 2>/dev/null) || out=""
+    else
+        out=$(_dest_drive_verdict "$p"; _drive_mount_point "$p")
+    fi
+    out=$(printf '%s' "$out" | tr -d '\r')
+    _dest_v=$(sed -n 1p <<<"$out"); _dest_mp=$(sed -n 2p <<<"$out")
+    [[ -n "$_dest_v" ]] || { _dest_v=unreachable; _dest_mp=$p; }
+    [[ "$_dest_v" == ok ]]
+}
+
+# _require_dest_drive <local|server> <path>: refuse (rc 1, nothing created) a destination
+# that is under _DRIVE_ROOTS but not on a mounted drive; the same rule as
+# _require_data_mount, for the sync / copy flows.
+_require_dest_drive() {
+    local loc=$1 p=$2
+    [[ "$loc" == server ]] && info "Checking the server's drives..."
+    _dest_check "$loc" "$p" && return 0
+    case $_dest_v in
+        unreachable) fail "Could not check the drive of $p$([[ "$loc" == server ]] && echo " on the server") - nothing written." ;;
+        unknown)     fail "Cannot check whether $_dest_mp is mounted (findmnt is missing) - nothing written." ;;
+        *)           fail "$p is on $_dest_mp, which is not mounted - plug in the drive or pick another path." ;;
+    esac
+    return 1
+}
+
 # Source guard: _mirror_guard <local|localsudo|server|sudo> <path>. rc 0 = safe to mirror.
 #   Otherwise sets _mirror_why (source missing | source empty | drive not mounted |
 #   could not check source: no verdict came back, e.g. server unreachable, or
@@ -6443,6 +6478,12 @@ _sync_job_steps() {  # [nocap]
             return 100
         fi
     fi
+    if ! _dest_check "$J_dest_loc" "$J_dest"; then
+        # cron has no terminal: say it in the log; Status reads the SKIPPED line
+        printf '%s: SKIPPED %s - destination drive %s (%s), nothing written\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$J_name" \
+            "$([[ "$_dest_v" == unknown || "$_dest_v" == unreachable ]] && echo "could not be checked" || echo "not mounted")" "$_dest_mp"
+        return 100
+    fi
     if [[ "$J_direction" == upload ]]; then
         ssh "$SERVER_USER@$SERVER_IP" "mkdir -p $(_shq "$_sj_shown")" || rc=$?
     else
@@ -6706,7 +6747,7 @@ _sync_last_result() {  # log_path
     fi
     if [[ "$l" == *": SKIPPED "* ]]; then
         exitc=${l#*: SKIPPED }; exitc=${exitc#* - }            # the reason, without the job name
-        exitc=${exitc% (mirror refused, nothing deleted)}; exitc=${exitc%, nothing deleted}
+        exitc=${exitc% (mirror refused, nothing deleted)}; exitc=${exitc%, nothing deleted}; exitc=${exitc%, nothing written}
         echo "skipped|${l:0:16}|${exitc}"; return 0
     fi
     when=$(grep -oP '\[\K[^\]]+' <<<"$l" | cut -c1-16) || when="?"
@@ -7579,16 +7620,51 @@ _pick_local_path() {
     done
 }
 
+# _server_path_presets fills _sp_path[] / _sp_label[] from the server's real state, in one
+# ssh: the drives mounted under _DRIVE_ROOTS (findmnt, a /dev source, not /) and the data
+# paths of its ~/privcloud/.env (FILES / MEDIA / MUSIC_LOCATION) that exist and pass
+# _dest_drive_verdict. A path that is not there is never offered.
+_server_path_presets() {
+    local out kind a b l i dup
+    _sp_path=(); _sp_label=()
+    info "Checking the server's drives..."
+    out=$({ declare -p _DRIVE_ROOTS; declare -f _env_get _drive_verdict _existing_ancestor _dest_drive_verdict
+            cat <<'REMOTE'
+if command -v findmnt >/dev/null; then
+    findmnt -rn -o SOURCE,TARGET | while read -r s t; do
+        [[ "$s" == /dev/* ]] || continue
+        t=$(printf '%b' "$t"); [[ "$t" == / ]] && continue
+        for r in $_DRIVE_ROOTS; do [[ "$t" == "$r"/* ]] && printf 'drive|%s|%s\n' "$s" "$t"; done
+    done
+fi
+for k in FILES_LOCATION:Files MEDIA_LOCATION:Media MUSIC_LOCATION:Music; do
+    p=$(_env_get "${k%%:*}" "$HOME/privcloud/.env"); [[ -n "$p" && -d "$p" ]] || continue
+    [[ "$(_dest_drive_verdict "$p")" == ok ]] && printf 'env|%s|%s\n' "${k##*:}" "$p"
+done
+REMOTE
+          } | ssh "$SERVER_USER@$SERVER_IP" 'bash -s' 2>/dev/null) || { info "Could not read the server's drives - type a path."; return 0; }
+    while IFS='|' read -r kind a b; do
+        l=$a; [[ "$kind" == drive ]] && l="USB drive $a"
+        dup=""
+        for i in "${!_sp_path[@]}"; do
+            [[ "${_sp_path[i]}" == "$b" ]] && { _sp_label[i]+=", $l"; dup=1; }
+        done
+        [[ -n "$dup" ]] || { _sp_path+=("$b"); _sp_label+=("$l"); }
+    done <<<"$out"
+}
+
 _pick_server_path() {
     local validate="$1"
     local show_presets="${2:-true}"
+    local _sp_path=() _sp_label=() i
     if [[ "$show_presets" == "true" ]]; then
+        _server_path_presets
         echo ""
         echo -e "  ${BOLD}Server paths:${NC}"
-        echo "    1) /home/$SERVER_USER/data  (internal drive)"
-        echo "    2) /mnt/data           (USB drive)"
+        for i in "${!_sp_path[@]}"; do echo "    $((i+1))) ${_sp_path[i]}  (${_sp_label[i]})"; done
+        (( ${#_sp_path[@]} )) || echo "    (no drive or data folder found on the server)"
         echo ""
-        info "Or type a path directly (e.g. /mnt/data/media/My Music)"
+        info "Or type a path directly (e.g. /mnt/<drive>/media/My Music)"
         echo ""
     fi
     local attempts=0
@@ -7596,11 +7672,14 @@ _pick_server_path() {
         if [[ "$show_presets" == "true" ]]; then
             read -p "  Choose [number, path, q=back]: " choice
             [[ "$choice" == "q" ]] && return 2
-            case $choice in
-                1) server_path="/home/$SERVER_USER/data" ;;
-                2) server_path="/mnt/data" ;;
-                *) server_path="$choice" ;;
-            esac
+            if [[ "$choice" =~ ^[0-9]+$ ]]; then
+                if (( choice >= 1 && choice <= ${#_sp_path[@]} )); then server_path="${_sp_path[choice-1]}"
+                else
+                    ((attempts++))
+                    (( attempts < 3 )) && fail "No preset $choice - type a path. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
+                    continue
+                fi
+            else server_path="$choice"; fi
         else
             read -p "  Absolute path [q=back]: " choice
             [[ "$choice" == "q" ]] && return 2
@@ -7744,6 +7823,7 @@ _sync_one_time_backup() {
             echo ""
             echo -e "  ${BOLD}-- Destination (server) --${NC}"
             _pick_server_path false || return
+            _require_dest_drive server "$server_path" || return 1
             local dst_path="$server_path"
 
             local is_dir="false"
@@ -7779,6 +7859,7 @@ _sync_one_time_backup() {
             echo ""
             echo -e "  ${BOLD}-- Destination (laptop) --${NC}"
             _pick_local_path false || return
+            _require_dest_drive local "$local_path" || return 1
             local dst_path="$local_path"
 
             local is_dir="false"
@@ -7951,6 +8032,7 @@ _sync_one_time_backup() {
             echo ""
             echo -e "  ${BOLD}-- Destination (laptop) --${NC}"
             _pick_local_path false || return
+            _require_dest_drive local "$local_path" || return 1
             local dst_path="$local_path"
 
             local is_dir="false"
@@ -7987,6 +8069,7 @@ _sync_one_time_backup() {
             echo -e "  ${BOLD}-- Destination (server) --${NC}"
             info "Type the destination, e.g. a backup USB at /run/media/$SERVER_USER/<label>"
             _pick_server_path false || return
+            _require_dest_drive server "$server_path" || return 1
             local dst_path="$server_path"
 
             # Both paths live on the server; rsync runs there over one SSH session.
@@ -8100,6 +8183,7 @@ step_sync() {
             echo ""
             echo -e "  ${BOLD}-- Destination (server) --${NC}"
             _pick_server_path false || return
+            _require_dest_drive server "$server_path" || return 1
 
             [[ -d "$local_path" ]] && local is_dir="true" || local is_dir="false"
             _pick_copy_mode "$local_path" "$is_dir" "$server_path" "local" || return
@@ -8130,6 +8214,7 @@ step_sync() {
             echo ""
             echo -e "  ${BOLD}-- Destination (laptop) --${NC}"
             _pick_local_path false || return
+            _require_dest_drive local "$local_path" || return 1
 
             local is_dir="false"
             ssh "$SERVER_USER@$SERVER_IP" "test -d $(_shq "$server_path")" 2>/dev/null && is_dir="true"

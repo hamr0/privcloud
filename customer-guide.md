@@ -1107,7 +1107,7 @@ No port forwarding, no DDNS, no VPN required. Device IDs are location-independen
 - **Server:** [http://federver:8384](http://federver:8384) (or `http://<server-ip>:8384`)
 - **Laptop:** [http://localhost:8384](http://localhost:8384)
 
-First visit to each dashboard prompts you to set a GUI username and password. Set them — both web UIs are reachable from the LAN (and over Tailscale), so they need credentials. After that, run `federver → 17 (Save to pass)` to back up the server's `device_id`, `config.xml`, `cert.pem`, and `key.pem` into `pass`. The cert/key pair is the node's cryptographic identity — losing it means re-pairing every client.
+First visit to each dashboard prompts you to set a GUI username and password. Set them — both web UIs are reachable from the LAN (and over Tailscale), so they need credentials. After that, run `federver → 15 (Save to pass)` to back up the server's `device_id`, `config.xml`, `cert.pem`, and `key.pem` into `pass`. The cert/key pair is the node's cryptographic identity — losing it means re-pairing every client.
 
 ### Submenu (`federver` → 12 after install)
 
@@ -1187,8 +1187,8 @@ Open folders from the server on an iPhone, Android phone or laptop as a network 
 
 **The screen once set up.** Status first: state (`stopped (autostart off)` in red if you stopped it), autostart, each folder with a tick or the reason it is not available (folder missing, or drive not mounted: for folders under `/mnt` or `/run/media` the drive must really be mounted), whether the LAN side of the firewall is closed, and connected devices by Tailscale name with the shares they opened (an iPhone drops idle connections, so an empty list means no recent use). Menu: `1) Refresh`, `2) Manage folders`, `3) Manage password`, `4) Start`, `5) Stop`, `6) Restart`, `7) Uninstall`.
 
-- **Manage folders**: type a path to add one (a share-name clash asks for another name), or a number to stop sharing it (files are never deleted; the last folder cannot be removed, use Uninstall instead). Every change rewrites the config and recreates the container, so connected phones must reconnect. Before anything is removed every saved folder is re-checked; if one is missing or its drive is not mounted the change is refused with the folder and the reason, and the running share is left alone (removing that folder here still works). Set up's reuse of a saved setup lists such folders and asks per folder whether to stop sharing it. If the new container does not start it says so in red; run `16` again, which offers to reuse the saved folders and password.
-- **Manage password**: shows the user and the full password with the phone steps, then `New password (Enter = keep, g = generate)`. Phones must re-enter the new password.
+- **Manage folders**: type a path to add one (a share-name clash asks for another name), or a number to stop sharing it (files are never deleted; the last folder cannot be removed, use Uninstall instead). Every change rewrites the config and recreates the container, so connected phones must reconnect. If you had Stopped file sharing, the change is saved but it stays stopped (autostart off) and says `Saved. File sharing is stopped - Start (4) to use it.` Before anything is removed every saved folder is re-checked; if one is missing or its drive is not mounted the change is refused with the folder and the reason, and the running share is left alone (removing that folder here still works). Set up's reuse of a saved setup lists such folders and asks per folder whether to stop sharing it. If the new container does not start it says so in red; run `16` again, which offers to reuse the saved folders and password.
+- **Manage password**: shows the user and the full password with the phone steps, then `New password (Enter = keep, g = generate)`. Phones must re-enter the new password. If file sharing is stopped, the new password is saved and it stays stopped until you Start it.
 - **Uninstall** asks you to type `samba`, removes the container, verifies it is gone and keeps `/opt/samba`. Set up afterwards offers to reuse the saved setup.
 
 **Connect.**
@@ -1232,10 +1232,10 @@ Install "RD Client" from App Store. Add PC with `federver` (via Tailscale).
 
 ## Save to pass
 
-Option **17** in `federver` backs up everything to the `pass` password manager. Run from your **laptop** (where pass is installed) — it SSHes into the server to fetch data. The server-side reads need root (`/etc/wireguard`, AdGuard's config, Syncthing's cert and key), so it first asks for the **server sudo password** (hidden; checked up front and sent over SSH to `sudo -S`, never on a command line). A wrong password stops with "Wrong sudo password - nothing saved to pass" and writes nothing.
+Option **15** in `federver` backs up everything to the `pass` password manager. Run from your **laptop** (where pass is installed) — it SSHes into the server to fetch data. The server-side reads need root (`/etc/wireguard`, AdGuard's config, Syncthing's cert and key), so it first asks for the **server sudo password** (hidden; checked up front and sent over SSH to `sudo -S`, never on a command line). A wrong password stops with "Wrong sudo password - nothing saved to pass" and writes nothing.
 
 ```bash
-federver    # pick 17
+federver    # pick 15
 ```
 
 Saves:

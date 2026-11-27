@@ -7298,9 +7298,10 @@ _smb_fw_fix() {
 
 # Write config + (re)create the container from _SMB_USER/_SMB_PW and the folder
 # list, then verify it is running and listening. Never says "done" on failure;
-# after the old container is gone a failure says so loudly.
+# after the old container is gone a failure says so loudly. A container that
+# was stopped stays stopped with autostart off (_svc_power stop, as Stop does).
 _smb_apply() {
-    local uid gid envc listc i mounts=() n up=0
+    local uid gid envc listc i mounts=() n up=0 was_stopped=0
     # Never let docker auto-create a missing bind source: check every folder that
     # will be shared BEFORE anything is written or removed (the running share
     # stays as it is). Manage folders drops a removed folder from the list
@@ -7341,6 +7342,9 @@ _smb_apply() {
         fi
     fi
     if _smb_exists; then
+        # A deliberate Stop must survive a config change: remember it, recreate
+        # with the new config, then Stop again below.
+        _smb_running || was_stopped=1
         info "Recreating the Samba container..."
         sudo docker rm -f samba > /dev/null 2>&1
         if ! _container_gone samba; then
@@ -7362,6 +7366,11 @@ _smb_apply() {
         sudo docker logs --tail 20 samba 2>&1
         echo -e "  ${BOLD}Recover:${NC} run ${BOLD}federver -> 16${NC} again (it reuses your saved folders and password), or ${BOLD}Start${NC} if the menu offers it."
         return 1
+    fi
+    if (( was_stopped )); then
+        _svc_power stop samba || { fail "Saved, but could not stop the new container again - it is running (autostart on). Use Stop."; return 1; }
+        ok "Saved. File sharing is stopped - Start (4) to use it."
+        return 0
     fi
     ok "Samba running on port 445."
 }

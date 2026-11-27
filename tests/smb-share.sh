@@ -14,6 +14,7 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 { grep -E '^(ok|fail|info|warn)\(\)' "$SRC"
   grep -m1 '^_shq()' "$SRC"
   grep -m1 '^_ts_ipv4()' "$SRC"
+  awk '/^_ts_state\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
   awk '/^_svc_power_body\(\)/{p=1} p{print} /^_ps_autostart\(\)/{q=1} q&&/^}/{exit}' "$SRC"
   awk '/^_env_get\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
   awk '/^_container_gone\(\)/{p=1} p{print} p&&/^}/{exit}' "$SRC"
@@ -313,6 +314,32 @@ mkset; _svc_power stop samba 2>/dev/null; S=$(_smb_summary docker); R=$(_smb_sum
 check 9d "stopped: red ✗ stopped (autostart off)" '[ "${S%%|*}" = stopped-off ] && [[ "$R" == *"✗ stopped (autostart off)"* ]]'
 check 9e "step_status wires the SMB section (remote gather + local path + render)" '[ "$(grep -c "@@SMB@@" "$SRC")" -ge 2 ] && grep -q "_smb_summary_render" "$SRC" && grep -q "declare -f _ts_ipv4 _ts_state _ps_autostart _smb_summary _smb_folder_check _smb_sessions _smb_devices _smb_devname" "$SRC" && grep -q "@@SMB_DEV_START@@" "$SRC"'
 
+# 9f/9g: run the REAL remote Status payload (its declare -f list + heredoc body, cut out of setup.sh)
+# in a clean `env -i bash -s` with the stub docker, like ts-expiry check 11: a helper missing from the
+# list (or renamed) is "command not found" there, which 9e's text grep cannot see.
+mkset >/dev/null
+printf '%s\n' 'docs         14      100.99.99.98  Fri Nov 27 09:10:11 2026 UTC     -            -' \
+               'media        15      100.99.99.98  Fri Nov 27 09:12:30 2026 UTC     -            -' > "$SMBSTATUS"
+PLIST=$(grep -v '^ *#' "$SRC" | grep -o 'declare -f [^;]*_smb_summary[^;]*' | head -1)
+PBODY=$(awk '/declare -f .*_smb_summary.*<<.REMOTE_STATUS./{p=1; next} /^REMOTE_STATUS$/{p=0} p' "$SRC")
+PNAMES=; for n in ${PLIST#declare -f }; do declare -F "$n" >/dev/null && PNAMES="$PNAMES $n"; done
+PAY="$(declare -f $PNAMES)
+$PBODY"
+PRES=$(env -i PATH="$T/bin:/usr/bin:/bin" TZ=UTC DOCKER_STATE="$DOCKER_STATE" DOCKER_LOG="$DOCKER_LOG" SMBSTATUS="$SMBSTATUS" TMNT="$TMNT" bash -s <<<"$PAY" 2>&1)
+check 9f "remote Status payload in a clean bash -s: SMB summary + device line, no 'command not found'" \
+  '[ -n "$PLIST" ] && [ -n "$PBODY" ] && [[ "$PRES" == *"@@SMB@@running|2|0|1"* && "$PRES" == *"iphone-test|docs, media|09:10"* && "$PRES" != *"not found"* ]]'
+rm -f "$SMBSTATUS"
+# 9g: every system-location refusal fires with its own message (the 2b count alone survives losing an entry).
+# Real directories of this host, skipped when absent; /sbin /bin /lib resolve into /usr, so /usr/* is what guards them.
+reset; NREF=0; MISS=""
+for d in / /etc /usr /usr/bin /boot /proc /sys /dev /var /var/log /root /opt /home /mnt /run /run/user; do
+  [ -d "$d" ] || continue
+  NREF=$((NREF+1))
+  o=$(_smb_check_path "$d" 2>&1) && o="ACCEPTED"
+  [[ "$o" == *"system location"* ]] || MISS="$MISS $d"
+done
+check 9g "system-location blocklist refuses each of $NREF real system dirs with the 'system location' reason (missing:${MISS:- none})" '[ "$NREF" -ge 10 ] && [ -z "$MISS" ]'
+
 # 11 real smbstatus -S output (captured on the live server) as the fixture
 FIX() { printf '%s\n' \
  'resumes      328     100.99.99.98  Fri Nov 27 09:13:18 2026 UTC     AES-128-GCM  AES-128-GMAC' \
@@ -435,6 +462,22 @@ rm -rf "$T/c/samba"; : > "$EM"
   sg() { :; }; sleep() { :; }; _svc_power() { echo "power $*" >> "$EM"; }
   step_emergency <<<"y" >/dev/null 2>&1 )
 check 15b "samba not installed: skipped quietly" '! grep -q samba "$EM"'
+
+# 16 Manage while stopped: a change is saved and applied, but Stop stays Stop (stopped + restart=no);
+# a running share stays running with autostart on
+mkset >/dev/null; run $'5\n' 0 step_samba; OLDPW=$(PWOF)
+run $'3\ng\n' 0 step_samba
+check 16a "stopped + Manage password: new password saved, container stays stopped with restart=no, one-line hint" \
+  '[ $RC = 0 ] && [ "$(PWOF)" != "$OLDPW" ] && [ "$(cat "$T/c/samba/running")" = false ] && grep -qx no "$T/c/samba/policy" && [[ "$OUT" == *"File sharing is stopped - Start (4) to use it."* && "$OUT" != *"Samba running on port 445"* ]] && [ ! -e "$T/c/samba/listening" ]'
+mkset >/dev/null; run $'5\n' 0 step_samba
+run "2"$'\n'"$T/files/My Pics"$'\n\n' 0 step_samba
+check 16b "stopped + Manage folders (add): folder saved + mounted, stays stopped with restart=no" \
+  '[ $RC = 0 ] && [ "$(NSH)" = 3 ] && [ "$(grep -c "^/shares/" "$T/c/samba/mounts")" = 3 ] && [ "$(cat "$T/c/samba/running")" = false ] && grep -qx no "$T/c/samba/policy" && [[ "$OUT" == *"Start (4)"* ]]'
+mkset >/dev/null; run $'5\n' 0 step_samba; run $'4\n' 0 step_samba
+check 16c "Stop then Start still brings it back (autostart on again)" '[ "$(cat "$T/c/samba/running")" = true ] && grep -qx unless-stopped "$T/c/samba/policy"'
+mkset >/dev/null; OLDPW=$(PWOF); run $'3\ng\n' 0 step_samba
+check 16d "running + Manage password: stays running, restart=unless-stopped, no stopped hint" \
+  '[ $RC = 0 ] && [ "$(PWOF)" != "$OLDPW" ] && [ "$(cat "$T/c/samba/running")" = true ] && grep -qx unless-stopped "$T/c/samba/policy" && [[ "$OUT" == *"Samba running on port 445"* && "$OUT" != *"is stopped"* ]]'
 
 # 10 main menu + public-repo hygiene
 check 10a "main menu line 16 reads 'Connect phone (Files app)' with the hint" 'grep -q "16)\${NC} Connect phone (Files app) .*iPhone/Android open server folders over Tailscale" "$SRC" && grep -q "16) run_step \"\[16\] Connect phone (Files app)\" \"_on_server step_samba\"" "$SRC"'

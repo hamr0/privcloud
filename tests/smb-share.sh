@@ -12,7 +12,7 @@ T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/c" "$T/files/docs" "$T/files/media" "$T/files/My Pics" "$T/opt" "$T/mnt/usb/data" "$T/ro"
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
-{ for f in ok fail info warn _shq _ts_ipv4 _ts_state _svc_power_body _svc_sudo_guard _svc_power_all_body _svc_power \
+{ for f in ok fail info warn _shq _ts_ipv4 _ts_state _svc_power_body _svc_docker_fn _svc_power_all_body _svc_power \
            _svc_power_all _svc_power_remote _svc_power_all_remote _ps_autostart _env_get _container_gone _confirm_delete; do
     extract_fn "$f" "$SRC"; done
   extract_fn _drive_verdict "$SRC"; grep -E '^_DRIVE_ROOTS=' "$SRC"
@@ -489,7 +489,7 @@ check 16d "running + Manage password: stays running, restart=unless-stopped, no 
   '[ $RC = 0 ] && [ "$(PWOF)" != "$OLDPW" ] && [ "$(cat "$T/c/samba/running")" = true ] && grep -qx unless-stopped "$T/c/samba/policy" && [[ "$OUT" == *"Samba running on port 445"* && "$OUT" != *"is stopped"* ]]'
 
 # 10 main menu + public-repo hygiene
-check 10a "main menu line 15 reads 'Connect phone (Files app)' with the hint" 'grep -q "15)\${NC} Connect phone (Files app) .*iPhone/Android open server folders over Tailscale" "$SRC" && grep -q "15) run_step \"\[16\] Connect phone (Files app)\" \"_on_server step_samba\"" "$SRC"'
+check 10a "main menu line 15 reads 'Connect phone (Files app)' with the hint" 'grep -q "15)\${NC} Connect phone (Files app) .*iPhone/Android open server folders over Tailscale" "$SRC" && grep -q "15) run_step \"\[15\] Connect phone (Files app)\" \"_on_server step_samba\"" "$SRC"'
 # The pattern is built at runtime from this machine's own values (federver
 # config, $USER, local FILES_LOCATION), so none of them is ever written in the
 # repo. No values available = SKIP (counted as a pass with a note).

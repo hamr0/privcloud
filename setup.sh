@@ -211,10 +211,12 @@ _shq() { printf '%q' "$1"; }
 # Afterwards the state AND the policy are read back; any mismatch is a failure,
 # never a false "complete". Failures print one line to stderr and exit non-zero:
 #   2 docker unreachable, 3 no such container, 4 policy update failed,
-#   5 docker action failed, 6 read-back mismatch, 7 sudo refused.
+#   5 docker action failed, 6 read-back mismatch.
+# Docker runs through the docker group (_svc_docker_fn), never sudo: nothing
+# here can ask for a password, so the ssh hop needs no TTY (no `ssh -t`).
 # _svc_power_body prints the shell text; the runners below execute it locally
-# (a fresh bash, so its exits never kill the menu) or over ssh -t (sudo needs a
-# TTY). c is set from an already-quoted word, so odd names survive one parse.
+# (a fresh bash, so its exits never kill the menu) or over ssh. c is set from
+# an already-quoted word, so odd names survive one parse.
 _svc_power_body() { # action quoted-container-word
     local p v run
     case "$1" in
@@ -224,27 +226,34 @@ _svc_power_body() { # action quoted-container-word
         *) return 1 ;;
     esac
     printf '%s\n' "c=$2" \
-        "$(_svc_sudo_guard)" \
-        "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
-        "sudo docker inspect \"\$c\" >/dev/null 2>&1 || { echo \"no such container: \$c\" >&2; exit 3; }" \
-        "sudo docker update --restart=$p \"\$c\" >/dev/null || { echo \"\$c: could not set restart policy $p\" >&2; exit 4; }" \
-        "sudo docker $v \"\$c\" >/dev/null || { echo \"\$c: docker $v failed\" >&2; exit 5; }" \
-        "s=\$(sudo docker inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' \"\$c\" 2>/dev/null)" \
+        "$(_svc_docker_fn)" \
+        "d inspect \"\$c\" >/dev/null 2>&1 || { echo \"no such container: \$c\" >&2; exit 3; }" \
+        "d update --restart=$p \"\$c\" >/dev/null || { echo \"\$c: could not set restart policy $p\" >&2; exit 4; }" \
+        "d $v \"\$c\" >/dev/null || { echo \"\$c: docker $v failed\" >&2; exit 5; }" \
+        "s=\$(d inspect -f '{{.State.Running}} {{.HostConfig.RestartPolicy.Name}}' \"\$c\" 2>/dev/null)" \
         "[ \"\$s\" = \"$run $p\" ] || { echo \"\$c: expected '$run $p', found '\$s'\" >&2; exit 6; }"
 }
-# The sudo-refused guard both bodies start with (exit 7), one text for both.
-_svc_sudo_guard() { echo "sudo -v 2>/dev/null || { echo \"sudo failed (wrong password or not allowed) - nothing changed\" >&2; exit 7; }"; }
+# Shell text both bodies start with: defines `d`, docker through the docker
+# group. That is plain `docker`, or `sg docker` when the group was added in this
+# very login (the same fallback the compose paths use). Exits 2 when docker
+# cannot be reached.
+_svc_docker_fn() {
+    cat <<'EOF'
+d() { docker "$@"; }
+docker info >/dev/null 2>&1 || { id -nG 2>/dev/null | grep -qw docker && d() { sg docker -c "docker $(printf '%q ' "$@")"; }; }
+d info >/dev/null 2>&1 || { echo "docker is not reachable" >&2; exit 2; }
+EOF
+}
 # Same rule for every container on the host: start and stop = all (incl. exited
 # ones, so a stopped-on-its-own unless-stopped container gets restart=no and
 # stays down after a daemon start); restart = the running ones only. Standalone ones (adguard, syncthing) are
 # ordinary containers here, so they are covered with no special case.
 _svc_power_all_body() { # action
-    local list="docker ps -a --format '{{.Names}}'"
-    [[ "$1" == restart ]] && list="docker ps --format '{{.Names}}'"
+    local list="d ps -a --format '{{.Names}}'"
+    [[ "$1" == restart ]] && list="d ps --format '{{.Names}}'"
     printf '%s\n' \
-        "$(_svc_sudo_guard)" \
-        "sudo docker info >/dev/null 2>&1 || { echo \"docker is not reachable\" >&2; exit 2; }" \
-        "rc=0; for n in \$(sudo $list); do (" \
+        "$(_svc_docker_fn)" \
+        "rc=0; for n in \$($list); do (" \
         "$(_svc_power_body "$1" '"$n"')" \
         ") || rc=1; done; exit \$rc"
 }
@@ -256,13 +265,13 @@ _svc_power_all()        { # action             (on the server itself)
     if [[ "${DRY_RUN:-0}" == 1 ]]; then echo "    [dry-run] all containers $1" >&2; return 0; fi
     bash -c "$(_svc_power_all_body "$1")"
 }
-_svc_power_remote()     { ssh -t "$SERVER_USER@$SERVER_IP" "$(_svc_power_body "$1" "$(_shq "$2")")"; }  # action container
-_svc_power_all_remote() { ssh -t "$SERVER_USER@$SERVER_IP" "$(_svc_power_all_body "$1")"; }              # action
+_svc_power_remote()     { ssh "$SERVER_USER@$SERVER_IP" "$(_svc_power_body "$1" "$(_shq "$2")")"; }  # action container
+_svc_power_all_remote() { ssh "$SERVER_USER@$SERVER_IP" "$(_svc_power_all_body "$1")"; }              # action
 
 # Print "name|status" like `docker ps -a --format '{{.Names}}|{{.Status}}'`, but
 # a stopped container whose restart policy is "no" reads "stopped (autostart
 # off)", so a deliberate stop is visible before a reboot. Pass the docker
-# command words: _ps_autostart docker | _ps_autostart sudo docker.
+# command words: _ps_autostart docker.
 _ps_autostart() {
     local ps pol n s
     ps=$("$@" ps -a --format '{{.Names}}|{{.Status}}') || return $?
@@ -1072,22 +1081,57 @@ _ts_stop_both() {
     read -p "  [y/N] " -n 1 -r; echo ""
     [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
     info "Disconnecting..."
-    sudo tailscale down 2>/dev/null && ok "Laptop: disconnected." || warn "Laptop: not connected."
-    ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale down 2>/dev/null" \
-        && ok "Server: disconnected." || warn "Server: not connected."
+    local rec
+    rec=$(_ts_state)
+    _ts_skip stop Laptop "$rec" || { sudo tailscale down 2>/dev/null && ok "Laptop: disconnected." || warn "Laptop: not connected."; }
+    rec=$(_ts_server_state)
+    _ts_skip stop Server "$rec" || { ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale down 2>/dev/null" \
+        && ok "Server: disconnected." || warn "Server: not connected."; }
 }
 
 _ts_start_both() {
     info "Connecting Tailscale on both laptop and server..."
-    sudo tailscale up 2>/dev/null && ok "Laptop: connected." || warn "Laptop: failed."
-    ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale up" || warn "Server: failed."
+    local rec
+    rec=$(_ts_state)
+    _ts_skip start Laptop "$rec" || { sudo tailscale up 2>/dev/null && ok "Laptop: connected." || warn "Laptop: failed."; }
+    rec=$(_ts_server_state)
+    _ts_skip start Server "$rec" || { ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale up" || warn "Server: failed."; }
 }
 
 _ts_restart_both() {
     info "Restarting Tailscale on both laptop and server..."
-    sudo systemctl restart tailscaled 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."
-    ssh -t "$SERVER_USER@$SERVER_IP" "sudo systemctl restart tailscaled 2>/dev/null" \
-        && ok "Server: restarted." || warn "Server: failed."
+    local rec
+    rec=$(_ts_state)
+    _ts_skip restart Laptop "$rec" || { sudo systemctl restart tailscaled 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."; }
+    rec=$(_ts_server_state)
+    _ts_skip restart Server "$rec" || { ssh -t "$SERVER_USER@$SERVER_IP" "sudo systemctl restart tailscaled 2>/dev/null" \
+        && ok "Server: restarted." || warn "Server: failed."; }
+}
+
+# The server's _ts_state record, or "Unreachable - - -" when the ssh itself fails.
+_ts_server_state() {
+    local rec
+    rec=$(_server_probe "$(declare -f _ts_ipv4 _ts_state); _ts_state")
+    [[ "$rec" == unreachable ]] && rec="Unreachable - - -"
+    echo "$rec"
+}
+
+# Says why and returns 0 when one side has nothing to do for this action, so the
+# caller skips it with no sudo prompt and no false failure: not installed (any
+# action), already connected (start), already down (stop). An unreachable server
+# is skipped with a warning. Anything else returns 1 and the caller acts.
+_ts_skip() { # action side state-record
+    local st=${3%% *}
+    case "$st" in
+        NotInstalled) info "Tailscale ($2): not installed - skipped"; return 0 ;;
+        Unreachable)  warn "Tailscale ($2): cannot reach it - skipped"; return 0 ;;
+    esac
+    case "$1:$st" in
+        start:Running) info "Tailscale ($2): already connected - skipped"; return 0 ;;
+        stop:Running|restart:*) return 1 ;;
+        stop:*)        info "Tailscale ($2): already down - skipped"; return 0 ;;
+    esac
+    return 1
 }
 
 # True when this laptop reaches the server over Tailscale: the resolver swapped
@@ -1947,7 +1991,7 @@ _pick_container() {
     local idx=1
     declare -a arr
     local all_statuses
-    all_statuses=$(_ps_autostart sudo docker 2>/dev/null)
+    all_statuses=$(_ps_autostart docker 2>/dev/null)
     while IFS= read -r n; do
         local status
         status=$(echo "$all_statuses" | awk -F'|' -v name="$n" '$1==name{print $2; exit}')
@@ -2895,30 +2939,47 @@ _syncthing_install_laptop() {
     echo ""
 }
 
+# True (and says why) when one side has no Syncthing to act on: not installed
+# there, or the server cannot be asked. Start/Stop/Restart All skip that side
+# instead of reporting a false failure. Side is Laptop or Server.
+_syncthing_skip() { # side
+    local st
+    if [[ "$1" == Laptop ]]; then
+        command -v syncthing &>/dev/null && return 1
+    else
+        st=$(_syncthing_server_probe)
+        case "$st" in
+            running|stopped) return 1 ;;
+            docker-error|unreachable) warn "Syncthing ($1): cannot reach it - skipped"; return 0 ;;
+        esac
+    fi
+    info "Syncthing ($1): not installed - skipped"
+    return 0
+}
+
 _syncthing_stop_both() {
     warn "Stop Syncthing on both laptop and server?"
     read -p "  [y/N] " -n 1 -r; echo ""
     [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
     info "Stopping..."
-    systemctl --user stop syncthing 2>/dev/null && ok "Laptop: stopped." || warn "Laptop: not running."
-    _svc_power_remote stop syncthing \
-        && ok "Server: stopped." || warn "Server: could not stop (is it installed?)."
+    _syncthing_skip Laptop || { systemctl --user stop syncthing 2>/dev/null && ok "Laptop: stopped." || warn "Laptop: not running."; }
+    _syncthing_skip Server || { _svc_power_remote stop syncthing \
+        && ok "Server: stopped." || warn "Server: could not stop."; }
 }
 
 _syncthing_start_both() {
     info "Starting Syncthing on both laptop and server..."
-    systemctl --user start syncthing 2>/dev/null && ok "Laptop: started." || warn "Laptop: failed to start."
-    # ssh -t for sudo TTY. NOT inside $() — that captures the prompt.
-    _svc_power_remote start syncthing \
+    _syncthing_skip Laptop || { systemctl --user start syncthing 2>/dev/null && ok "Laptop: started." || warn "Laptop: failed to start."; }
+    _syncthing_skip Server || { _svc_power_remote start syncthing \
         && ok "Server: started." \
-        || { warn "Server: failed to start."; info "If container has bad config: federver → 13 to reinstall."; }
+        || { warn "Server: failed to start."; info "If container has bad config: federver → 13 to reinstall."; }; }
 }
 
 _syncthing_restart_both() {
     info "Restarting Syncthing on both laptop and server..."
-    systemctl --user restart syncthing 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."
-    _svc_power_remote restart syncthing \
-        && ok "Server: restarted." || warn "Server: failed."
+    _syncthing_skip Laptop || { systemctl --user restart syncthing 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."; }
+    _syncthing_skip Server || { _svc_power_remote restart syncthing \
+        && ok "Server: restarted." || warn "Server: failed."; }
 }
 
 # Laptop half of the Syncthing uninstall. Returns 0 only if verified gone.

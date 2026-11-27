@@ -6,3 +6,4 @@
 ## [2026-11-27] validate | PASS — 0 gate failure(s)
 ## [2026-11-27] archive | docs/product/spec-single-source.md -> docs/archive/spec-single-source.md, 263 link(s) rewritten
 ## [2026-11-27] index-flat | 15 row(s) (14 product, 0 logs, 1 archive)
+## [2026-11-27] index-flat | 15 row(s) (14 product, 0 logs, 1 archive)

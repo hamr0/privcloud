@@ -183,7 +183,7 @@ check 3b "one -v mount per folder at /shares/<name>, host net, env-file, autosta
 check 3c "one SAMBA_VOLUME_CONFIG per share, both valid-user restricted, read-write, veto" \
   '[ "$(grep -c "^SAMBA_VOLUME_CONFIG_s" "$ENVF")" = 2 ] && grep -q "^SAMBA_VOLUME_CONFIG_s0=\[docs\]; path = /shares/docs; valid users = testuser; guest ok = no; read only = no" "$ENVF" && grep -q "^SAMBA_VOLUME_CONFIG_s1=\[media\]" "$ENVF" && grep -q "veto files = /lost+found/.Trash-\*/" "$ENVF"'
 check 3d "env + list files are mode 600, list has name|path" '[ "$(stat -c %a "$ENVF")" = 600 ] && [ "$(stat -c %a "$SHF")" = 600 ] && grep -qx "docs|$T/files/docs" "$SHF"'
-check 3e "hosts allow tailnet only, SMB2, runtime uid" 'grep -q "hosts allow = 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1;hosts deny = 0.0.0.0/0;server min protocol = SMB2;server smb encrypt = desired" "$ENVF" && grep -q "^UID_testuser=4242$" "$ENVF" && ! grep -q GROUP_ "$ENVF"'
+check 3e "hosts allow tailnet only, SMB2, runtime uid" 'grep -q "hosts allow = 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1;hosts deny = ALL;server min protocol = SMB2;server smb encrypt = desired" "$ENVF" && grep -q "^UID_testuser=4242$" "$ENVF" && ! grep -q GROUP_ "$ENVF"'
 check 3f "typed password used; never on docker argv/log" '[ "$(PWOF)" = FakePass0123456x ] && ! grep -qF FakePass0123456x "$DOCKER_LOG"'
 check 3g "connect box: server ip, user, password, iPhone + Android steps" '[[ "$OUT" == *smb://100.99.99.99* && "$OUT" == *"User:      testuser"* && "$OUT" == *FakePass0123456x* && "$OUT" == *iPhone* && "$OUT" == *Android* && "$OUT" == *"Material Files"* ]]'
 reset; run $'1\ny'"$T/files/docs"$'\n\n\n' 0 step_samba
@@ -360,6 +360,13 @@ check 13b "yesterday 23:50 + today 08:00: earliest is yesterday's, shown with th
 printf '%s\n' "media        15      100.99.99.98  $(date -u -d 'today 08:00' '+%a %b %e %H:%M:%S %Y') UTC     -            -" > "$SMBSTATUS"
 r=$(_smb_devices docker)
 check 13c "only a time from today: plain HH:MM, no weekday" '[ "$r" = "iphone-test|media|08:00" ]'
+row() { printf '%s\n' "media        15      100.99.99.98  $(date -u -d "$1 08:00" '+%a %b %e %H:%M:%S %Y') UTC     -            -" > "$SMBSTATUS"; }
+row '6 days ago'; r=$(_smb_devices docker)
+check 13d "6 days old: still the weekday form (unique)" '[ "$r" = "iphone-test|media|$(date -d "6 days ago" +%a) 08:00" ]'
+row '7 days ago'; r=$(_smb_devices docker)
+check 13e "7 days old: a date, not the weekday that would equal today's" '[ "$r" = "iphone-test|media|$(date -d "7 days ago" +"%-d %b") 08:00" ]'
+row '40 days ago'; r=$(_smb_devices docker)
+check 13f "40 days old: a date" '[ "$r" = "iphone-test|media|$(date -d "40 days ago" +"%-d %b") 08:00" ]'
 rm -f "$SMBSTATUS"
 
 # 14 saved folders are re-checked before anything is removed or run
@@ -372,7 +379,26 @@ check 14b "Manage folders can still remove the broken folder (only the rest is c
 mkusb; export FM_MODE=root; : > "$DOCKER_LOG"; run $'2\n1\ny\n' 0 step_samba
 check 14c "removing a good folder while another is broken: refused, config unchanged" '[ $RC != 0 ] && [[ "$OUT" == *"drive not mounted"* ]] && [ "$(NSH)" = 2 ] && ! grep -q "^docker rm\|^docker run" "$DOCKER_LOG"'
 mkusb; run $'7\nsamba\n' 0 step_samba; export FM_MODE=root; : > "$DOCKER_LOG"; run $'1\nyy' 0 step_samba
-check 14d "Reuse in Set up with an unmounted saved folder: refused with message, nothing run" '[ $RC != 0 ] && [[ "$OUT" == *"Saved setup found"* && "$OUT" == *"drive not mounted"* && "$OUT" != *"File sharing set up"* ]] && ! grep -q "^docker run" "$DOCKER_LOG"'
+check 14d "Reuse in Set up with an unmounted saved folder: refused with message, nothing run" '[ $RC != 0 ] && [[ "$OUT" == *"Saved setup found"* && "$OUT" == *"drive not mounted"* && "$OUT" != *"File sharing set up"* && "$OUT" != *"Manage folders"* ]] && ! grep -q "^docker run" "$DOCKER_LOG"'
+# Reuse offers to drop each unavailable saved folder (y/N); the password is kept
+mkusb; run $'7\nsamba\n' 0 step_samba; export FM_MODE=root; : > "$DOCKER_LOG"; run $'1\nyyy\n' 0 step_samba
+check 14f "Reuse + broken folder + drop y: sets up with the remaining folder and the same password" '[ $RC = 0 ] && [[ "$OUT" == *"File sharing set up: 1 folders"* ]] && [ "$(NSH)" = 1 ] && grep -qx "docs|$T/files/docs" "$SHF" && [ "$(PWOF)" = FakePass0123456x ] && [ "$(grep -c "^docker run" "$DOCKER_LOG")" = 1 ] && [[ "$(RUNLINE)" != *"mnt/usb"* ]]'
+mkusb; run $'7\nsamba\n' 0 step_samba; export FM_MODE=root; : > "$DOCKER_LOG"; cp "$ENVF" "$T/env.before"; cp "$SHF" "$T/sh.before"; run $'1\nyyn' 0 step_samba
+check 14g "Reuse + broken folder + drop n: refused cleanly, saved config untouched, never points at Manage folders" '[ $RC != 0 ] && [[ "$OUT" == *"drive not mounted"* && "$OUT" == *"Nothing was changed"* && "$OUT" != *"Manage folders"* && "$OUT" != *"File sharing set up"* ]] && ! grep -q "^docker run" "$DOCKER_LOG" && cmp -s "$ENVF" "$T/env.before" && cmp -s "$SHF" "$T/sh.before"'
+reset; run $'1\ny'"$T/mnt/usb/data"$'\n\nFakePass0123456x\nFakePass0123456x\n' 0 step_samba; run $'7\nsamba\n' 0 step_samba; export FM_MODE=root; : > "$DOCKER_LOG"
+run $'1\nyyy'"$T/files/docs"$'\n\n\n' 0 step_samba
+check 14h "Reuse, only saved folder is broken, drop y: normal folder prompt, password kept (not asked)" '[ $RC = 0 ] && [[ "$OUT" == *"No saved folder left"* && "$OUT" == *"Folder to share"* && "$OUT" != *"Password for"* && "$OUT" == *"File sharing set up: 1 folders"* ]] && [ "$(PWOF)" = FakePass0123456x ] && grep -qx "docs|$T/files/docs" "$SHF"'
+# a broken saved folder must not block Stop/Start/Restart/Show password/Uninstall (none may go through _smb_apply)
+mkusb; export FM_MODE=root; : > "$DOCKER_LOG"; run $'5\n' 0 step_samba
+check 14i "broken saved folder: Stop works, no rm/run" '[ $RC = 0 ] && [[ "$OUT" == *"Stopped."* ]] && ! grep -q "^docker rm\|^docker run" "$DOCKER_LOG" && [ "$(cat "$T/c/samba/running")" = false ]'
+: > "$DOCKER_LOG"; run $'4\n' 0 step_samba
+check 14j "broken saved folder: Start works, no rm/run" '[ $RC = 0 ] && [[ "$OUT" == *"Started."* ]] && ! grep -q "^docker rm\|^docker run" "$DOCKER_LOG" && [ "$(cat "$T/c/samba/running")" = true ]'
+: > "$DOCKER_LOG"; run $'6\n' 0 step_samba
+check 14k "broken saved folder: Restart works, no rm/run" '[ $RC = 0 ] && [[ "$OUT" == *"Restarted."* ]] && ! grep -q "^docker rm\|^docker run" "$DOCKER_LOG"'
+: > "$DOCKER_LOG"; run $'3\n\n' 0 step_samba
+check 14l "broken saved folder: Show password (Enter = keep) works, no rm/run" '[ $RC = 0 ] && [[ "$OUT" == *FakePass0123456x* && "$OUT" == *"Password kept"* ]] && ! grep -q "^docker rm\|^docker run" "$DOCKER_LOG"'
+: > "$DOCKER_LOG"; run $'7\nsamba\n' 0 step_samba
+check 14m "broken saved folder: Uninstall works (container gone, config kept), no run" '[ $RC = 0 ] && [[ "$OUT" == *"File sharing removed"* ]] && [ ! -d "$T/c/samba" ] && ! grep -q "^docker run" "$DOCKER_LOG" && [ -e "$ENVF" ]'
 mkset; rm -rf "$T/files/media"; : > "$DOCKER_LOG"; run $'3\ng\n' 0 step_samba; mkdir -p "$T/files/media"
 check 14e "missing saved folder: refused as 'folder missing'" '[ $RC != 0 ] && [[ "$OUT" == *"media"*"folder missing"* ]] && ! grep -q "^docker rm\|^docker run" "$DOCKER_LOG"'
 unset FM_MODE

@@ -7273,7 +7273,7 @@ _smb_env_content() { # user uid gid password   (uses _SMB_NAMES/_SMB_PATHS)
     printf '%s\n' \
         "ACCOUNT_$u=$4" \
         "UID_$u=$2" \
-        "SAMBA_GLOBAL_STANZA=hosts allow = 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1;hosts deny = 0.0.0.0/0;server min protocol = SMB2;server smb encrypt = desired"
+        "SAMBA_GLOBAL_STANZA=hosts allow = 100.64.0.0/10 fd7a:115c:a1e0::/48 127.0.0.1 ::1;hosts deny = ALL;server min protocol = SMB2;server smb encrypt = desired"
     for i in "${!_SMB_NAMES[@]}"; do
         printf '%s\n' "SAMBA_VOLUME_CONFIG_s$i=[${_SMB_NAMES[$i]}]; path = /shares/${_SMB_NAMES[$i]}; valid users = $u; guest ok = no; read only = no; browseable = yes; force user = $u$grp; veto files = /lost+found/.Trash-*/; delete veto files = no"
     done
@@ -7310,7 +7310,11 @@ _smb_apply() {
     if [[ -n "$bad" ]]; then
         fail "Not applied - these folders are not available:"
         printf '%s' "$bad"
-        echo -e "  Mount the drive (or restore the folder) and try again, or remove the folder in ${BOLD}Manage folders${NC}. The running share was not touched."
+        if _smb_exists; then
+            echo -e "  Mount the drive (or restore the folder) and try again, or remove the folder in ${BOLD}Manage folders${NC}. The running share was not touched."
+        else
+            echo -e "  Mount the drive (or restore the folder) and try again. Nothing was changed."
+        fi
         return 1
     fi
     uid=$(id -u); gid=$(id -g)
@@ -7391,7 +7395,10 @@ _smb_devices() { # docker words
             [[ -z "$min" || "$e" -lt "$min" ]] && min=$e
         done <<<"$sess"
         fmt=%H:%M
-        [[ -n "$min" && "$(date -d "@$min" +%F)" != "$(date +%F)" ]] && fmt="%a %H:%M"
+        if [[ -n "$min" && "$(date -d "@$min" +%F)" != "$(date +%F)" ]]; then
+            fmt="%a %H:%M"   # a weekday is unique for up to 6 days back; older gets a date
+            [[ ! "$(date -d "@$min" +%F)" > "$(date -d '7 days ago' +%F)" ]] && fmt="%-d %b %H:%M"
+        fi
         echo "$name|$shares|${min:+$(date -d "@$min" +"$fmt")}"
     done
 }
@@ -7510,8 +7517,26 @@ _smb_wait_phone() {
 }
 
 # ── set up ──
+# Set up's Reuse found saved folders that are not available: ask per folder
+# whether to drop it (y/N). A kept one makes _smb_apply refuse; nothing is written here.
+_smb_offer_drop() {
+    local i c r keepn=() keepp=()
+    for i in "${!_SMB_NAMES[@]}"; do
+        c=$(_smb_folder_check "${_SMB_PATHS[$i]}")
+        if [[ "$c" != ok ]]; then
+            echo -e "  ${RED}✗${NC} ${_SMB_NAMES[$i]} -> ${_SMB_PATHS[$i]}: $(_smb_folder_reason "$c")"
+            printf '  Stop sharing "%s"? Files are NOT deleted. [y/N] ' "${_SMB_NAMES[$i]}"
+            read -n 1 -r r
+            echo ""
+            [[ "$r" =~ ^[Yy]$ ]] && continue
+        fi
+        keepn+=("${_SMB_NAMES[$i]}"); keepp+=("${_SMB_PATHS[$i]}")
+    done
+    _SMB_NAMES=("${keepn[@]}"); _SMB_PATHS=("${keepp[@]}")
+}
+
 _smb_setup() {
-    local user ip f first=1 saved=0
+    local user ip f first=1 saved=0 keep_pw=0
     user=$(id -un)
     echo -e "  Shares folders from this server with the Files app on iPhone/Android and with"
     echo -e "  laptops. Reachable over Tailscale only, never from the open home network."
@@ -7569,6 +7594,13 @@ _smb_setup() {
         echo ""
         if [[ ! "$REPLY" =~ ^[Nn]$ ]]; then saved=1; fi
     fi
+    if (( saved )); then
+        _smb_offer_drop
+        if (( ${#_SMB_NAMES[@]} == 0 )); then
+            saved=0; keep_pw=1
+            info "No saved folder left - pick the folders to share (the saved password is kept)."
+        fi
+    fi
     if (( ! saved )); then
         _SMB_NAMES=(); _SMB_PATHS=()
         echo -e "  ${DIM}Tip: your files folder is $(_smb_files_path)${NC}"
@@ -7582,8 +7614,10 @@ _smb_setup() {
             fi
             if _smb_add_folder "$f"; then first=0; ok "Sharing ${_SMB_NAMES[-1]}"; fi
         done
-        _smb_ask_password "Password for $user (Enter = generate, or type one): " || { fail "No password set - nothing installed."; return 1; }
-        _SMB_USER=$user
+        if (( ! keep_pw )); then
+            _smb_ask_password "Password for $user (Enter = generate, or type one): " || { fail "No password set - nothing installed."; return 1; }
+            _SMB_USER=$user
+        fi
     fi
     _smb_apply || return 1
     _smb_connect_box "$ip" "$_SMB_USER" "$_SMB_PW"

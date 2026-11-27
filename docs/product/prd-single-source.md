@@ -37,11 +37,12 @@ code-proven), **15 P2** (maintenance drift), **10 P3** (cosmetic / scaffolding).
 | 2 | One sync-job generator | D1, D2, D6, D13, D23, part of D12 | create and every edit render the script from one record; legacy scripts are imported (only the fields we generate; a script that doesn't match is left alone and flagged in Status, never guessed) then re-rendered (never patched); names validated; scripts resolve the server endpoint at run time (LAN → Tailscale) and use the `ssh()` rules |
 | 3 | One Immich backup | D3, D7, D14, D20 | one implementation for scheduled and one-time; reads `.env` at run time; same excludes, layout and guards |
 | 4 | Service lifecycle and status | D9, D10, D11, D19, D25, D28, D30 | dead picker removed; one container-state probe, one service list, one renderer for rows and URLs |
-| 5 | Shared lib `lib/common.sh`: `.env`, compose and duplicated helpers | D5, D4, D33, D26, D15, D16, D17 | one `lib/common.sh`, sourced by both tools, holds the only `.env` reader and key-updating writer plus each helper both tools duplicate today (moved one at a time, nothing speculative); compose never edited in place; `.env.example` matches what deploy writes; storage path changes refuse an unmounted drive |
+| 5 | Merge privcloud into setup.sh ("Manage Immich") | D26, D15, D17, D5 (second reader/writer) | one script: privcloud's features live in `setup.sh` as the **Manage Immich** submenu, styled like every federver menu; duplicated helpers deleted (federver's kept); no `privcloud` command, no shared lib, no macOS branch; the Immich backup keeps working throughout |
+| 5b | `.env` and compose files | D4, D33, D16 | one `.env` reader and one key-updating writer in `setup.sh`; compose never edited in place; `.env.example` matches what deploy writes; storage path changes refuse an unmounted drive |
 | 6 | Uninstall / firewall / confirm helpers | D18, D21, D22, D24 | shared helpers, adopted as each service is next touched |
 | 7 | Menu table and doc checks | D29, D31, D32 | menu numbers come from one table; a test fails on a stale `federver -> N` in docs |
 
-Order: QW → 0 → 1 → 2 → 3 → 5 → 4 → 6 → 7. Pieces 1 and 2 get a design review with the
+Order: QW → 0 → 1 → 2 → 5 → 3 → 5b → 4 → 6 → 7. Pieces 1 and 2 get a design review with the
 user before any code.
 
 ## Work plan
@@ -57,11 +58,12 @@ fixes" column folds in the open review-ledger items, so nothing is fixed twice.
 | 2 | 0 test harness `tests/lib.sh` | disk-check flake: capture `tmpd` when it fails | S / low | check counts per suite unchanged | ☑ (7452738..775c81c) |
 | 3 | 1 drive-mount verdict | `_MIRROR_DRIVE_ROOTS` test override in the production guard | M / medium | **design review**, then live check on the USB drive | ☑ code (02b6b88..e115d12); live USB check pending |
 | 4 | 2 sync-job launcher (design B, replaces the generator) | each job is a private record (`~/.local/share/sync-jobs/<name>.job`, KEY=VALUE, read without `source`) plus a two-line launcher (`exec <setup.sh> --run-job <name>`); `_sync_job_run` is the one place a job runs: endpoint picked at each run (LAN probe, then `SERVER_HOST_TS`; D6), rsync with `-s` and the shared ssh options via `RSYNC_RSH` (D23, the `-s` part of D12), remote destination made with `mkdir -p` (no sudo, no TTY under cron), mirror source guard, then an unattended wipe cap (same `_mirror_scan` count and `MIRROR_WIPE_MIN` rule as the preview; skip and log `SKIPPED <name> - would delete N files (over the mirror limit), nothing deleted`), rsync's real exit code captured at once, 24 = `ok (some files vanished)` (decision 1). One registry (`_sync_registry_load`) for List/Edit/Change schedule/Delete/Status (D2), one `_sync_job_delete` (D13), one `_sync_result_text`; names `[a-z0-9_-]`. The awk patcher and header readers are gone, so the CRLF finish-line gap and the `mktemp` leak of Change copy mode go with them (D1); `_mirror_banner` in `step_sync` summaries is now tested; empty folders in the preview were already listed per top-level folder (step 1b) and stay pinned. Old scripts: `_sync_job_import_legacy` converts them on the first Status view (record + launcher, `.bak` kept) or leaves them untouched with `cannot convert: <reason>` (decision 2) | L / high | **design review** (done: design B approved); `.bak` kept; live mirror run, home and away | ☑ code (20167eb..74a8918); live check pending |
-| 5 | 3 Immich backup | install-time dry-run runs as the user, not root | M / medium | live scheduled run + one one-time run | ☐ |
-| 6 | 5 shared lib `lib/common.sh` | – | M / medium | `.env` stays mode 600; both tools work from the `/usr/local/bin` wrappers | ☐ |
+| 5 | 5 merge privcloud into setup.sh as "Manage Immich" | move privcloud's code group by group with tests; restyle with federver's `ok/fail/info/warn` and menu layout; drop macOS branches and the `privcloud` CLI verbs and `/usr/local/bin/privcloud` (scripting uses `federver --run <step>`); delete duplicated helpers (D26: colours, local IP, version reader with its stale `0.9.5` fallback, compose helper, autostart read-back); README/customer-guide/CLAUDE.md describe one tool | M–L / medium | **Immich backup (scheduled + one-time) still runs end to end**; suites for the moved code (privcloud-config, privcloud-autostart) retargeted, counts unchanged | ☐ |
+| 6 | 3 one Immich backup | one generated script for scheduled and one-time (`--once`); one-time writes `<drive>/immich/` like scheduled (old `<drive>/privcloud-backup/` left for the user to delete); one-time mirror kept, behind the same source guard, preview and typed-count confirm as sync; reads `UPLOAD_LOCATION` from `.env` at run time; install-time dry-run runs as the user, not root | M / medium | live scheduled run + one one-time run | ☐ |
+| 6b | 5b `.env` and compose | storage path changes (`_storage_change_*`) check `_drive_verdict` before `mkdir`; start guard / Status derive the mount point by walking up to the nearest existing parent (not only `/mnt/<x>`) | S–M / low | `.env` stays mode 600 | ☐ |
 | 7 | 4 service lifecycle and status | inline `samba-poc` container probe; first live run of `federver -> 16` from the laptop; `federver -> 7` Restart has no data-drive guard (Start does since QW) | M–L / medium | live Status and Start/Stop | ☐ |
 | 8 | 6 uninstall / firewall / confirm helpers | SMB firewall check queries only the default zone | M / low | typed-name confirm and kept `/opt/<service>` config unchanged | ☐ |
-| 9 | 7 menu table and doc checks | findings.md rules duplicated in project memory; docs index filing wiki pages under "Product" | S / low | a test fails on a stale `federver -> N` | ☐ |
+| 9 | 7 menu table and doc checks | drop `federver -> 14 -> 4` Sync - Delete a job (Delete stays under Edit job; 5-7 move up); every submenu follows one layout; findings.md rules duplicated in project memory; docs index filing wiki pages under "Product" | S / low | a test fails on a stale `federver -> N` | ☐ |
 | 10 | Release | – | – | `/branch-review`, then `/release` | ☐ |
 
 Each module runs the same loop: ~15 min POC → build with tests that fail first against the old code
@@ -91,12 +93,17 @@ Each module runs the same loop: ~15 min POC → build with tests that fail first
    per job: the generated fields are read into a record, the old script is kept as `<script>.bak`, the
    launcher replaces it (atomic `mv`). A script that does not map cleanly is left untouched and shown
    as `cannot convert: <reason>`; script text is never patched.
-3. **One shared lib, `lib/common.sh`**, sourced by both tools: the `.env` reader/writer and every helper
-   both tools duplicate. The former optional piece 8 is folded into piece 5; there is no `lib/env.sh`.
-4. `privcloud config` **stays** (privcloud-only installs need it) and writes through `env_set`, updating
-   only `UPLOAD_LOCATION` and `DB_DATA_LOCATION`; every other `.env` key is left untouched. One
-   exception: it generates `DB_PASSWORD` when that key is missing or still the `.env.example`
-   placeholder (never changes a real one), because `.env.example` tells users to run it for that.
+3. **One script.** privcloud is merged into `setup.sh` as the **Manage Immich** submenu, styled like
+   every federver menu (2026-11-27, replaces the earlier shared-lib decision). macOS support and the
+   `privcloud` command are dropped; the repo name stays. There is no `lib/common.sh` or `lib/env.sh`.
+4. The Immich config step (formerly `privcloud config`) **stays** and writes through the key-updating
+   `env_set`, updating only `UPLOAD_LOCATION` and `DB_DATA_LOCATION`; every other `.env` key is left
+   untouched. One exception: it generates `DB_PASSWORD` when that key is missing or still the
+   `.env.example` placeholder (never changes a real one), because `.env.example` tells users to run it.
+5. One-time Immich backups use the scheduled layout `<drive>/immich/`; the one-time mirror option is
+   kept, behind the same guard, preview and typed-count confirm as sync.
+6. The Immich backup is the feature that must never regress: every step that touches it ends with a
+   live backup run.
 
 ## Non-goals
 

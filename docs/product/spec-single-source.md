@@ -84,5 +84,5 @@ Decided 2026-11-27 (options as in docs/archive/spec-single-source.md:560-598). T
 
 1. **rsync exit 24 in sync jobs:** success with note, `last: ok (some files vanished)` (option A).
 2. **Legacy job scripts re-render:** on first Status view with a one-line notice (option A); render, compare, replace only if different, atomic write plus `.bak`.
-3. **Shared lib:** yes, one `lib/common.sh` sourced by both tools, holding the `.env` reader/writer and the helpers both tools duplicate (D15, D16, D17, D26). Piece 8 is folded into piece 5; no separate `lib/env.sh`.
+3. **One script (revised 2026-11-27):** privcloud is merged into `setup.sh` as the "Manage Immich" submenu; no shared lib; macOS and the `privcloud` command dropped. D15, D17 and D26 close by deleting the duplicates; D16 moves to the `.env`/storage step (5b).
 4. **`privcloud config` on a server:** keep, update only `UPLOAD_LOCATION` and `DB_DATA_LOCATION` via `env_set` (option A).

@@ -9,13 +9,14 @@
 # containers, no sudo, no network. SETUP_SH=<file> tests another copy of
 # setup.sh (used for the fail-first check against an older version).
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+. "$H/lib.sh"
 SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/c"
 # _shq plus the power/status helpers (stop after _ps_autostart's closing brace).
-{ grep -m1 '^_shq()' "$SRC"
-  awk '/^_svc_power_body\(\)/{p=1} p{print} /^_ps_autostart\(\)/{q=1} q&&/^}/{exit}' "$SRC"; } > "$T/fn.sh"
+for f in _shq _svc_power_body _svc_sudo_guard _svc_power_all_body _svc_power _svc_power_all _svc_power_remote \
+         _svc_power_all_remote _ps_autostart; do extract_fn "$f" "$SRC"; done > "$T/fn.sh"
 source "$T/fn.sh"
 type _svc_power_body >/dev/null 2>&1 || { echo "FAIL  setup: _svc_power_body not found in $SRC (older setup.sh?)"; }
 cat > "$T/bin/sudo" <<'X'
@@ -25,8 +26,7 @@ X
 # docker stub: one dir per container under $C (key = sanitized name), files
 # name/running/policy. Failure knobs: DOCKER_DOWN, FAIL_UPDATE, FAIL_ACTION,
 # LIE_ACTION (action returns 0 but changes nothing).
-cat > "$T/bin/docker" <<'X'
-#!/bin/bash
+stub_docker <<'X'
 C=$DOCKER_STATE
 key() { printf '%s' "$1" | tr -c 'A-Za-z0-9' _; }
 echo "docker $*" >> "$DOCKER_LOG"
@@ -79,14 +79,12 @@ X
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH" DOCKER_STATE=$T/c DOCKER_LOG=$T/docker.log SSH_LOG=$T/ssh.log
 SERVER_USER=tester SERVER_IP=192.0.2.1
-PASS=0; FAILN=0
 mk() { # name running policy
   local d="$T/c/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _)"; mkdir -p "$d"
   printf '%s' "$1" > "$d/name"; echo "$2" > "$d/running"; echo "$3" > "$d/policy"; }
 st() { local d="$T/c/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _)"; echo "$(cat "$d/running") $(cat "$d/policy")"; }
 reset() { rm -rf "$T/c"; mkdir -p "$T/c"; : > "$DOCKER_LOG"; : > "$SSH_LOG"; unset SUDO_FAIL DOCKER_DOWN FAIL_UPDATE FAIL_ACTION LIE_ACTION SSH_DOWN; }
-check() { # id desc cond
-  if eval "$3"; then echo "PASS  $1  $2"; PASS=$((PASS+1)); else echo "FAIL  $1  $2  [rc=$RC err='$ERR' state='$(st "${CN:-x}" 2>&1)']"; FAILN=$((FAILN+1)); fi; }
+CHECK_DIAG="rc=\$RC err='\$ERR' state='\$(st \"\${CN:-x}\" 2>&1)'"
 run() { ERR=$("$@" 2>&1 >/dev/null); RC=$?; }
 
 # 1 basic transitions, local
@@ -178,5 +176,4 @@ check 8d "no containers: empty output, rc 0" '[ -z "$OUT" ] && [ $RC = 0 ]'
 reset; export DOCKER_DOWN=1; OUT=$(_ps_autostart docker); RC=$?
 check 8e "docker down: non-zero (renderer shows nothing, not a lie)" '[ $RC != 0 ]'
 
-echo ""; echo "TOTAL: $PASS passed, $FAILN failed"
-[ "$FAILN" = 0 ]
+check_total

@@ -78,19 +78,19 @@ GOT=$(mg stub "$D"); check P1e "mirror: autofs stub (SOURCE systemd-1) -> drive 
 GOT=$(mnofm "$D");   check P1f "mirror: findmnt absent -> refused (could not check source)" '[ "$GOT" = "could not check source" ]'
 GOT=$(mg bare "$E"); check P1g "mirror: empty bare folder (an unplugged drive's leftover) -> refused" '[ "$GOT" != ok ]'
 
-# SMB (_smb_folder_check; roots variable set by the suite)
-_SMB_DRIVE_ROOTS="$T/mnt"
+# SMB (_smb_folder_check maps the verdict to ok / missing / unmounted / unknown)
 sv() { FM_MODE=$1 _smb_folder_check "$2"; }
 GOT=$(sv ok "$D");   check P2a "smb: real mount -> ok" '[ "$GOT" = ok ]'
 GOT=$(sv ok "$M");   check P2b "smb: missing -> missing" '[ "$GOT" = missing ]'
 GOT=$(sv ok "$E");   check P2c "smb: empty dir on a real mount -> ok (an empty share is fine)" '[ "$GOT" = ok ]'
 GOT=$(sv bare "$D"); check P2d "smb: bare folder -> unmounted" '[ "$GOT" = unmounted ]'
 GOT=$(sv stub "$D"); check P2e "smb: autofs stub -> unmounted" '[ "$GOT" = unmounted ]'
-GOT=$(env PATH="$T/lsonly" "$(command -v bash)" -c "source $T/fn.sh; _SMB_DRIVE_ROOTS=$T/mnt _smb_folder_check $D")
-check P2f "smb: findmnt absent -> unmounted (no 'unknown' verdict in this copy)" '[ "$GOT" = unmounted ]'
-GOT=$(_SMB_DRIVE_ROOTS="/mnt /run/media" sv bare "/media/u/USB"); check P2g "smb: absent folder under /media -> missing" '[ "$GOT" = missing ]'
+GOT=$(env PATH="$T/lsonly" "$(command -v bash)" -c "source $T/fn.sh; _DRIVE_ROOTS=$T/mnt; _smb_folder_check $D")
+check P2f "smb: findmnt absent -> unknown (fails closed: not ok; was 'unmounted' before the merge)" '[ "$GOT" = unknown ]'
+GOT=$(sv ok "$T/media/gone"); check P2g "smb: absent folder under /media -> missing" '[ "$GOT" = missing ]'
 mkdir -p "$T/media/u/USB"; echo f > "$T/media/u/USB/f"
-GOT=$(_SMB_DRIVE_ROOTS="/mnt /run/media" sv bare "$T/media/u/USB"); check P2h "smb: folder under a root that is not in its list reads ok even when bare (the D8 drift)" '[ "$GOT" = ok ]'
+GOT=$(_DRIVE_ROOTS="$T/mnt $T/media" sv bare "$T/media/u/USB"); check P2h "smb: a /media-style root is now mount-checked: bare folder, drive unplugged -> unmounted (was ok before the merge)" '[ "$GOT" = unmounted ]'
+check P2i "smb: refusal wording for each check result" '[ "$(_smb_folder_reason unmounted)" = "drive not mounted" ] && [ "$(_smb_folder_reason missing)" = "folder missing" ] && [ -z "$(_smb_folder_reason ok)" ] && [[ "$(_smb_folder_reason unknown)" == *"cannot check"* ]]'
 
 # start guard (_require_data_mount: /mnt/* only; exact mount point, no existence check)
 rq() { FM_MODE=$1 FM_ROOT=/mnt/data LS_DATA=${2:-files} _require_data_mount "${3:-/mnt/data/media}" >/dev/null 2>&1; echo $?; }

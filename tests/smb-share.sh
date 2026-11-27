@@ -15,10 +15,11 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 { for f in ok fail info warn _shq _ts_ipv4 _ts_state _svc_power_body _svc_sudo_guard _svc_power_all_body _svc_power \
            _svc_power_all _svc_power_remote _svc_power_all_remote _ps_autostart _env_get _container_gone _confirm_delete; do
     extract_fn "$f" "$SRC"; done
+  extract_fn _drive_verdict "$SRC"; grep -E '^_DRIVE_ROOTS=' "$SRC"
   sed -n '/^# ── SMB file sharing/,/^# ── end SMB/p' "$SRC"; } > "$T/fn.sh"
 source "$T/fn.sh"
 type step_samba >/dev/null 2>&1 || echo "FAIL  setup: step_samba not found in $SRC (older setup.sh?)"
-_SMB_DIR=$T/opt/samba; _SMB_SETTLE=0; _SMB_POLL=0.2; _SMB_WAIT_TRIES=3; _SMB_DRIVE_ROOTS="$T/mnt"
+_SMB_DIR=$T/opt/samba; _SMB_SETTLE=0; _SMB_POLL=0.2; _SMB_WAIT_TRIES=3; _DRIVE_ROOTS="$T/mnt"   # the sandbox stands in for /mnt
 echo "FILES_LOCATION=$T/files" > "$T/.env"   # _smb_files_path reads .env next to fn.sh
 
 cat > "$T/bin/sudo" <<'X'
@@ -320,7 +321,7 @@ S=$(_smb_summary docker); R=$(_smb_summary_render "$S"); mkdir -p "$T/files/medi
 check 9c "running with a missing folder and a device: (1 ✗ not mounted) · 1 device" '[ "$S" = "running|2|1|1" ] && [[ "$R" == *"(1 ✗ not mounted)"* && "$R" == *"1 device connected"* && "$R" != *"1 devices"* ]]'
 mkset; _svc_power stop samba 2>/dev/null; S=$(_smb_summary docker); R=$(_smb_summary_render "$S")
 check 9d "stopped: red ✗ stopped (autostart off)" '[ "${S%%|*}" = stopped-off ] && [[ "$R" == *"✗ stopped (autostart off)"* ]]'
-check 9e "step_status wires the SMB section (remote gather + local path + render)" '[ "$(grep -c "@@SMB@@" "$SRC")" -ge 2 ] && grep -q "_smb_summary_render" "$SRC" && grep -q "declare -f _ts_ipv4 _ts_state _ps_autostart _smb_summary _smb_folder_check _smb_sessions _smb_devices _smb_devname" "$SRC" && grep -q "@@SMB_DEV_START@@" "$SRC"'
+check 9e "step_status wires the SMB section (remote gather + local path + render)" '[ "$(grep -c "@@SMB@@" "$SRC")" -ge 2 ] && grep -q "_smb_summary_render" "$SRC" && grep -q "declare -p _DRIVE_ROOTS; declare -f _ts_ipv4 _ts_state _ps_autostart _smb_summary _drive_verdict _smb_folder_check _smb_sessions _smb_devices _smb_devname" "$SRC" && grep -q "@@SMB_DEV_START@@" "$SRC"'
 
 # 9f/9g: run the REAL remote Status payload (its declare -f list + heredoc body, cut out of setup.sh)
 # in a clean `env -i bash -s` with the stub docker, like ts-expiry check 11: a helper missing from the

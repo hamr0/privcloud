@@ -7047,7 +7047,7 @@ step_status() {
 
     if [[ "$remote" == "true" ]]; then
         local server_info
-        server_info=$( { declare -f _ts_ipv4 _ts_state _ps_autostart _smb_summary _smb_folder_check _smb_sessions _smb_devices _smb_devname; cat <<'REMOTE_STATUS'
+        server_info=$( { declare -p _DRIVE_ROOTS; declare -f _ts_ipv4 _ts_state _ps_autostart _smb_summary _drive_verdict _smb_folder_check _smb_sessions _smb_devices _smb_devname; cat <<'REMOTE_STATUS'
             echo "@@HOSTNAME@@$(hostname)"
             echo "@@IP@@$(hostname -I | awk '{print $1}')"
             echo "@@TS_STATE@@$(_ts_state)"
@@ -7604,7 +7604,6 @@ _SMB_IMAGE="ghcr.io/servercontainers/samba:smbd-only-latest"
 _SMB_DIR="/opt/samba"   # kept on Uninstall; samba.env (login + password) and shares.conf, root 600
 _SMB_SETTLE=1           # seconds between "is it up yet" polls
 _SMB_POLL=3             # seconds between phone-connect polls
-_SMB_DRIVE_ROOTS="/mnt /run/media"   # folders here must sit on a real /dev/* mount
 _SMB_WAIT_TRIES=40      # x _SMB_POLL = 2 minutes
 _SMB_NAMES=(); _SMB_PATHS=(); _SMB_USER=""; _SMB_PW=""; _SMB_REAL=""
 
@@ -7724,25 +7723,24 @@ _smb_add_folder() {
     _SMB_NAMES+=("$name"); _SMB_PATHS+=("$_SMB_REAL")
 }
 
-# ✓ ok / missing / notdir / unmounted. Under /mnt and /run/media the folder
-# must sit on a real mount whose source is a /dev/* device: a bare directory on
-# the system disk (drive not plugged in) or an autofs/stub mount is not it.
+# Maps _drive_verdict to ok / missing / unmounted / unknown. An empty folder on a
+# real mount is fine to share; a bare folder on the system disk (drive not
+# plugged in) or an autofs/stub mount is "unmounted"; unknown (no findmnt) is
+# not ok, so every action that needs ok refuses.
 _smb_folder_check() {
-    local p=$1 t s r
-    [[ -d "$p" ]] || { echo missing; return; }
-    for r in ${_SMB_DRIVE_ROOTS:-/mnt /run/media}; do
-        [[ "$p" == "$r"/* ]] || continue
-        t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null)
-        s=$(findmnt -n -o SOURCE -T "$p" 2>/dev/null)
-        if [[ -z "$t" || "$t" == / || "$s" != /dev/* ]]; then echo unmounted; return; fi
-    done
-    echo ok
+    case $(_drive_verdict "$1") in
+        ok|empty) echo ok ;;
+        missing)  echo missing ;;
+        unknown)  echo unknown ;;
+        *)        echo unmounted ;;
+    esac
 }
 
 _smb_folder_reason() { # check-result
     case "$1" in
         ok) ;;
         missing) echo "folder missing" ;;
+        unknown) echo "cannot check the drive (findmnt missing)" ;;
         *) echo "drive not mounted" ;;
     esac
 }

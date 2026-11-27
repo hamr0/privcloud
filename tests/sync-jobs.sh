@@ -23,12 +23,13 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
            _sync_result_text _sync_change_mode _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _sync_delete_job _sync_job_delete _sync_cron_split _sync_registry_load _sync_change_schedule _sync_install_timer _sync_remove_timer \
            _sync_rec_load _sync_rec_write _sync_valid_name _sync_default_name _sync_write_launcher _sync_job_run _sync_job_go \
-           _sync_job_cmd _sync_job_import_legacy _sync_import_all_legacy _sync_tokenize _sync_setup_path _sync_run_logged _sync_one_time_backup; do
+           _sync_job_operands _sync_job_steps _sync_job_import_legacy _sync_import_all_legacy _sync_tokenize _sync_setup_path _sync_run_logged _sync_one_time_backup; do
     extract_fn "$f" "$SRC"; done
-  grep -E '^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_SSH_OPTS=|^export RSYNC_RSH=|^_RSYNC_FLAGS=' "$SRC"; echo 'SSH_OPTS_OK=1'; } > "$T/fn.sh"
+  grep -E '^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_SYNC_REC_KEYS=|^_SSH_OPTS=|^export RSYNC_RSH=|^_RSYNC_FLAGS=' "$SRC"; echo 'SSH_OPTS_OK=1'; } > "$T/fn.sh"
 source "$T/fn.sh"
 type _sync_execute_or_schedule >/dev/null 2>&1 || echo "FAIL  setup: sync functions not found in $SRC"
-NEWDESIGN=; type _sync_job_run >/dev/null 2>&1 && NEWDESIGN=1
+NEWRUN=; type _sync_job_run >/dev/null 2>&1 && NEWRUN=1   # the run exists
+NEWDESIGN=; type _sync_job_import_legacy >/dev/null 2>&1 && NEWDESIGN=1   # ...and the menus use it
 
 # fake ssh: drop the options and host, run the remote command locally (also the rsync transport)
 cat > "$T/bin/ssh" <<'X'
@@ -163,7 +164,7 @@ check 3b "Status row carries the dotted name" 'grep -q "^  my.photos " <<<"$OUT"
 run "1\n6\n\n" _sync_edit_job
 check 3c "Edit job opens the dotted job" '[[ "$OUT" == *"my.photos"*"cron"* ]]'
 run "1\nsync-my.photos\n" _sync_delete_job
-check 3d "Delete removes the dotted job" '! grep -q "sync-my.photos.sh" "$CRON_FILE" && [ ! -e "$(SCRIPT my.photos)" ]'
+check 3d "Delete removes the dotted job" '! grep -q "sync-my.photos.sh" "$CRON_FILE" 2>/dev/null && [ ! -e "$(SCRIPT my.photos)" ]'
 
 # ── 4  the logged result of a run: rsync exit 0 / 23 / 24 / 255 ──────────
 mk; mkjob r1 >/dev/null
@@ -229,5 +230,121 @@ check 6d "exactly MIRROR_WIPE_MIN files is not" '! _mirror_wipe_sized'
 scan
 check 6e "an empty list counts nothing" '[ "$_mirror_nf" = 0 ] && [ "$_mirror_nd" = 0 ] && ! _mirror_wipe_sized'
 MIRROR_WIPE_MIN=1000
+
+# ── 7  the job record, the launcher and the run (design B) ───────────────
+if [ -n "$NEWRUN" ]; then
+_FV_SELF=$T/fv-setup.sh; FEDERVER_CONFIG=$T/federver-config
+rec() { # name direction mode [copy_mode]
+  J_name=$1 J_direction=$2 J_mode=$3 J_copy_mode=${4:-contents} J_sched_kind=cron J_sched="0 * * * *" J_created=now
+  if [ "$2" = upload ]; then J_src_loc=local J_dest_loc=server; else J_src_loc=server J_dest_loc=local; fi
+  J_src=$T/s J_dest=$T/d
+  _sync_rec_write
+}
+LOGOF() { cat "$(LOGF "$1")" 2>/dev/null; }
+# a record round-trips whatever the values hold, and loading never executes them
+mk
+J_name=odd J_direction=upload J_mode=append J_copy_mode=folder J_src_loc=local J_dest_loc=server J_sched_kind=cron J_sched='*/5 * * * *' J_created=x
+J_src="$T/s/we ird & 'q' \"d\" \$(touch $T/PWNED) \`touch $T/PWNED2\` a|b\\c=d  "; J_dest="$T/d dir/\$HOME"
+_sync_rec_write; RW=$?
+J_src= J_dest= J_sched=; _sync_rec_load odd; RL=$?
+check 7a "record round-trip: spaces, | & \\ quotes, \$( ), backticks, = and trailing blanks come back exactly" '[ $RW = 0 ] && [ $RL = 0 ] && [ "$J_src" = "$T/s/we ird & '"'"'q'"'"' \"d\" \$(touch $T/PWNED) \`touch $T/PWNED2\` a|b\\c=d  " ] && [ "$J_dest" = "$T/d dir/\$HOME" ] && [ "$J_sched" = "*/5 * * * *" ]'
+check 7b "loading a record executes nothing" '[ ! -e "$T/PWNED" ] && [ ! -e "$T/PWNED2" ]'
+check 7c "the record is private (mode 600) and a plain KEY=VALUE file" '[ "$(stat -c %a "$LOGD/odd.job")" = 600 ] && grep -q "^copy_mode=folder$" "$LOGD/odd.job" && [ "$(grep -c . "$LOGD/odd.job")" = 11 ]'
+J_name=bad; J_src=$'a\nb'; run "" _sync_rec_write
+check 7d "a value with a line break is refused, nothing written" '[ $RC != 0 ] && [ ! -e "$LOGD/bad.job" ] && [[ "$OUT" == *"line break"* ]]'
+check 7e "a missing or incomplete record does not load" '! _sync_rec_load nope && printf "name=half\n" > "$LOGD/half.job" && ! _sync_rec_load half'
+
+# launcher
+SERVER_USER=testuser SERVER_IP=192.0.2.77 _sync_write_launcher l1; LW=$?
+check 7f "launcher: two lines, runs setup.sh --run-job <name>, passes bash -n" '[ $LW = 0 ] && [ "$(wc -l < "$BIND/sync-l1.sh")" = 2 ] && [ "$(sed -n 2p "$BIND/sync-l1.sh")" = "exec $T/fv-setup.sh --run-job l1" ] && bash -n "$BIND/sync-l1.sh" && [ -x "$BIND/sync-l1.sh" ]'
+check 7g "launcher holds no address, user or function" '! grep -Eq "192.0.2.77|testuser|SERVER_|\(\) *\{" "$BIND/sync-l1.sh"'
+_sync_write_launcher 'my.photos'
+check 7h "a dotted name is quoted into the launcher safely" '[ "$(sed -n 2p "$BIND/sync-my.photos.sh")" = "exec $T/fv-setup.sh --run-job my.photos" ]'
+
+# names
+check 7i "default name from a path: Photos.2024 -> photos-2024, spaces and symbols -> -" '[ "$(_sync_default_name "/x/Photos.2024")" = photos-2024 ] && [ "$(_sync_default_name "/x/My Docs/")" = my-docs ] && [ "$(_sync_default_name "/x/a&b")" = a-b ] && [ "$(_sync_default_name /)" = job ]'
+check 7j "valid names: a-z 0-9 - _" '_sync_valid_name photos-2024_x >/dev/null && ! _sync_valid_name "" >/dev/null'
+V=$(_sync_valid_name "my.photos"); V2=$(_sync_valid_name "a/b"); V3=$(_sync_valid_name "Up")
+check 7k "invalid names: one-line reason naming the character" '[[ "$V" == "'"'"'.'"'"' is not allowed in a job name"* && "$V2" == "'"'"'/'"'"' is not"* && "$V3" == "'"'"'U'"'"' is not"* ]]'
+
+# the run: against real rsync over the fake ssh (upload and download, append)
+mk; rec up1 upload append
+run "" _sync_job_run up1
+check 7l "upload run: files arrive, start and finish lines, exit 0" '[ $RC = 0 ] && [ -e "$T/d/a" ] && [ -e "$T/d/sub/b" ] && [ -e "$T/d/gone" ] && [[ "$OUT" == *"Starting sync: up1"* && "$OUT" == *"Sync finished: up1 (exit 0)"* ]]'
+mk; rec up2 upload append; J_dest=$T/new/deeper/dir; _sync_rec_write
+run "" _sync_job_run up2
+check 7m "a missing destination is created without sudo (remote mkdir -p over ssh)" '[ $RC = 0 ] && [ -e "$T/new/deeper/dir/a" ]'
+mk; rec dn1 download append
+run "" _sync_job_run dn1
+check 7n "download run (source on the server)" '[ $RC = 0 ] && [ -e "$T/d/a" ] && [ -e "$T/d/gone" ]'
+mk; rec fo1 upload append folder
+run "" _sync_job_run fo1
+check 7o "copy mode 'folder' lands in <dest>/<folder name>" '[ $RC = 0 ] && [ -e "$T/d/s/a" ] && [ -e "$T/d/s/sub/b" ]'
+mk; mkdir -p "$T/s/sp ace"; echo q > "$T/s/sp ace/we ird.txt"; rec sp1 upload append
+run "" _sync_job_run sp1
+check 7p "names with spaces survive the transport (-s)" '[ $RC = 0 ] && [ -e "$T/d/sp ace/we ird.txt" ]'
+
+# transport + no sudo
+mk; rec tr1 upload append; : > "$SSH_LOG"
+run "" _sync_job_run tr1
+check 7q "every ssh of the run (mkdir and rsync's own) carries ConnectTimeout + keepalives" '[ "$(wc -l < "$SSH_LOG")" -ge 2 ] && ! grep -vq "ConnectTimeout=8.*ServerAliveInterval=15.*ServerAliveCountMax=4" "$SSH_LOG" && grep -q "rsync --server" "$SSH_LOG"'
+printf '#!/bin/bash\necho sudo >> "$T/sudo.log"; exit 1\n' > "$T/bin/sudo"; chmod +x "$T/bin/sudo"; : > "$T/sudo.log"
+mk; rec ns1 upload mirror; run "" _sync_job_run ns1; mk; rec ns2 download append; J_dest=$T/nw/x; _sync_rec_write; run "" _sync_job_run ns2
+check 7r "no sudo is called by an upload (mirror) or download run" '[ ! -s "$T/sudo.log" ] && [ -e "$T/nw/x/a" ]'
+rm -f "$T/bin/sudo"
+UNATT=$(for f in _sync_job_run _sync_job_go _sync_job_steps _sync_job_operands _sync_rec_load _pick_server_endpoint _mirror_scan _mirror_wipe_sized; do extract_fn "$f" "$T/fn.sh"; done)
+check 7s "the unattended path never mentions sudo or a terminal prompt " '[ -n "$UNATT" ] && ! grep -Eq "sudo|ssh -t|read -p|read -n|/dev/tty" <<<"$UNATT"'
+
+# exit codes (stub rsync): logged as rsync's own, 24 is success
+for rc in 0 23 24 255; do
+  mk; rec ec$rc upload append; mkdir -p "$T/stub"; cp "$T/rsync-stub" "$T/stub/rsync"
+  OUT=$(PATH="$T/stub:$PATH" RSYNC_RC=$rc _sync_job_run ec$rc 2>&1); RC=$?
+  eval "OUT$rc=\$OUT RC$rc=\$RC"
+done
+check 7t "rsync 0 -> '(exit 0)', job exits 0" '[ $RC0 = 0 ] && [[ "$OUT0" == *"Sync finished: ec0 (exit 0)" ]]'
+check 7u "rsync 23 -> '(exit 23)', job exits 23" '[ $RC23 = 23 ] && [[ "$OUT23" == *"Sync finished: ec23 (exit 23)" ]]'
+check 7v "rsync 24 -> success, noted: (exit 0, some files vanished), job exits 0" '[ $RC24 = 0 ] && [[ "$OUT24" == *"Sync finished: ec24 (exit 0, some files vanished)" ]]'
+check 7w "rsync 255 -> '(exit 255)', job exits 255" '[ $RC255 = 255 ] && [[ "$OUT255" == *"Sync finished: ec255 (exit 255)" ]]'
+
+# endpoint resolved at run time (stubbed LAN probe)
+_tcp_open() { case "$1" in "$LAN") [ -n "$LAN_UP" ];; "$TS") [ -n "$TS_UP" ];; esac; }
+LAN=10.0.0.5; TS=tail.example; SERVER_IP=$LAN; SERVER_HOST_TS=$TS
+mk; rec ep1 upload append; cp "$T/rsync-stub" "$T/stub/rsync"
+LAN_UP=1 TS_UP=1; : > "$RSYNC_LOG"; run "" env PATH="$T/stub:$PATH" bash -c 'true'; OUT=$(PATH="$T/stub:$PATH" _sync_job_run ep1 2>&1); RC=$?
+check 7x "LAN answers: the job talks to the LAN address" 'grep -q "u@$LAN:" "$RSYNC_LOG"'
+LAN_UP= TS_UP=1; : > "$RSYNC_LOG"; OUT=$(PATH="$T/stub:$PATH" _sync_job_run ep1 2>&1); RC=$?
+check 7y "LAN down, Tailscale up: the same job talks to the Tailscale address" 'grep -q "u@$TS:" "$RSYNC_LOG" && ! grep -q "u@$LAN:" "$RSYNC_LOG" && [ $RC = 0 ]'
+LAN_UP= TS_UP=; : > "$RSYNC_LOG"; OUT=$(PATH="$T/stub:$PATH" _sync_job_run ep1 2>&1); RC=$?
+check 7z "both down: fails fast, rsync never started, logged as exit 255" '[ $RC = 255 ] && [ ! -s "$RSYNC_LOG" ] && [[ "$OUT" == *"Server unreachable"* && "$OUT" == *"Sync finished: ep1 (exit 255)" ]]'
+SERVER_IP=h; SERVER_HOST_TS=; unset -f _tcp_open
+
+# mirror: guard, wipe cap, nocap
+mk; rec mi1 upload mirror
+run "" _sync_job_run mi1
+check 7aa "mirror run deletes what is gone from the source" '[ $RC = 0 ] && [ -e "$T/d/a" ] && [ ! -e "$T/d/gone" ]'
+mk; rec mi2 upload mirror; rm -rf "$T/s"; mkdir "$T/s"
+run "" _sync_job_run mi2
+check 7ab "empty source: SKIPPED line, exit 0, nothing deleted" '[ $RC = 0 ] && [ -e "$T/d/gone" ] && [[ "$OUT" == *": SKIPPED mi2 - source empty (mirror refused, nothing deleted)"* && "$OUT" != *"Sync finished"* ]]'
+mk; rec mi3 download mirror; rm -rf "$T/s"; mkdir "$T/s"
+run "" _sync_job_run mi3
+check 7ac "download mirror: the guard checks the server source over ssh" '[ $RC = 0 ] && [ -e "$T/d/gone" ] && [[ "$OUT" == *"SKIPPED mi3 - source empty"* ]]'
+mk; rec mi4 upload mirror; for i in 1 2 3; do echo x > "$T/d/extra$i"; done; MIRROR_WIPE_MIN=3
+run "" _sync_job_run mi4
+check 7ad "mirror at the limit (4 files = 3 extras + gone, MIRROR_WIPE_MIN=3 -> over): wipe cap skips, logs, deletes nothing" '[ $RC = 0 ] && [ -e "$T/d/gone" ] && [ -e "$T/d/extra1" ] && [[ "$OUT" == *": SKIPPED mi4 - would delete 4 files (over the mirror limit), nothing deleted"* && "$OUT" != *"Sync finished"* ]] && [ ! -e "$T/d/a" ]'
+MIRROR_WIPE_MIN=4
+run "" _sync_job_run mi4
+check 7ae "exactly MIRROR_WIPE_MIN deletions: not capped, deleted" '[ $RC = 0 ] && [ ! -e "$T/d/gone" ] && [ ! -e "$T/d/extra1" ] && [ -e "$T/d/a" ]'
+MIRROR_WIPE_MIN=1000
+mk; rec mi5 upload mirror; mkdir -p "$T/d/wholedir"; echo w > "$T/d/wholedir/f"
+run "" _sync_job_run mi5
+check 7af "a whole top-level folder to delete trips the cap whatever the count" '[ -e "$T/d/wholedir/f" ] && [ -e "$T/d/gone" ] && [[ "$OUT" == *"SKIPPED mi5 - would delete"*"(over the mirror limit), nothing deleted"* ]]'
+run "" _sync_job_run mi5 nocap
+check 7ag "nocap (the user just confirmed the preview): the same deletion runs" '[ ! -e "$T/d/wholedir" ] && [ ! -e "$T/d/gone" ] && [[ "$OUT" == *"Sync finished: mi5 (exit 0)" ]]'
+mk; rec mi6 upload mirror; mkdir -p "$T/stub"; printf '#!/bin/bash\ncase "$*" in -n\ --delete*) exit 12;; esac\necho real >> "$RSYNC_LOG"; exit 0\n' > "$T/stub/rsync"; chmod +x "$T/stub/rsync"
+OUT=$(PATH="$T/stub:$PATH" _sync_job_run mi6 2>&1); RC=$?
+check 7ah "a dry run that fails: nothing runs, its exit code is logged" '[ $RC = 12 ] && [ ! -s "$RSYNC_LOG" ] && [[ "$OUT" == *"Could not check what a mirror would delete (rsync exit 12)"* && "$OUT" == *"Sync finished: mi6 (exit 12)" ]]'
+run "" _sync_job_run ghost
+check 7ai "no record: logged as a failed run (exit 2), not silence" '[ $RC = 2 ] && [[ "$OUT" == *"No usable job record for '"'"'ghost'"'"'"* && "$OUT" == *"Sync finished: ghost (exit 2)" ]]'
+fi
 
 check_total

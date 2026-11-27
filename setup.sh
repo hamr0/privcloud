@@ -5447,6 +5447,160 @@ _mirror_gate() {  # src_loc src_path dest_label append_cmd
     return 0
 }
 
+# ── Sync jobs: one record, one launcher, one run ─────────────────────────────
+# A recurring sync job is a record $HOME/.local/share/sync-jobs/<name>.job (KEY=VALUE,
+# one line each, private, read WITHOUT `source`) plus a two-line launcher
+# $HOME/.local/bin/sync-<name>.sh that cron / the systemd timer run:
+#     exec <this script> --run-job <name>
+# Nothing about the server (user, address) and no function is copied into either: the
+# run (_sync_job_run) loads the record and the config file and picks the address then.
+# Creating or editing a job rewrites the record; nothing patches script text.
+_SYNC_REC_KEYS="name direction src_loc src dest_loc dest copy_mode mode sched_kind sched created"
+
+# Write the record from the J_<key> globals (atomic: temp file + mv, mode 600).
+_sync_rec_write() {
+    local f="$HOME/.local/share/sync-jobs/$J_name.job" tmp k v
+    for k in $_SYNC_REC_KEYS; do
+        v=J_$k; v=${!v}
+        if [[ "$v" == *$'\n'* ]]; then fail "A job value cannot hold a line break ($k) - nothing saved."; return 1; fi
+    done
+    mkdir -p "${f%/*}" || return 1
+    tmp=$(umask 077; mktemp "$f.XXXXXX") || return 1
+    for k in $_SYNC_REC_KEYS; do v=J_$k; printf '%s=%s\n' "$k" "${!v}"; done > "$tmp"
+    mv -f "$tmp" "$f"
+}
+
+# Load <name>'s record into the J_<key> globals (plain KEY=VALUE parse, values literal).
+# rc 1 = no such record or one without the fields a run needs.
+_sync_rec_load() {  # name
+    local f="$HOME/.local/share/sync-jobs/$1.job" line k
+    [[ -f "$f" ]] || return 1
+    for k in $_SYNC_REC_KEYS; do printf -v "J_$k" '%s' ""; done
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ "$line" == *=* ]] || continue
+        k=${line%%=*}
+        case " $_SYNC_REC_KEYS " in *" $k "*) printf -v "J_$k" '%s' "${line#*=}" ;; esac
+    done < "$f"
+    [[ "$J_name" == "$1" && "$J_direction" =~ ^(upload|download)$ && -n "$J_src" && -n "$J_dest" && "$J_mode" =~ ^(append|mirror)$ ]]
+}
+
+# The launcher cron and the timer run: two lines, no logic, nothing about the server.
+_sync_write_launcher() {  # name
+    local f="$HOME/.local/bin/sync-$1.sh" tmp
+    mkdir -p "${f%/*}" || return 1
+    tmp=$(mktemp "$f.XXXXXX") || return 1
+    printf '#!/bin/bash\nexec %s --run-job %s\n' "$(_shq "$_FV_SELF")" "$(_shq "$1")" > "$tmp"
+    chmod 755 "$tmp"
+    if bash -n "$tmp" 2>/dev/null && mv -f "$tmp" "$f"; then return 0; fi
+    rm -f "$tmp"; return 1
+}
+
+# Job names are [a-z0-9_-]. _sync_default_name turns a path into one; _sync_valid_name
+# prints the one-line reason and returns 1 when a typed name has any other character.
+_sync_default_name() {  # path
+    local n=${1%/}
+    n=${n##*/}; n=${n,,}; n=${n//[^a-z0-9_-]/-}
+    printf '%s' "${n:-job}"
+}
+_sync_valid_name() {  # name
+    local bad=${1//[a-z0-9_-]/}
+    if [[ -z "$1" ]]; then echo "a job name cannot be empty"; return 1; fi
+    if [[ -n "$bad" ]]; then echo "'${bad:0:1}' is not allowed in a job name (use a-z, 0-9, - and _)"; return 1; fi
+}
+
+# The rsync operands of the loaded record (J_*), for the address in SERVER_IP:
+#   _sj_src / _sj_dst  what rsync gets,   _sj_shown  the destination folder as the user
+#   sees it (the folder's own name is added in copy mode "folder"),
+#   _sj_cmd  the append-form command line (what the mirror preview dry-runs).
+_sync_job_operands() {
+    local s=${J_src%/} d=${J_dest%/} rs
+    _sj_shown=$d; [[ "$J_copy_mode" == folder ]] && _sj_shown=$d/${s##*/}
+    rs=$s/; [[ "$J_copy_mode" == folder ]] && rs=$s
+    if [[ "$J_direction" == upload ]]; then
+        _sj_src=$rs; _sj_dst="$SERVER_USER@$SERVER_IP:$d/"
+    else
+        _sj_src="$SERVER_USER@$SERVER_IP:$rs"; _sj_dst="$d/"
+    fi
+    _sj_cmd="rsync $_RSYNC_FLAGS $(_shq "$_sj_src") $(_shq "$_sj_dst")"
+}
+
+# Everything one run does, for the loaded record. rc = rsync's own exit code (or 255
+# server unreachable, 2 no server configured, 1 the destination could not be made);
+# 100 = a mirror was refused (guard or wipe cap): already logged, nothing deleted.
+# Never uses sudo and never needs a terminal: it runs from cron.
+_sync_job_steps() {  # [nocap]
+    local nocap=${1:-} ep rc=0 list n
+    local SERVER_IP=$SERVER_IP   # this run's address stays inside this run
+    if [[ -z "$SERVER_USER" || -z "$SERVER_IP" ]]; then
+        echo "No server set: SERVER_USER / SERVER_IP missing (${FEDERVER_CONFIG})."; return 2
+    fi
+    ep=$(_pick_server_endpoint) || {
+        echo "Server unreachable: neither $SERVER_IP nor ${SERVER_HOST_TS:-(no Tailscale name set)} answered on port 22."; return 255; }
+    SERVER_IP=$ep
+    _sync_job_operands
+    if [[ "$J_mode" == mirror ]]; then
+        if ! _mirror_guard "$J_src_loc" "$J_src"; then
+            printf '%s: SKIPPED %s - %s (mirror refused, nothing deleted)\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$J_name" "$_mirror_why"
+            return 100
+        fi
+    fi
+    if [[ "$J_direction" == upload ]]; then
+        ssh "$SERVER_USER@$SERVER_IP" "mkdir -p $(_shq "$_sj_shown")" || rc=$?
+    else
+        mkdir -p -- "$_sj_shown" || rc=$?
+    fi
+    if (( rc != 0 )); then echo "Could not create the destination $_sj_shown (exit $rc); nothing here runs as root."; return $((rc == 255 ? 255 : 1)); fi
+    if [[ "$J_mode" == mirror && -z "$nocap" ]]; then
+        # Same count and limit as the interactive preview, but nobody is here to type
+        # the count: a wipe-sized deletion is skipped, never done.
+        list=$(mktemp) || return 1
+        bash -c "$(_mirror_dry_cmd "$_sj_cmd")" > "$list" 2>&1 || rc=$?
+        if (( rc != 0 && rc != 24 )); then
+            rm -f "$list"; echo "Could not check what a mirror would delete (rsync exit $rc) - nothing deleted."; return $rc
+        fi
+        _mirror_scan "$list"; rm -f "$list"
+        if _mirror_wipe_sized; then
+            n=$(( _mirror_nf > 0 ? _mirror_nf : _mirror_nd ))
+            printf '%s: SKIPPED %s - would delete %s %s (over the mirror limit), nothing deleted\n' \
+                "$(date '+%Y-%m-%d %H:%M:%S')" "$J_name" "$n" "$([[ $_mirror_nf -gt 0 ]] && echo files || echo 'empty folders')"
+            return 100
+        fi
+        rc=0
+    fi
+    local -a args
+    read -ra args <<<"$_RSYNC_FLAGS"
+    [[ "$J_mode" == mirror ]] && args+=(--delete)
+    rsync "${args[@]}" "$_sj_src" "$_sj_dst" || rc=$?
+    return $rc
+}
+
+# Run the loaded record once and log the way Status reads it: a start line and a
+# "Sync finished: <name> (exit N)" line with rsync's real code. 24 (files vanished
+# while copying) counts as success. A refused mirror logs its own SKIPPED line instead
+# and returns 0. Decision: exit 24 -> "ok (some files vanished)".
+_sync_job_go() {  # [nocap]
+    local rc=0 note=""
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: $J_name"
+    _sync_job_steps "$1" || rc=$?
+    (( rc == 100 )) && return 0
+    if (( rc == 24 )); then rc=0; note=", some files vanished"; fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: $J_name (exit ${rc}${note})"
+    return $rc
+}
+
+# The one place a recurring job runs (cron, timer, Run now, the first run after
+# creating it): load the record, run it. nocap = the user has just confirmed the
+# deletions, so the unattended wipe cap does not apply.
+_sync_job_run() {  # name [nocap]
+    if ! _sync_rec_load "$1"; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting sync: $1"
+        echo "No usable job record for '$1' ($HOME/.local/share/sync-jobs/$1.job)."
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] Sync finished: $1 (exit 2)"
+        return 2
+    fi
+    _sync_job_go "${2:-}"
+}
+
 # Status cell for a copy mode, padded to 8: mirror = red (it deletes), append
 # plain, anything else (a monitor) "-".
 _sync_mode_cell() {
@@ -8239,6 +8393,15 @@ step_samba() {
 # ── end SMB file sharing ─────────────────────────────
 
 # ── CLI argument handling (used by SSH routing) ─────
+# `setup.sh --run-job <name>`: what a sync-job launcher runs (cron / systemd timer).
+# Output goes to the job's log, as before; the exit code is the job's.
+if [[ "${1:-}" == "--run-job" && -n "${2:-}" ]]; then
+    mkdir -p "$HOME/.local/share/sync-jobs"
+    exec >>"$HOME/.local/share/sync-jobs/$2.log" 2>&1
+    _sync_job_run "$2"
+    exit $?
+fi
+
 if [[ "${1:-}" == "--run" && -n "${2:-}" ]]; then
     # Guard against stale checkouts: if the requested function doesn't exist
     # in this copy of setup.sh, auto-pull from main and re-exec. One retry

@@ -120,10 +120,10 @@ OUT=$(st ok missing); check P4g "status: mount point cannot be listed -> NOT mou
 
 # backup default (_pick_backup_default: candidate must be a dir the verdict calls ok or empty)
 bd() { FM_MODE=$1 _pick_backup_default "$SRC_DIR"; }
-GOT=$(bd ok);   check P5a "backup default: real mount offered" '[ "$GOT" = "$T/mnt/usb/privcloud-backup" ]'
+GOT=$(bd ok);   check P5a "backup default: real mount offered" '[ "$GOT" = "$T/mnt/usb" ]'
 GOT=$(bd bare); check P5b "backup default: bare folder not offered" '[ -z "$GOT" ]'
 GOT=$(bd stub); check P5c "backup default: autofs stub not offered (mountpoint -q used to be fooled by it)" '[ -z "$GOT" ]'
-rmdir "$T/mnt/usb/empty"; rm -rf "$T/mnt/usb/data"; GOT=$(bd ok); check P5d "backup default: a freshly formatted (empty) real drive is offered" '[ "$GOT" = "$T/mnt/usb/privcloud-backup" ]'
+rmdir "$T/mnt/usb/empty"; rm -rf "$T/mnt/usb/data"; GOT=$(bd ok); check P5d "backup default: a freshly formatted (empty) real drive is offered" '[ "$GOT" = "$T/mnt/usb" ]'
 GOT=$(env PATH="$T/lsonly" SRC_DIR=$SRC_DIR "$(command -v bash)" -c "source $T/fn.sh; _DRIVE_ROOTS=$T/mnt; _pick_backup_default $SRC_DIR")
 check P5e "backup default: findmnt absent -> nothing offered (cannot verify, fail closed)" '[ -z "$GOT" ]'
 mkdir -p "$T/mnt/usb/data" "$T/mnt/usb/empty"; echo f > "$T/mnt/usb/data/f"   # restore the fixtures

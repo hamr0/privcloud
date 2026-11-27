@@ -226,4 +226,103 @@ check 6e "after the upgrade Status is clean" '[[ "$OUT" != *outdated* ]]'
 rm -f "$CONF"; go "" _immich_backup_status
 check 6f "a new-format script whose conf is gone is outdated too" '[[ "$OUT" == *"outdated - run Set up again"* ]]'
 
+# ── 7  the one-time backup runs the same script (D14) ──────────────────────
+# step_immich_backup_once asks, then calls immich-backup.sh --once. Input order:
+# scope, destination, Start?, copy mode (Enter = append, "delete" = mirror) [, deletion question].
+export XDG_STATE_HOME=$T/state
+ONE=$T/drive/one
+rs_args() { grep -c -- "$1" "$RS_LOG"; }
+one_fresh() { fresh; rm -rf "$ONE" "$T/sudo.log"; mkdir -p "$ONE" "$T/db"; echo 16 > "$T/db/PG_VERSION"; : > "$PG_UP"; rm -f "$COMPOSE_UP"; mkup; }
+tree() { (cd "$1" && find . -mindepth 1 | sort); }
+
+one_fresh; go "\n$ONE\n\n\n" step_immich_backup_once
+check 7a "both, append, schedule not set up: rc 0; photos in <dest>/immich/photos, no --delete" '[ $RC = 0 ] && [ -f "$ONE/immich/photos/library/u1/a.jpg" ] && ! grep -q -- --delete "$RS_LOG" && [ ! -e "$ONE/privcloud-backup" ]'
+check 7b "online dump <dest>/immich/db/immich-db-*.sql.gz, gzip, mode 600" 'f=$(ls "$ONE"/immich/db/immich-db-*.sql.gz 2>/dev/null | head -1); [ -n "$f" ] && [ "$(mode "$f")" = 600 ] && [ "$(zcat "$f")" = SQLDUMP ]'
+check 7c ".env copied beside the backup, mode 600" '[ "$(mode "$ONE/immich/.env")" = 600 ] && cmp -s "$T/app/.env" "$ONE/immich/.env"'
+check 7d "restore hint points at the federver menu (no ./privcloud)" '[[ "$OUT" == *"federver -> i -> Start"* && "$OUT" != *"./privcloud"* ]]'
+check 7e "no installed script: the generated one ran from a temp file (sudo bash <tmp> --once ...) and left nothing behind" 'grep -q "^sudo bash /.* --once --dest $ONE --scope both\$" "$T/sudo.log" && [ ! -e "$BIN" ] && t=$(sed -n "s/^sudo bash \(\/[^ ]*\) --once.*/\1/p" "$T/sudo.log" | head -1) && [ -n "$t" ] && [ ! -e "$t" ]'
+check 7f "excludes apply to the one-time copy too (no thumbs/encoded-video/backups; same-named subfolder kept)" '[ ! -e "$ONE/immich/photos/thumbs" ] && [ ! -e "$ONE/immich/photos/encoded-video" ] && [ ! -e "$ONE/immich/photos/backups" ] && [ -f "$ONE/immich/photos/library/thumbs/keep.jpg" ]'
+
+one_fresh; setup_sched; go "\n$ONE\n\n\n" step_immich_backup_once
+check 7g "schedule installed and current: the installed script is called with the flags" '[ $RC = 0 ] && grep -q "^sudo $BIN --once --dest $ONE --scope both\$" "$T/sudo.log"'
+one_fresh; mkdir -p "$(dirname "$BIN")"; printf '#!/bin/bash\nBACKUP_DIR="x"\n' > "$BIN"; chmod +x "$BIN"
+go "\n$ONE\n\n\n" step_immich_backup_once
+check 7h "outdated installed script (no --once): the generator runs from a temp file instead" '[ $RC = 0 ] && grep -q "^sudo bash /.* --once" "$T/sudo.log" && [ -f "$ONE/immich/photos/library/u1/a.jpg" ]'
+one_fresh; setup_sched; mkdir -p "$ONE/privcloud-backup/photos"; echo old > "$ONE/privcloud-backup/photos/o"
+go "\n$ONE\n\n\n" step_immich_backup_once
+check 7i "an old <dest>/privcloud-backup/ layout: one info line, left alone, nothing written into it" '[[ "$OUT" == *"old one-time layout"* && "$OUT" == *"delete the old folder by hand"* ]] && [ "$(ls "$ONE/privcloud-backup/photos")" = o ] && [ -f "$ONE/immich/photos/library/u1/a.jpg" ]'
+one_fresh; setup_sched; go "\n\n\n\n" step_immich_backup_once
+check 7j "schedule installed: Enter at the destination uses its destination (one copy of the library, not two)" '[ $RC = 0 ] && [ -f "$DEST/immich/photos/library/u1/a.jpg" ] && [ ! -e "$ONE/immich" ]'
+
+# one tree, both modes
+one_fresh; setup_sched; runbk; go "\n$ONE\n\n\n" step_immich_backup_once
+check 7k "scheduled and one-time produce the same tree (photos + one dump) and the same dump content" '[ "$(tree "$DEST/immich/photos")" = "$(tree "$ONE/immich/photos")" ] && [ -n "$(tree "$ONE/immich/photos")" ] && [ "$(ls "$DEST"/immich/db | wc -l)" = 1 ] && [ "$(ls "$ONE"/immich/db | wc -l)" = 1 ] && [ "$(zcat "$DEST"/immich/db/*.gz)" = "$(zcat "$ONE"/immich/db/*.gz)" ]'
+
+one_fresh; go "2\n$ONE\n\n\n" step_immich_backup_once
+check 7l "photos only: photos copied, no database dump" '[ $RC = 0 ] && [ -d "$ONE/immich/photos" ] && ! ls "$ONE"/immich/db/immich-db-* >/dev/null 2>&1'
+one_fresh; go "3\n$ONE\n\n" step_immich_backup_once
+check 7m "database only: dump written, no photos rsync" '[ $RC = 0 ] && ls "$ONE"/immich/db/immich-db-*.sql.gz >/dev/null 2>&1 && [ ! -s "$RS_LOG" ] && [ ! -e "$ONE/immich/photos" ]'
+one_fresh; FAIL_DUMP=1 go "3\n$ONE\n\n" step_immich_backup_once
+check 7n "a failed pg_dumpall is a failure: rc 1, no dump file left behind" '[ $RC = 1 ] && [[ "$OUT" == *"DB dump FAILED"* && "$OUT" == *"Backup failed"* ]] && ! ls "$ONE"/immich/db/immich-db-* >/dev/null 2>&1'
+one_fresh; rm -f "$PG_UP"; go "3\n$ONE\n\n" step_immich_backup_once
+check 7o "stack down: the data dir is cold-copied to <dest>/immich/db/postgres/" '[ $RC = 0 ] && [ -f "$ONE/immich/db/postgres/PG_VERSION" ] && [[ "$OUT" == *"Immich is stopped"* ]]'
+one_fresh; rm -f "$PG_UP"; : > "$COMPOSE_UP"; go "3\n$ONE\n\n" step_immich_backup_once
+check 7p "postgres not up but a container still running: refuses the cold copy, rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"cannot safely cold-copy"* ]] && [ ! -e "$ONE/immich/db/postgres" ]'
+rm -f "$COMPOSE_UP"; : > "$PG_UP"
+one_fresh; go "\n$T/nodir\n" step_immich_backup_once
+check 7q "destination that is not a directory: rc 1, nothing copied" '[ $RC = 1 ] && [[ "$OUT" == *"Not a valid directory"* ]] && [ ! -s "$RS_LOG" ]'
+go "\n$ONE\nn\n" step_immich_backup_once
+check 7r "answering n cancels: rc 0, nothing copied" '[ $RC = 0 ] && [[ "$OUT" == *"Cancelled"* ]] && [ ! -s "$RS_LOG" ] && [ ! -e "$ONE/immich" ]'
+go "0\n" step_immich_backup_once
+check 7s "0 = Back: rc 2, nothing copied" '[ $RC = 2 ] && [ ! -s "$RS_LOG" ]'
+go "9\n" step_immich_backup_once
+check 7t "invalid scope: rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"Invalid choice"* ]]'
+mv "$T/app/.env" "$T/app/.env.bak"; go "\n" step_immich_backup_once
+check 7u "no .env (not installed): rc 1 with the install hint" '[ $RC = 1 ] && [[ "$OUT" == *"federver -> i -> Install"* ]]'
+mv "$T/app/.env.bak" "$T/app/.env"
+
+# one-time mirror: same guard, preview and typed confirmation as sync
+one_fresh; mkdir -p "$ONE/immich/photos"; echo stray > "$ONE/immich/photos/stray"
+go "\n$ONE\n\ndelete\ny\n" step_immich_backup_once
+check 7v "mirror: guard, preview of the deletion, y: rsync --delete runs, the stray file at the destination is gone" '[ $RC = 0 ] && [[ "$OUT" == *"1 file would be deleted at $ONE/immich/photos"* && "$OUT" == *"Mode: mirror"* && "$OUT" == *"Delete these 1 file and copy? [y/N]"* ]] && grep -q -- "--delete" "$RS_LOG" && [ ! -e "$ONE/immich/photos/stray" ] && [ -f "$ONE/immich/photos/library/u1/a.jpg" ]'
+one_fresh; mkdir -p "$ONE/immich/photos"; echo stray > "$ONE/immich/photos/stray"
+go "\n$ONE\n\ndelete\n\n" step_immich_backup_once
+check 7w "mirror, Enter at the deletion question: cancelled, rc 2, nothing deleted or copied" '[ $RC = 2 ] && [ -e "$ONE/immich/photos/stray" ] && [ ! -e "$ONE/immich/photos/library" ] && [[ "$OUT" == *"Cancelled - nothing changed"* ]]'
+one_fresh; mkdir -p "$ONE/immich/photos"; echo stray > "$ONE/immich/photos/stray"
+go "\n$ONE\n\nno thanks\n" step_immich_backup_once
+check 7x "anything but the word delete = append: nothing deleted" '[ $RC = 0 ] && [ -e "$ONE/immich/photos/stray" ] && ! grep -q -- --delete "$RS_LOG" && [[ "$OUT" == *"Append only"* ]]'
+one_fresh; rm -rf "$T/up"; mkdir -p "$T/up"; mkdir -p "$ONE/immich/photos"; echo precious > "$ONE/immich/photos/stray"
+go "\n$ONE\n\ndelete\ny\n" step_immich_backup_once
+check 7y "mirror with an EMPTY source: refused up front, rc 2, destination untouched" '[ $RC = 2 ] && [[ "$OUT" == *"Refused"* ]] && [ "$(cat "$ONE/immich/photos/stray")" = precious ]'
+one_fresh; rm -rf "$T/up"; mkdir -p "$ONE/immich/photos"; echo precious > "$ONE/immich/photos/stray"
+go "\n$ONE\n\ndelete\ny\n" step_immich_backup_once
+check 7z "mirror with a MISSING source: refused, destination untouched" '[ $RC = 2 ] && [[ "$OUT" == *"Refused"* ]] && [ "$(cat "$ONE/immich/photos/stray")" = precious ]'
+# a source on a drive that is not mounted (bare folder on the system disk)
+stub_findmnt ok "$T/mnt/usb" /dev/sdb1 bare / /dev/sda2
+one_fresh; mkdir -p "$T/mnt/usb/photos/library"; echo m > "$T/mnt/usb/photos/library/m.jpg"
+printf 'UPLOAD_LOCATION=%s/mnt/usb/photos\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T" "$T" > "$T/app/.env"
+mkdir -p "$ONE/immich/photos"; echo precious > "$ONE/immich/photos/stray"
+FM_MODE=bare go "\n$ONE\n\ndelete\ny\n" step_immich_backup_once
+check 7aa "mirror with the source drive NOT mounted: refused (interactive), destination untouched" '[ $RC = 2 ] && [[ "$OUT" == *"Refused"* ]] && [ "$(cat "$ONE/immich/photos/stray")" = precious ]'
+FM_MODE=ok go "\n$ONE\n\ndelete\ny\n" step_immich_backup_once
+check 7ab "same source on a mounted drive: the mirror goes ahead" '[ $RC = 0 ] && [ ! -e "$ONE/immich/photos/stray" ] && [ -f "$ONE/immich/photos/library/m.jpg" ]'
+# the script refuses on its own (defence in depth) when called directly
+setup_sched; echo precious > "$ONE/immich/photos/stray"
+FM_MODE=bare bash "$BIN" --once --dest "$ONE" --mirror >"$T/o.txt" 2>&1; RC=$?; OUT=$(cat "$T/o.txt")
+check 7ac "script-level: --mirror with an unmounted source drive -> rc 3, nothing copied or deleted" '[ $RC = 3 ] && [[ "$OUT" == *"Mirror refused: source $T/mnt/usb/photos is unmounted"* ]] && [ "$(cat "$ONE/immich/photos/stray")" = precious ]'
+FM_MODE=ok bash "$BIN" --once --dest "$ONE" --mirror >"$T/o.txt" 2>&1; RC=$?
+check 7ad "script-level: the same call on a mounted drive mirrors (stray removed)" '[ $RC = 0 ] && [ ! -e "$ONE/immich/photos/stray" ]'
+printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T" "$T" > "$T/app/.env"
+one_fresh; setup_sched; mkdir -p "$ONE/immich/photos"; echo precious > "$ONE/immich/photos/stray"; rm -rf "$T/up"; mkdir "$T/up"
+bash "$BIN" --once --dest "$ONE" --mirror >"$T/o.txt" 2>&1; RC=$?; OUT=$(cat "$T/o.txt")
+check 7ae "script-level: --mirror with an empty source -> rc 3, destination untouched" '[ $RC = 3 ] && [[ "$OUT" == *"Mirror refused"* && "$OUT" == *"is empty"* ]] && [ "$(cat "$ONE/immich/photos/stray")" = precious ]'
+mkup
+bash "$BIN" --once --scope photos >/dev/null 2>&1; r1=$?
+bash "$BIN" --once --dest "$ONE" --scope nonsense >/dev/null 2>&1; r2=$?
+bash "$BIN" --once --dest "$T/nodir" >/dev/null 2>&1; r3=$?
+bash "$BIN" --dest "$ONE" >/dev/null 2>&1; r4=$?
+check 7af "script-level: --once without --dest, a bad scope, a missing destination, --dest without --once all fail (64/64/1/64)" '[ $r1 = 64 ] && [ $r2 = 64 ] && [ $r3 = 1 ] && [ $r4 = 64 ]'
+one_fresh; setup_sched; runbk; echo stray > "$DEST/immich/photos/stray"; runbk
+check 7ag "scheduled path: the rsync call of a scheduled run never contains --delete, the stray at the destination stays" '! grep -q -- --delete "$RS_LOG" && [ -e "$DEST/immich/photos/stray" ]'
+
 check_total

@@ -4382,8 +4382,12 @@ step_immich_fix_gp() {
     bash "$(dirname "$_FV_SELF")/scripts/google-takeout-fix.sh" "$input_path"
 }
 
-# One-time Immich backup to a drive (moved as-is from the former privcloud CLI, backup -> 1;
-# step 6 of the single-source plan unifies it with the scheduled backup).
+# One-time Immich backup to a drive (federver -> i -> Backup - One-time). Asks the
+# questions, then runs the ONE backup script with --once (see _immich_backup_script):
+# the same layout (<dest>/immich/photos + db/), excludes and database dump as the
+# scheduled backup. Append by default; a mirror needs the same source guard, preview
+# and typed confirmation as a sync (_mirror_gate / _mirror_confirm), and the script
+# refuses it again on its own when the source is empty or its drive is not mounted.
 step_immich_backup_once() {
     _immich_docker_group "$FUNCNAME"
 
@@ -4393,6 +4397,10 @@ step_immich_backup_once() {
 
     if [[ -z "$upload_loc" || -z "$db_loc" ]]; then
         fail "Not configured yet. Run: federver -> i -> Install"
+        return 1
+    fi
+    if ! sudo -v; then
+        fail "Need sudo to read the photos and run the backup - nothing was started."
         return 1
     fi
 
@@ -4405,10 +4413,10 @@ step_immich_backup_once() {
     echo ""
     local scope
     read -rp "  Choose [0-3] (default: 1): " scope
-    local do_photos=true do_db=true
+    local do_photos=true do_db=true scope_name=both
     case "$scope" in
-        2)        do_db=false ;;
-        3)        do_photos=false ;;
+        2)        do_db=false; scope_name=photos ;;
+        3)        do_photos=false; scope_name=db ;;
         1|"")     ;;
         0|q)      return 2 ;;
         *)        fail "Invalid choice."; return 1 ;;
@@ -4422,9 +4430,12 @@ step_immich_backup_once() {
     $do_db     && echo "    Database: $db_loc ($db_size)"
     echo ""
 
-    # Get destination
-    local dest
-    read -rp "  Backup destination (e.g. /run/media/$USER/External): " dest
+    # Get destination. An existing schedule's destination is the default: the same
+    # folder means the library is copied once, not twice.
+    local dest def_dest
+    def_dest=$(_configured_backup_dir)
+    read -rp "  Backup destination (e.g. /run/media/$USER/External${def_dest:+, Enter = $def_dest}): " dest
+    dest="${dest:-$def_dest}"
     dest="${dest/#\~/$HOME}"
     dest="${dest//\'/}"
     dest="${dest//\"/}"
@@ -4435,16 +4446,19 @@ step_immich_backup_once() {
         return 1
     fi
 
-    local backup_dir="$dest/privcloud-backup"
+    local backup_dir="$dest/immich"
     local avail
     avail="$(df -h "$dest" 2>/dev/null | awk 'NR==2{print $4}')"
     echo ""
     echo "    Destination: $backup_dir/   (available on drive: $avail)"
+    if [[ -d "$dest/privcloud-backup" ]]; then
+        info "Found $dest/privcloud-backup/ - the old one-time layout. This backup goes to $backup_dir/;"
+        info "once you have checked it, delete the old folder by hand (nothing here deletes it)."
+    fi
     echo ""
 
-    # No downtime: dump the live DB instead of stopping the stack. Detect whether
-    # postgres is up - if so we dump online; if it's already down we cold-copy the
-    # data dir (also safe). Either way the running state is left untouched.
+    # No downtime: the script dumps the live DB instead of stopping the stack, or
+    # cold-copies the data dir when Immich is already down.
     local pg_running=false
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx immich_postgres; then
         pg_running=true
@@ -4457,113 +4471,61 @@ step_immich_backup_once() {
         return 0
     fi
 
-    # Photo sync mode (only relevant when copying photos)
-    local rsync_delete="" sync_mode
+    # Photo copy mode (only relevant when copying photos): append, or a mirror that
+    # first passes the source guard + preview and then the deletion question.
+    local sync_mode=append mirror_flag=()
     if $do_photos; then
+        local excl="" e
+        for e in "${_IMMICH_EXCLUDES[@]}"; do excl+=" --exclude=$(_shq "$e")"; done
+        _mirror_gate localsudo "$upload_loc" "$backup_dir/photos" "rsync -a$excl $(_shq "$upload_loc/") $(_shq "$backup_dir/photos/")" || return
+        if [[ "$sync_mode" == mirror ]]; then
+            echo ""
+            _mirror_banner
+            _mirror_confirm || return 2
+        fi
+    fi
+
+    # The ONE script: the installed one when it is current, else the same generator
+    # into a temp file (with a temp config) - no second implementation.
+    local script=$_IMMICH_BACKUP_BIN tmp="" conf_tmp="" args=(--once --dest "$dest" --scope "$scope_name") rc=0
+    [[ "$sync_mode" == mirror ]] && args+=(--mirror)
+    if [[ ! -x "$script" ]] || _immich_backup_outdated; then
+        tmp=$(mktemp) && conf_tmp=$(mktemp) || { rm -f "$tmp"; fail "Could not create a temp file - nothing was backed up."; return 1; }
+        trap "rm -f '$tmp' '$conf_tmp'; trap - RETURN" RETURN
+        _immich_backup_conf "$(dirname "$_IMMICH_ENV")" "$dest" 0 > "$conf_tmp"
+        _immich_backup_script "$conf_tmp" "$_IMMICH_BACKUP_LOG" > "$tmp"
+        script=$tmp
+        bash -n "$script" || { fail "The generated backup script has a syntax error - nothing was backed up."; return 1; }
         echo ""
-        echo "  Photo sync mode:"
-        echo -e "    ${BOLD}1)${NC} Append  ${DIM}<- copy new/changed files, keep everything on backup (safe default)${NC}"
-        echo -e "    ${BOLD}2)${NC} Mirror  ${DIM}<- exact copy of source, removes files deleted from source${NC}"
+        sudo bash "$script" "${args[@]}" || rc=$?
+    else
         echo ""
-        read -rp "  Choose [1/2] (default: 1): " sync_mode
-        if [[ "$sync_mode" == 2 ]]; then
-            rsync_delete="--delete"
-            warn "Mirror mode: files deleted from source will be removed from backup."
-        fi
+        sudo "$script" "${args[@]}" || rc=$?
     fi
-
-    echo ""
-    mkdir -p "$backup_dir"
-
-    # Photos - live rsync of write-once originals; safe while Immich runs.
-    if $do_photos; then
-        echo -e "  ${BOLD}Copying photos ($photos_size)...${NC}"
-        if command -v rsync &>/dev/null; then
-            if ! sudo rsync -a $rsync_delete --info=progress2 "$upload_loc/" "$backup_dir/photos/"; then
-                fail "Failed to copy photos (rsync error)."
-                return 1
-            fi
-        else
-            sudo cp -a "$upload_loc" "$backup_dir/photos"
-        fi
-        local photos_copied
-        photos_copied="$(sudo du -sh "$backup_dir/photos" 2>/dev/null | awk '{print $1}')"
-        ok "Photos copied ($photos_copied)."
-    fi
-
-    # Database - no downtime. Online pg_dump when running; cold data-dir copy when
-    # already stopped. db_method records which, so the restore hint matches.
-    local db_method=""
-    if $do_db; then
-        if $pg_running; then
-            echo -e "  ${BOLD}Dumping database (online, no downtime)...${NC}"
-            local ts dump
-            ts="$(date +%Y%m%d-%H%M)"
-            dump="$backup_dir/immich-db-$ts.sql.gz"
-            if ( set -o pipefail; docker exec immich_postgres pg_dumpall -U postgres | gzip > "$dump" ); then   # pipefail: a failed dump must not look ok
-                chmod 600 "$dump" 2>/dev/null || true
-                db_method="dump"
-                ok "Database dumped ($(du -sh "$dump" 2>/dev/null | awk '{print $1}')) -> $(basename "$dump")"
-            else
-                rm -f "$dump"   # don't leave a partial/empty dump that looks valid
-                fail "Database dump failed. Is Immich healthy? Try: federver -> i -> Status"
-                return 1
-            fi
-        else
-            warn "Immich is stopped - copying the database files directly (safe while down)."
-            # Defense-in-depth: never cold-copy a live data dir (would be corrupt).
-            if _immich_compose ps --quiet 2>/dev/null | grep -q .; then
-                fail "Some containers are still running - cannot safely cold-copy the database."
-                fail "Start Immich fully for an online dump, or stop it first (federver -> i -> Stop)."
-                return 1
-            fi
-            if command -v rsync &>/dev/null; then
-                if ! sudo rsync -a $rsync_delete --info=progress2 "$db_loc/" "$backup_dir/postgres/"; then
-                    fail "Failed to copy database (rsync error)."
-                    return 1
-                fi
-            else
-                sudo cp -a "$db_loc" "$backup_dir/postgres"
-            fi
-            local db_copied
-            db_copied="$(sudo du -sh "$backup_dir/postgres" 2>/dev/null | awk '{print $1}')"
-            if [[ "$db_copied" == 0 || "$db_copied" == 4.0K ]]; then
-                fail "Database backup appears empty ($db_copied)."
-                return 1
-            fi
-            # Make backup readable without root (postgres files are owned by container user)
-            sudo chown -R "$(id -u):$(id -g)" "$backup_dir/postgres"
-            sudo chmod -R u+rw "$backup_dir/postgres"
-            db_method="datadir"
-            ok "Database copied ($db_copied)."
-        fi
-    fi
-
-    # Copy .env so restore knows the password and config. It holds the DB
-    # password, so keep the backup copy readable only by the owner.
-    if cp "$_IMMICH_ENV" "$backup_dir/.env" 2>/dev/null; then
-        chmod 600 "$backup_dir/.env" 2>/dev/null || true
+    if (( rc != 0 )); then
+        fail "Backup failed (see above)."
+        return 1
     fi
 
     echo ""
     ok "Backup complete!"
     echo "    Location: $backup_dir"
     $do_photos && echo "    Photos:   $backup_dir/photos"
-    if [[ "$db_method" == dump ]]; then
-        echo "    Database: $backup_dir/immich-db-*.sql.gz (SQL dump)"
-    elif [[ "$db_method" == datadir ]]; then
-        echo "    Database: $backup_dir/postgres (data dir)"
+    if $do_db && $pg_running; then
+        echo "    Database: $backup_dir/db/immich-db-*.sql.gz (SQL dump)"
+    elif $do_db; then
+        echo "    Database: $backup_dir/db/postgres (data dir)"
     fi
     echo "    Config:   $backup_dir/.env"
     echo ""
     echo "  To restore on any machine:"
     echo "    1. Clone privcloud, then federver -> i -> Install"
     $do_photos && echo "    2. Point config to the backed-up photos directory"
-    if [[ "$db_method" == dump ]]; then
+    if $do_db && $pg_running; then
         echo "    3. Start Immich (federver -> i -> Start), then load the dump:"
         echo "         gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres"
-    elif [[ "$db_method" == datadir ]]; then
-        echo "    3. Copy postgres/ and .env back, then federver -> i -> Start"
+    elif $do_db; then
+        echo "    3. Copy db/postgres/ and .env back, then federver -> i -> Start"
     fi
     return 0
 }
@@ -4955,7 +4917,7 @@ _adguard_blocklist_guide() {
 
 # Suggest the best external-drive destination for backups: the really mounted
 # (per _drive_verdict: not an autofs stub) media drive with the most free space that is NOT on the same filesystem as $1 (the
-# source). Echoes "<mountpoint>/privcloud-backup", or nothing if none found.
+# source). Echoes the mountpoint (the backup writes <mountpoint>/immich/...), or nothing if none found.
 _pick_backup_default() {
     local src="$1" src_fs best="" best_avail=0 mp avail fs
     src_fs=$(df -P "$src" 2>/dev/null | awk 'NR==2{print $1}')
@@ -4967,7 +4929,7 @@ _pick_backup_default() {
         avail=$(df -P "$mp" 2>/dev/null | awk 'NR==2{print $4}')
         if [ "${avail:-0}" -gt "$best_avail" ]; then best_avail=$avail; best="$mp"; fi
     done
-    [ -n "$best" ] && echo "$best/privcloud-backup"
+    [ -n "$best" ] && echo "$best"
     # Always succeed: a "no external drive" result is empty output, not a
     # failure. Under `set -e` a non-zero return here would abort the caller's
     # `default_dir=$(_pick_backup_default …)` before the fallback runs.
@@ -6036,16 +5998,18 @@ _drive_verdict() {
     echo "$v"
 }
 
-# Source guard: _mirror_guard <local|server|sudo> <path>. rc 0 = safe to mirror.
+# Source guard: _mirror_guard <local|localsudo|server|sudo> <path>. rc 0 = safe to mirror.
 #   Otherwise sets _mirror_why (source missing | source empty | drive not mounted |
 #   could not check source: no verdict came back, e.g. server unreachable, or
 #   findmnt missing - fail closed).
 #   Asks _drive_verdict; server = the path is on the federver box (checked over
-#   ssh, same function); sudo = same, as root, through _server_sudo_run (needs _SRV_PW).
+#   ssh, same function); sudo = same, as root, through _server_sudo_run (needs _SRV_PW);
+#   localsudo = this machine, as root (a root-owned source such as the Immich photos).
 _mirror_guard() {
     local loc=$1 p=$2 v=""
     case $loc in
         local)  v=$(_drive_verdict "$p") ;;
+        localsudo) v=$(sudo bash -c "$(declare -p _DRIVE_ROOTS; declare -f _drive_verdict); _drive_verdict $(_shq "$p")") || v="" ;;
         server) v=$({ declare -p _DRIVE_ROOTS; declare -f _drive_verdict; echo "_drive_verdict $(_shq "$p")"; } \
                     | ssh "$SERVER_USER@$SERVER_IP" 'bash -s' 2>/dev/null) || v="" ;;
         sudo)   v=$(_server_sudo_run "$(declare -p _DRIVE_ROOTS; declare -f _drive_verdict); _drive_verdict $(_shq "$p")") || v="" ;;
@@ -6166,6 +6130,8 @@ _mirror_preview() {
     if [[ -t 1 ]]; then printf '  %s...' "$msg"; else echo "  $msg..."; fi
     if [[ "$loc" == sudo ]]; then
         _server_sudo_run "exec 2>&1; $dry" > "$list" &
+    elif [[ "$loc" == localsudo ]]; then
+        bash -c "sudo $dry" > "$list" 2>&1 &
     else
         bash -c "$dry" > "$list" 2>&1 &
     fi

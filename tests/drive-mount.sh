@@ -17,6 +17,7 @@ mkdir -p "$T/bin"
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 for f in ok fail info warn _env_get _mirror_check_here _smb_folder_check _smb_folder_reason _require_data_mount _storage_status _pick_backup_default; do
   extract_fn "$f" "$SRC"; done > "$T/fn.sh"
+extract_fn _drive_verdict "$SRC" >> "$T/fn.sh"; grep -E '^_DRIVE_ROOTS=' "$SRC" >> "$T/fn.sh"
 sed -i "s#/run/media/\*/\* /media/\*/\* /mnt/\*#$T/mnt/*#" "$T/fn.sh"   # candidate glob -> sandbox
 source "$T/fn.sh"
 _storage_check_fstab_options() { :; }
@@ -35,7 +36,7 @@ case "${FM_MODE:-ok}" in
 esac
 exit 0
 X
-printf '#!/bin/bash\nexit 0\n' > "$T/bin/sleep"
+printf '#!/bin/bash\necho "$*" >> "$SLEEP_LOG"\n' > "$T/bin/sleep"
 printf '#!/bin/bash\n:\n' > "$T/bin/lsblk"
 # mountpoint(1) as `mountpoint -q` sees it: an autofs stub counts as a mountpoint.
 printf '#!/bin/bash\n[ "${FM_MODE:-ok}" = ok ] || [ "${FM_MODE:-ok}" = stub ]\n' > "$T/bin/mountpoint"
@@ -57,7 +58,8 @@ X
 chmod +x "$T/bin/"*
 # A PATH with the usual tools but no findmnt (stubs where the suite has one).
 mkdir -p "$T/lsonly"; for c in ls sleep lsblk df; do ln -sf "$T/bin/$c" "$T/lsonly/$c"; done
-for c in cut awk grep sed tr head tail cat date; do ln -sf "$(command -v $c)" "$T/lsonly/$c"; done
+for c in cut awk grep sed tr head tail cat date wc; do ln -sf "$(command -v $c)" "$T/lsonly/$c"; done
+export SLEEP_LOG=$T/sleeps
 export PATH="$T/bin:$PATH" FM_ROOT="$T/mnt/usb" SRC_DIR="$T/src"
 mkdir -p "$T/mnt/usb/data" "$T/mnt/usb/empty" "$T/src"; echo f > "$T/mnt/usb/data/f"
 D=$T/mnt/usb/data; E=$T/mnt/usb/empty; M=$T/mnt/usb/nope
@@ -118,5 +120,59 @@ bd() { FM_MODE=$1 _pick_backup_default "$SRC_DIR"; }
 GOT=$(bd ok);   check P5a "backup default: real mount offered" '[ "$GOT" = "$T/mnt/usb/privcloud-backup" ]'
 GOT=$(bd bare); check P5b "backup default: bare folder (not a mountpoint) not offered" '[ -z "$GOT" ]'
 GOT=$(bd stub); check P5c "backup default: autofs stub IS offered today (mountpoint -q is fooled; the drift)" '[ -n "$GOT" ]'
+
+# ── V  _drive_verdict: one answer per case ──────────────────────────────────
+_DRIVE_ROOTS="$T/mnt"            # the sandbox stands in for /mnt (the production value is checked in R)
+vv() { : > "$SLEEP_LOG"; FM_MODE=$1 _drive_verdict "$2"; }
+nsleep() { wc -l < "$SLEEP_LOG"; }
+GOT=$(vv ok "$D");   check V1a "verdict: real mount, files -> ok" '[ "$GOT" = ok ]'
+GOT=$(vv ok "$M");   check V1b "verdict: missing path -> missing" '[ "$GOT" = missing ]'
+GOT=$(vv ok "$E");   check V1c "verdict: real mount, empty dir -> empty" '[ "$GOT" = empty ]'
+GOT=$(vv bare "$D"); check V1d "verdict: bare folder on the system disk (target /) -> unmounted" '[ "$GOT" = unmounted ]'
+GOT=$(vv stub "$D"); check V1e "verdict: autofs stub (SOURCE systemd-1) -> unmounted" '[ "$GOT" = unmounted ]'
+GOT=$(vv none "$D"); check V1f "verdict: findmnt finds no mount -> unmounted" '[ "$GOT" = unmounted ]'
+GOT=$(vv bare "$E"); check V1g "verdict: empty bare folder (what an unplugged drive leaves) -> unmounted, not empty" '[ "$GOT" = unmounted ]'
+GOT=$(env PATH="$T/lsonly" SLEEP_LOG=$SLEEP_LOG "$(command -v bash)" -c "source $T/fn.sh; _DRIVE_ROOTS=$T/mnt; _drive_verdict $D")
+check V1h "verdict: findmnt absent on a drive path -> unknown" '[ "$GOT" = unknown ]'
+GOT=$(vv ok "$T/media/u/USB"); check V2a "verdict: path outside the roots, files -> ok (not drive-backed: no mount question)" '[ "$GOT" = ok ]'
+mkdir -p "$T/plain-empty"
+GOT=$(vv bare "$T/plain-empty"); check V2b "verdict: path outside the roots, empty -> empty, whatever findmnt says" '[ "$GOT" = empty ]'
+GOT=$(vv ok "$T/plain-none");    check V2c "verdict: path outside the roots, absent -> missing" '[ "$GOT" = missing ]'
+GOT=$(env PATH="$T/lsonly" "$(command -v bash)" -c "source $T/fn.sh; _DRIVE_ROOTS=$T/mnt; _drive_verdict $T/media/u/USB")
+check V2d "verdict: outside the roots never needs findmnt" '[ "$GOT" = ok ]'
+GOT=$(_DRIVE_ROOTS="$T/media $T/mnt" vv bare "$T/media/u/USB"); check V2e "verdict: every listed root counts (a /media-style root is checked, so a bare folder there is unmounted)" '[ "$GOT" = unmounted ]'
+
+# retries: a healthy drive never waits; a drive path that is not ok is retried
+vv ok "$D" >/dev/null; check V3a "retry: healthy drive -> no sleep" '[ "$(nsleep)" = 0 ]'
+GOT=$(vv bare "$D"; nsleep); check V3b "retry: unmounted drive -> 3 looks, 2 sleeps of 1 s" '[ "$(tail -1 <<<"$GOT")" = 2 ] && [ "$(sort -u "$SLEEP_LOG")" = 1 ]'
+GOT=$(vv ok "$M"; nsleep); check V3c "retry: missing drive path -> retried too (2 sleeps)" '[ "$(tail -1 <<<"$GOT")" = 2 ]'
+GOT=$(vv ok "$T/plain-none"; nsleep); check V3d "retry: not drive-backed and missing -> no retry" '[ "$(tail -1 <<<"$GOT")" = 0 ]'
+GOT=$(env PATH="$T/lsonly" SLEEP_LOG=$SLEEP_LOG "$(command -v bash)" -c "source $T/fn.sh; _DRIVE_ROOTS=$T/mnt; : > $SLEEP_LOG; _drive_verdict $D >/dev/null; wc -l < $SLEEP_LOG")
+check V3e "retry: unknown (no findmnt) answers at once, no sleep" '[ "$GOT" = 0 ]'
+# a slow spin-up: unmounted on the first look, mounted by the second
+cat > "$T/bin/findmnt" <<'X'
+#!/bin/bash
+n=$(cat "$FM_COUNT" 2>/dev/null || echo 0)
+case "$*" in *TARGET*) col=T; echo $((n+1)) > "$FM_COUNT" ;; *) col=S ;; esac
+if [ "$n" -lt 1 ]; then [ $col = T ] && echo / || echo /dev/nvme0n1p2; else [ $col = T ] && echo "$FM_ROOT" || echo /dev/sdb1; fi
+X
+chmod +x "$T/bin/findmnt"; export FM_COUNT=$T/fmcount; rm -f "$FM_COUNT"; : > "$SLEEP_LOG"
+GOT=$(_drive_verdict "$D"); check V3f "retry: drive that comes up on the second look -> ok (one sleep)" '[ "$GOT" = ok ] && [ "$(nsleep)" = 1 ]'
+# the poke: the path is listed (wakes an idle automount) before findmnt answers
+rm -f "$T/bin/findmnt"; stub_findmnt ok '$FM_ROOT' /dev/sdb1
+cat > "$T/bin/ls" <<X
+#!/bin/bash
+echo "\$*" >> "\$LS_LOG"
+case "\$*" in *"/mnt/data"*)
+  case "\${LS_DATA:-files}" in files) echo lost+found; exit 0 ;; empty) exit 0 ;; missing) exit 2 ;; esac ;; esac
+exec $REAL_LS "\$@"
+X
+chmod +x "$T/bin/ls"; export LS_LOG=$T/lslog; : > "$LS_LOG"
+GOT=$(vv ok "$D"); check V4a "poke: the path is listed with ls -A" 'grep -q -- "-A -- $D" "$LS_LOG"'
+
+# R  the constant
+check R1 "roots list is one plain constant: /mnt /media /run/media" '[ "$(grep -cE "^_DRIVE_ROOTS=\"/mnt /media /run/media\"" "$SRC")" = 1 ]'
+roots_under_env() { printf '%s\necho "$_DRIVE_ROOTS"\n' "$(grep -E '^_DRIVE_ROOTS=' "$SRC")" | env _DRIVE_ROOTS=/evil bash; }
+check R2 "the environment cannot change the production roots (assignment, no :- default)" '[ "$(roots_under_env)" = "/mnt /media /run/media" ]'
 
 check_total

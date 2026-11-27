@@ -5039,6 +5039,49 @@ LOGJSON
 # guard on every run, so _mirror_check_here/_mirror_guard (+ ssh, _shq) are
 # copied into the job script with `declare -f` - cron has no federver functions.
 
+# ── One drive-mount verdict ──────────────────────────────────────────────────
+# Every "is this path really on a mounted drive?" question asks _drive_verdict;
+# callers only map its answer. Shipped to the server / into job scripts together
+# with _DRIVE_ROOTS (declare -p _DRIVE_ROOTS; declare -f _drive_verdict).
+_DRIVE_ROOTS="/mnt /media /run/media"   # paths under these are drive-backed (a constant: no env override)
+
+# _drive_verdict <path> prints exactly one of
+#   ok        the path is there (and, under _DRIVE_ROOTS, on a real mount)
+#   missing   the path is not there (or cannot be listed)
+#   empty     there, but nothing in it (under _DRIVE_ROOTS: on a real mount)
+#   unmounted under _DRIVE_ROOTS but a bare folder on the system disk, or an
+#             autofs/stub mount: findmnt must find a mount that is not / and
+#             whose SOURCE is a /dev/* device
+#   unknown   under _DRIVE_ROOTS and findmnt is not installed: cannot tell
+# Callers that delete, start services or create folders must refuse on anything
+# but ok (and empty where an empty folder is fine); a path outside _DRIVE_ROOTS
+# is not drive-backed, so only missing/empty/ok apply. Always returns 0.
+# One listing pokes the path first, which wakes an idle automount. A drive path
+# that is not ok is looked at up to 3 times, 1 s apart (a slow spin-up must not
+# read as unplugged); a healthy drive never waits.
+_drive_verdict() {
+    local p=$1 r t s i v list drive=""
+    for r in $_DRIVE_ROOTS; do
+        if [[ "$p" == "$r"/* ]]; then drive=1; fi
+    done
+    for i in 1 2 3; do
+        if ! list=$(ls -A -- "$p" 2>/dev/null); then
+            v=missing
+        elif [[ -n "$drive" ]]; then
+            command -v findmnt >/dev/null || { echo unknown; return 0; }
+            t=$(findmnt -n -o TARGET -T "$p" 2>/dev/null) || t=""
+            s=$(findmnt -n -o SOURCE -T "$p" 2>/dev/null) || s=""
+            if [[ -z "$t" || "$t" == / || "$s" != /dev/* ]]; then v=unmounted
+            elif [[ -z "$list" ]]; then v=empty
+            else v=ok; fi
+        elif [[ -z "$list" ]]; then v=empty
+        else v=ok; fi
+        if [[ "$v" == ok || -z "$drive" ]]; then break; fi
+        [[ "$i" == 3 ]] || sleep 1
+    done
+    echo "$v"
+}
+
 # Prints ok | missing | empty | unmounted | unknown (no findmnt to ask) for a
 # path on THIS machine. Always returns 0 - callers read the verdict, so a failed ssh/sudo (no output) is never
 # mistaken for "ok". Under /mnt, /media and /run/media the path must sit on a

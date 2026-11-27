@@ -4208,6 +4208,142 @@ step_immich_update() {
     ok "Done."
 }
 
+step_immich_upload() {
+    info "Bulk-uploads a photo folder on the server into Immich (Immich CLI)."
+    echo ""
+    _immich_docker_group "$FUNCNAME"
+
+    if ! _immich_up; then
+        fail "Immich is not running. Start it first: federver -> i -> Start"
+        return 1
+    fi
+
+    # Immich CLI runs as a one-shot Docker container - no Node.js/npm on the host,
+    # and it reuses the Docker that already runs the stack. The image is the
+    # official one, pulled once and cached.
+    local cli_image="ghcr.io/immich-app/immich-cli:latest"
+    if ! docker image inspect "$cli_image" &>/dev/null; then
+        warn "Fetching Immich CLI image (one-time)..."
+        if ! docker pull "$cli_image"; then
+            fail "Failed to pull Immich CLI image: $cli_image"
+            info "Check the server's internet connection and Docker, then retry."
+            return 1
+        fi
+    fi
+    ok "Immich CLI: $(docker run --rm "$cli_image" --version 2>/dev/null)"
+    echo ""
+
+    # Get API key (3 attempts)
+    local api_key attempts=0
+    while (( attempts < 3 )); do
+        read -rp "  API key (from http://localhost:2283 -> Account Settings -> API Keys): " api_key
+
+        if [[ -z "$api_key" ]]; then
+            fail "No API key provided."
+            attempts=$((attempts + 1))
+            continue
+        fi
+
+        # Pass the key via stdin (-H @-) so it never appears in the process arg list
+        # (visible to other local users via `ps`).
+        if curl -sf -H @- http://localhost:2283/api/users/me <<<"x-api-key: $api_key" &>/dev/null; then
+            break
+        fi
+
+        attempts=$((attempts + 1))
+        if (( attempts < 3 )); then
+            fail "Invalid API key. Try again ($((3 - attempts)) attempts left)."
+        else
+            fail "Invalid API key. Giving up."
+            return 1
+        fi
+    done
+    (( attempts < 3 )) || return 1   # three empty answers: the loop ended without a key
+    ok "API key valid."
+    echo ""
+
+    local photo_path
+    read -rp "  Path to photos folder: " photo_path
+    photo_path="${photo_path/#\~/$HOME}"
+    # Strip quotes the user may have pasted
+    photo_path="${photo_path//\'/}"
+    photo_path="${photo_path//\"/}"
+
+    if [[ -z "$photo_path" || ! -d "$photo_path" ]]; then
+        fail "Not a valid directory: $photo_path"
+        return 1
+    fi
+
+    # Albums vs flat. --album makes the Immich CLI create one album per source
+    # subfolder (named after the folder); flat just adds everything to the
+    # timeline. Default (Enter / anything but 1) is flat.
+    local album_flag="" album_choice
+    echo ""
+    echo "  How should the folders under this path be imported?"
+    echo -e "    ${BOLD}1)${NC} Albums  ${DIM}<- one album per subfolder (keeps your folder names)${NC}"
+    echo -e "    ${BOLD}2)${NC} Flat    ${DIM}<- everything into the timeline, no albums${NC}"
+    read -rp "  Choose [1/2]: " album_choice
+    if [[ "$album_choice" == 1 ]]; then
+        album_flag="--album"
+        ok "Albums: one per folder."
+    else
+        ok "Flat import (no albums)."
+    fi
+
+    local file_count confirm
+    file_count="$(find "$photo_path" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.heic' -o -iname '*.heif' -o -iname '*.gif' -o -iname '*.mp4' -o -iname '*.mov' -o -iname '*.avi' \) | wc -l)"
+    echo ""
+    echo -e "  ${BOLD}Ready to upload $file_count media files from:${NC}"
+    echo "    $photo_path"
+    echo ""
+    read -rp "  Continue? [Y/n]: " confirm
+    if [[ "$confirm" =~ ^[Nn] ]]; then
+        warn "Cancelled."
+        return 0
+    fi
+
+    echo ""
+    # Mount the photos read-only at /import and upload from there. --network host
+    # lets the CLI reach Immich on localhost:2283; label=disable avoids SELinux
+    # relabeling the user's photo folder. Allocate a TTY only when we have one.
+    local tflag=""
+    [[ -t 1 ]] && tflag="-t"
+    # Pass the key by NAME (-e IMMICH_API_KEY), inheriting its value from the
+    # environment, so the secret is never on the `docker run` argv (which `ps`
+    # would expose to other local users).
+    IMMICH_API_KEY="$api_key" docker run --rm $tflag \
+        --security-opt label=disable \
+        --network host \
+        -e IMMICH_INSTANCE_URL="http://localhost:2283/api" \
+        -e IMMICH_API_KEY \
+        -v "$photo_path":/import:ro \
+        "$cli_image" upload --recursive $album_flag /import || { fail "Upload failed."; return 1; }
+
+    echo ""
+    ok "Upload complete. Browse your photos at http://localhost:2283"
+}
+
+step_immich_fix_gp() {
+    info "Restores dates and GPS coordinates that Google strips from Takeout exports."
+    echo ""
+
+    local input_path
+    read -rp "  Path to folder with takeout zips (or a single .zip): " input_path
+    input_path="${input_path/#\~/$HOME}"
+
+    if [[ -z "$input_path" ]]; then
+        fail "No path provided."
+        return 1
+    fi
+
+    if [[ ! -e "$input_path" ]]; then
+        fail "Not found: $input_path"
+        return 1
+    fi
+
+    bash "$(dirname "$_FV_SELF")/scripts/google-takeout-fix.sh" "$input_path"
+}
+
 step_adguard() {
     info "AdGuard Home is a network-wide DNS ad & tracker blocker."
     info "Runs in Docker, blocks ads on every device that uses it as DNS."

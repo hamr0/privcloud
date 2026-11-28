@@ -16,9 +16,9 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 
 # Every function the sync-job code may be made of (a name missing from this copy is skipped).
 { for f in ok fail info warn ssh _shq _tcp_open _is_server _pick_server_endpoint _resolve_server_endpoint \
-           _cron_cmd _cron_get _cron_drop _cron_set _cron_add_sync _cron_remove_line _cron_replace_line _cron_to_english \
+           _cron_cmd _cron_get _cron_drop _cron_set _cron_add_sync _cron_remove_line _cron_replace_line _cron_to_english _sched_text _when_short \
            _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _dest_check _require_dest_drive _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
-           _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _src_size _confirm_delete \
+           _mirror_scan _mirror_wipe_sized _mirror_preview _commas _mirror_delete_q _mirror_confirm _mirror_gate _src_size _confirm_delete \
            _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode _sync_mode_cell _sync_result_text _sync_last_result \
            _sync_result_text _sync_change_mode _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _sync_delete_job _sync_job_delete _sync_cron_split _sync_registry_load _sync_change_schedule _sync_install_timer _sync_remove_timer \
@@ -179,16 +179,16 @@ check 3d "Delete removes the dotted job" '! grep -q "sync-my.photos.sh" "$CRON_F
 mk; mkjob r1 >/dev/null
 note() { _sync_result_text r1; }
 cronrun r1 0;   N0=$(note)
-check 4a "exit 0 -> last: ok, job exits 0" '[ "$JRC" = 0 ] && [[ "$N0" == *"last: ok"* ]] && grep -q "Sync finished: r1 (exit 0" "$(LOGF r1)"'
+check 4a "exit 0 -> ✓ ok, job exits 0" '[ "$JRC" = 0 ] && [[ "$N0" == *"✓ ok"* ]] && grep -q "Sync finished: r1 (exit 0" "$(LOGF r1)"'
 cronrun r1 23;  N23=$(note)
-check 4b "exit 23 -> last: failed (exit 23), job exits 23" '[ "$JRC" = 23 ] && [[ "$N23" == *"last: failed (exit 23)"* ]]'
+check 4b "exit 23 -> ✗ failed (exit 23), job exits 23" '[ "$JRC" = 23 ] && [[ "$N23" == *"✗ failed (exit 23)"* ]]'
 cronrun r1 255; N255=$(note)
-check 4c "exit 255 -> last: failed (exit 255), job exits 255" '[ "$JRC" = 255 ] && [[ "$N255" == *"last: failed (exit 255)"* ]]'
+check 4c "exit 255 -> ✗ failed (exit 255), job exits 255" '[ "$JRC" = 255 ] && [[ "$N255" == *"✗ failed (exit 255)"* ]]'
 cronrun r1 24;  N24=$(note)
 if [ -n "$NEWDESIGN" ]; then
-  check 4d "exit 24 (files vanished) -> last: ok (some files vanished), job exits 0" '[ "$JRC" = 0 ] && [[ "$N24" == *"last: ok (some files vanished)"* ]]'
+  check 4d "exit 24 (files vanished) -> ✓ ok (some files vanished), job exits 0" '[ "$JRC" = 0 ] && [[ "$N24" == *"✓ ok (some files vanished)"* ]]'
 else
-  check 4d "exit 24 today: last: failed (exit 24), job exits 24 (changes with the refactor)" '[ "$JRC" = 24 ] && [[ "$N24" == *"last: failed (exit 24)"* ]]'
+  check 4d "exit 24 today: ✗ failed (exit 24), job exits 24 (changes with the refactor)" '[ "$JRC" = 24 ] && [[ "$N24" == *"✗ failed (exit 24)"* ]]'
 fi
 
 # ── 5  one ssh option set for rsync, and the endpoint pick ───────────────
@@ -360,7 +360,7 @@ if [ -n "$NEWDESIGN" ]; then
 mk; SERVER_USER=testuser SERVER_IP=192.0.2.77 mkjob j8 mirror >/dev/null
 check 8a "creation writes the record, the launcher and a cron line that runs the launcher" '_sync_rec_load j8 && [ "$J_mode" = mirror ] && [ "$J_direction" = upload ] && [ "$J_src" = "$T/s" ] && [ "$J_dest" = "$T/d" ] && [ "$J_sched_kind" = cron ] && [ "$J_sched" = "0 * * * *" ] && grep -q "^0 \* \* \* \* $BIND/sync-j8.sh$" "$CRON_FILE" 2>/dev/null && [ -x "$BIND/sync-j8.sh" ]'
 check 8b "neither the record nor the launcher holds the server's address or user" '! grep -q "192.0.2.77\|testuser" "$BIND/sync-j8.sh" "$LOGD/j8.job" && [ "$(wc -l < "$BIND/sync-j8.sh")" = 2 ]'
-check 8c "the first run after creating logs like any other run (Status reads it)" 'grep -q "Sync finished: j8 (exit 0)" "$(LOGF j8)" && [[ "$(_sync_result_text j8)" == *"last: ok"* ]]'
+check 8c "the first run after creating logs like any other run (Status reads it)" 'grep -q "Sync finished: j8 (exit 0)" "$(LOGF j8)" && [[ "$(_sync_result_text j8)" == *"✓ ok"* ]]'
 check 8d "the record is private" '[ "$(stat -c %a "$LOGD/j8.job")" = 600 ]'
 
 # names: default from the folder, typed names checked
@@ -391,7 +391,7 @@ run "1\n2\n" _sync_edit_job
 check 8m "Resume puts it back" 'grep -q "^0 \* \* \* \* .*sync-p1.sh$" "$CRON_FILE" 2>/dev/null && [[ "$OUT" == *"Resumed '"'"'p1'"'"'"* ]]'
 echo "stale" > "$(LOGF p1)"
 run "1\n3\n" _sync_edit_job
-check 8n "Edit -> Run now runs the launcher and shows the result" '[[ "$OUT" == *"'"'"'p1'"'"' completed."* && "$OUT" == *"last: ok"* ]] && grep -q "Sync finished: p1 (exit 0)" "$(LOGF p1)"'
+check 8n "Edit -> Run now runs the launcher and shows the result" '[[ "$OUT" == *"'"'"'p1'"'"' completed."* && "$OUT" == *"✓ ok"* ]] && grep -q "Sync finished: p1 (exit 0)" "$(LOGF p1)"'
 
 # the launcher itself, away from home: the real setup.sh --run-job resolves the address at run time
 mk; mkjob aw >/dev/null; mkdir -p "$T/stub"; cp "$T/rsync-stub" "$T/stub/rsync"
@@ -402,7 +402,7 @@ check 8s "launcher at home: the LAN address is used" '[ $JRC = 0 ] && grep -q "u
 awrun "" 1
 check 8t "launcher away from home: the same job, unchanged, uses the Tailscale address" '[ $JRC = 0 ] && grep -q "u@100.64.0.7:" "$RSYNC_LOG" && ! grep -q "10.9.9.9" "$RSYNC_LOG" && grep -q "Sync finished: aw (exit 0)" "$(LOGF aw)"'
 awrun "" ""
-check 8u "launcher with no way to the server: exit 255, nothing started, the log says why" '[ $JRC = 255 ] && [ ! -s "$RSYNC_LOG" ] && grep -q "Server unreachable" "$(LOGF aw)" && grep -q "Sync finished: aw (exit 255)" "$(LOGF aw)" && [[ "$(_sync_result_text aw)" == *"last: failed (exit 255)"* ]]'
+check 8u "launcher with no way to the server: exit 255, nothing started, the log says why" '[ $JRC = 255 ] && [ ! -s "$RSYNC_LOG" ] && grep -q "Server unreachable" "$(LOGF aw)" && grep -q "Sync finished: aw (exit 255)" "$(LOGF aw)" && [[ "$(_sync_result_text aw)" == *"✗ failed (exit 255)"* ]]'
 
 # the one-time copies and one-time mirror banner of step_sync summaries
 step_sync_stubs() { _pick_local_path() { local_path=$T/s; }; _pick_server_path() { server_path=$T/d; }; _sync_execute_or_schedule() { echo "EXEC $*"; }; }
@@ -545,7 +545,7 @@ dgrun dg1 upload "$BARE/backup"
 check 11a "run, upload to an unmounted drive: SKIPPED with the mount point, nothing written, exit 0 like the other skips" '[ $RC = 0 ] && [[ "$OUT" == *": SKIPPED dg1 - destination drive not mounted ($BARE), nothing written"* && "$OUT" != *"Sync finished"* ]]'
 check 11b "...no rsync, no mkdir on the server" '[ ! -s "$RSYNC_LOG" ] && [ ! -e "$BARE/backup" ]'
 printf '%s\n' "$OUT" > "$(LOGF dg1)"
-check 11c "Status shows it as skipped with the reason" 'R=$(_sync_result_text dg1); [[ "$R" == *"last: skipped (destination drive not mounted ($BARE))"* ]]'
+check 11c "Status shows it as skipped with the reason" 'R=$(_sync_result_text dg1); [[ "$R" == *"⚠ skipped (destination drive not mounted ($BARE))"* ]]'
 dgrun dg2 download "$BARE/pulled"
 check 11d "run, download to an unmounted laptop drive: SKIPPED, nothing created, no rsync" '[ $RC = 0 ] && [[ "$OUT" == *"SKIPPED dg2 - destination drive not mounted ($BARE), nothing written"* ]] && [ ! -s "$RSYNC_LOG" ] && [ ! -e "$BARE/pulled" ]'
 dgrun dg3 upload "$T/d"

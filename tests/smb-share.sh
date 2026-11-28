@@ -9,6 +9,7 @@ H=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$H/lib.sh"
 SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
+TODAY=$(date "+%a %b %-d")   # smbstatus fixtures are dated today: "since" shows only the time for a session of today
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/c" "$T/files/docs" "$T/files/media" "$T/files/My Pics" "$T/opt" "$T/mnt/usb/data" "$T/ro"
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
@@ -134,6 +135,7 @@ reset; export LISTEN=1; run "$SI" 0 step_samba
 check 1b "445 in use: stops, installs nothing" '[ $RC != 0 ] && [[ "$OUT" == *"Port 445 is already in use"* ]] && [ -z "$(RUNLINE)" ] && [ ! -e "$ENVF" ]'
 reset; mk samba-poc true unless-stopped; export LISTEN=1; run "$SI" 0 step_samba
 check 1c "POC container present: prints teardown command" '[[ "$OUT" == *"docker compose -p samba-poc down"* ]]'
+check 1c2 "the POC probe is the shared _smb_exists (no inline docker ps | grep samba-poc)" '! grep -q "grep -qx samba-poc" "$SRC" && grep -q "_smb_exists samba-poc" "$SRC"'
 reset; export FW_PORT=1; run "$SI" 0 step_samba
 check 1d "445 open in the default zone: stops with the fix, installs nothing" '[ $RC != 0 ] && [[ "$OUT" == *"--remove-port=445/tcp"* ]] && [ -z "$(RUNLINE)" ] && [ ! -e "$ENVF" ]'
 reset; export FW_SVC=1; run "$SI" 0 step_samba
@@ -212,7 +214,7 @@ run $'1\nyy' 0 step_samba
 check 3p "after uninstall, Set up offers the saved folders + password and reuses them" '[[ "$OUT" == *"Saved setup found: 2 folder"* && "$OUT" == *"File sharing set up: 2 folders."* ]] && [ "$(PWOF)" = FakePass0123456x ]'
 
 # 4 live phone wait
-reset; printf 'docs         14      100.99.99.98  Fri Nov 27 09:10:11 2026 UTC     -            -\n' > "$SMBSTATUS"
+reset; printf 'docs         14      100.99.99.98  '"$TODAY"' 09:10:11 2026 UTC     -            -\n' > "$SMBSTATUS"
 run "$SI"$'\n' 3 step_samba
 check 4a "phone seen: '<device> connected, opened \"<share>\"' with Tailscale name" '[[ "$OUT" == *"waiting"* && "$OUT" == *"iphone-test connected, opened \"docs\""* ]]'
 reset; run "$SI"$'\n' 2 step_samba
@@ -223,7 +225,7 @@ check 4c "Enter skips the wait" '[[ "$OUT" == *Skipped* && "$OUT" != *"No phone 
 # 5 submenu + status
 mkset; run $'0\n' 0 step_samba
 check 5a "set-up submenu: status block + 7 items" '[[ "$OUT" == *running* && "$OUT" == *"Port 445:  listening"* && "$OUT" == *"Autostart: on"* && "$OUT" == *"docs"* && "$OUT" == *"LAN closed"* && "$OUT" == *"2) Manage folders"* && "$OUT" == *"3) Manage password"* && "$OUT" == *"7) Uninstall"* ]]'
-mkset; printf 'docs         14      100.99.99.98  Fri Nov 27 09:10:11 2026 UTC     -            -\nmedia        14      100.99.99.98  Fri Nov 27 09:11:00 2026 UTC     -            -\nmedia        20      100.99.99.77  Fri Nov 27 09:12:00 2026 UTC     -            -\n' > "$SMBSTATUS"; run $'0\n' 0 step_samba
+mkset; printf 'docs         14      100.99.99.98  '"$TODAY"' 09:10:11 2026 UTC     -            -\nmedia        14      100.99.99.98  '"$TODAY"' 09:11:00 2026 UTC     -            -\nmedia        20      100.99.99.77  '"$TODAY"' 09:12:00 2026 UTC     -            -\n' > "$SMBSTATUS"; run $'0\n' 0 step_samba
 check 5b "connected devices: Tailscale name mapped, IP fallback, shares + since" '[[ "$OUT" == *"iphone-test"* && "$OUT" == *"opened: docs, media"* && "$OUT" == *"100.99.99.77"* && "$OUT" == *"since 09:10"* ]]'
 mkset; run $'0\n' 0 step_samba
 check 5c "nobody connected: note about idle iPhone connections" '[[ "$OUT" == *"drops idle connections"* ]]'
@@ -316,7 +318,7 @@ reset; S=$(_smb_summary docker); R=$(_smb_summary_render "$S")
 check 9a "not set up" '[ "$S" = none ] && [[ "$R" == *"not set up (federver → 15)"* ]]'
 mkset; S=$(_smb_summary docker); R=$(_smb_summary_render "$S")
 check 9b "running: ✓ running · N folders · K devices connected" '[ "$S" = "running|2|0|0" ] && [[ "$R" == *"✓ running · 2 folders · 0 devices connected"* ]]'
-printf 'docs         14      100.99.99.98  Fri Nov 27 09:10:11 2026 UTC     -            -\n' > "$SMBSTATUS"; rm -rf "$T/files/media"
+printf 'docs         14      100.99.99.98  '"$TODAY"' 09:10:11 2026 UTC     -            -\n' > "$SMBSTATUS"; rm -rf "$T/files/media"
 S=$(_smb_summary docker); R=$(_smb_summary_render "$S"); mkdir -p "$T/files/media"
 check 9c "running with a missing folder and a device: (1 ✗ not mounted) · 1 device" '[ "$S" = "running|2|1|1" ] && [[ "$R" == *"(1 ✗ not mounted)"* && "$R" == *"1 device connected"* && "$R" != *"1 devices"* ]]'
 mkset; _svc_power stop samba 2>/dev/null; S=$(_smb_summary docker); R=$(_smb_summary_render "$S")
@@ -327,8 +329,8 @@ check 9e "step_status wires the SMB section (remote gather + local path + render
 # in a clean `env -i bash -s` with the stub docker, like ts-expiry check 11: a helper missing from the
 # list (or renamed) is "command not found" there, which 9e's text grep cannot see.
 mkset >/dev/null
-printf '%s\n' 'docs         14      100.99.99.98  Fri Nov 27 09:10:11 2026 UTC     -            -' \
-               'media        15      100.99.99.98  Fri Nov 27 09:12:30 2026 UTC     -            -' > "$SMBSTATUS"
+printf '%s\n' 'docs         14      100.99.99.98  '"$TODAY"' 09:10:11 2026 UTC     -            -' \
+               'media        15      100.99.99.98  '"$TODAY"' 09:12:30 2026 UTC     -            -' > "$SMBSTATUS"
 PLIST=$(grep -v '^ *#' "$SRC" | grep -o 'declare -f [^;]*_smb_summary[^;]*' | head -1)
 PBODY=$(awk '/declare -f .*_smb_summary.*<<.REMOTE_STATUS./{p=1; next} /^REMOTE_STATUS$/{p=0} p' "$SRC")
 PNAMES=; for n in ${PLIST#declare -f }; do declare -F "$n" >/dev/null && PNAMES="$PNAMES $n"; done
@@ -351,15 +353,15 @@ check 9g "system-location blocklist refuses each of $NREF real system dirs with 
 
 # 11 real smbstatus -S output (captured on the live server) as the fixture
 FIX() { printf '%s\n' \
- 'resumes      328     100.99.99.98  Fri Nov 27 09:13:18 2026 UTC     AES-128-GCM  AES-128-GMAC' \
- 'formal-docs  328     100.99.99.98  Fri Nov 27 09:13:17 2026 UTC     AES-128-GCM  AES-128-GMAC' > "$SMBSTATUS"; }
+ 'resumes      328     100.99.99.98  '"$TODAY"' 09:13:18 2026 UTC     AES-128-GCM  AES-128-GMAC' \
+ 'formal-docs  328     100.99.99.98  '"$TODAY"' 09:13:17 2026 UTC     AES-128-GCM  AES-128-GMAC' > "$SMBSTATUS"; }
 mkset >/dev/null; FIX
 check 11a "one device with two shares = one line: name via tailscale status, both shares, earliest time" \
   '[ "$(_smb_devices docker)" = "iphone-test|resumes, formal-docs|09:13" ]'
 S=$(_smb_summary docker); R=$(_smb_summary_render "$S" "$(_smb_devices docker)")
 echo "---- (s) section, 1 device ----"; echo "$R"
 check 11b "(s): '1 device connected' (singular) + device line under the summary" '[ "$S" = "running|2|0|1" ] && [[ "$R" == *"· 1 device connected"* && "$R" != *"1 devices"* && "$R" == *"iphone-test"*"resumes, formal-docs   since 09:13"* ]] && [ "$(wc -l <<<"$R")" = 2 ]'
-printf '%s\n' 'media        401     100.99.99.77  Fri Nov 27 10:02:05 2026 UTC     AES-128-GCM  AES-128-GMAC' >> "$SMBSTATUS"
+printf '%s\n' 'media        401     100.99.99.77  '"$TODAY"' 10:02:05 2026 UTC     AES-128-GCM  AES-128-GMAC' >> "$SMBSTATUS"
 S=$(_smb_summary docker); R=$(_smb_summary_render "$S" "$(_smb_devices docker)")
 echo "---- (s) section, 2 devices ----"; echo "$R"
 check 11c "(s): '2 devices connected', IP fallback name for an unknown device, one line each" '[[ "$R" == *"· 2 devices connected"* && "$R" == *"100.99.99.77"*"media   since 10:02"* ]] && [ "$(wc -l <<<"$R")" = 3 ]'
@@ -386,7 +388,7 @@ unset NO_IMAGE FAIL_PULL
 
 # 13 "since": smbstatus prints UTC with a date; shown in the host's local time, earliest by epoch
 reset; mkset >/dev/null
-printf 'docs         14      100.99.99.98  Fri Nov 27 09:31:14 2026 UTC     -            -\n' > "$SMBSTATUS"
+printf 'docs         14      100.99.99.98  '"$TODAY"' 09:31:14 2026 UTC     -            -\n' > "$SMBSTATUS"
 r=$(TZ=Europe/Berlin _smb_devices docker)
 check 13a "single UTC row 09:31:14 -> 10:31 in TZ=Europe/Berlin" '[[ "$r" == *"10:31" ]]'
 YD=$(date -d yesterday +%a)

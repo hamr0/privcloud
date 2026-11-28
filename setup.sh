@@ -186,7 +186,7 @@ _SSH_OPTS="-o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=
 export RSYNC_RSH="ssh $_SSH_OPTS"
 _RSYNC_FLAGS="-avh --progress -s"
 ssh() {
-    command ssh $_SSH_OPTS "$@"
+    command ssh -o LogLevel=ERROR $_SSH_OPTS "$@"   # ERROR: no "Connection to <ip> closed." after ssh -t; real errors stay
 }
 
 # True if a TCP connection to host:port completes within 2s. Used to pick a
@@ -274,6 +274,9 @@ _svc_power_all()        { # action             (on the server itself)
     bash -c "$(_svc_power_all_body "$1")"
 }
 _svc_power_remote()     { ssh "$SERVER_USER@$SERVER_IP" "$(_svc_power_body "$1" "$(_shq "$2")")"; }  # action container
+# `compose up -d` creates what is missing; its raw "Container X Started" lines would double our own
+# result lines, so run it quietly and show its output only when it fails.
+_compose_up_quiet() { local out; out=$(_compose up -d 2>&1) || { echo "$out" >&2; return 1; }; }
 _svc_power_all_remote() { ssh "$SERVER_USER@$SERVER_IP" "$(_svc_power_all_body "$1")"; }              # action
 
 # Print "name|status" like `docker ps -a --format '{{.Names}}|{{.Status}}'`, but
@@ -466,7 +469,7 @@ _on_server() {
         echo ""
         local dry=""
         [[ "$DRY_RUN" == "1" ]] && dry="--dry-run "
-        ssh -o LogLevel=ERROR -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && GIT_TERMINAL_PROMPT=0 git pull --ff-only -q 2>/dev/null; ./setup.sh ${dry}--run $step"
+        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && GIT_TERMINAL_PROMPT=0 git pull --ff-only -q 2>/dev/null; ./setup.sh ${dry}--run $step"
     fi
 }
 
@@ -533,7 +536,7 @@ step_emergency() {
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     cd "$SCRIPT_DIR"
     info "Starting compose stack..."
-    sg docker -c "docker compose up -d" 2>&1 | grep -v "^$" || true
+    _compose up -d 2>&1 | grep -v "^$" || true
     info "Starting standalone containers..."
     # Per-container rule (autostart follows the action). A standalone one that
     # was never installed is skipped quietly; a real failure is reported.
@@ -1882,7 +1885,7 @@ _storage_change() {
     echo ""
     info "Redeploying $app..."
     cd "$SCRIPT_DIR"
-    sg docker -c "docker compose up -d --force-recreate $service" 2>&1 | grep -v "^$"
+    _compose up -d --force-recreate "$service" 2>&1 | grep -v "^$"
 
     ok "Done. $app now uses: $new_path"
 }
@@ -1905,7 +1908,7 @@ _storage_change_immich() {
     warn "Changing this does NOT move existing data."
     warn "Move files manually first, then update the path here."
     echo ""
-    read -p "  New Immich path (e.g. /mnt/data/immich): " new_base
+    read -p "  New Immich path (a folder on the data drive): " new_base
 
     if [[ -z "$new_base" ]]; then
         fail "Path is required."
@@ -1943,7 +1946,7 @@ _storage_change_immich() {
     echo ""
     info "Redeploying Immich..."
     cd "$SCRIPT_DIR"
-    sg docker -c "docker compose up -d --force-recreate immich-server database" 2>&1 | grep -v "^$"
+    _compose up -d --force-recreate immich-server database 2>&1 | grep -v "^$"
 
     ok "Done. Immich now uses: $new_base"
     echo ""
@@ -2082,7 +2085,7 @@ _services_action() {
     # Pre-flight: starting a container that bind-mounts the data drive while that
     # drive isn't mounted fails with "no such device" and silently writes empty
     # dirs to the system disk. Guard the data-backed services before we try.
-    if [[ "$action" == "start" ]]; then
+    if [[ "$action" == "start" || "$action" == "restart" ]]; then
         local _media _files
         _media=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null)
         _files=$(_env_get FILES_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null)
@@ -2109,7 +2112,7 @@ _services_action() {
                 # compose up -d creates anything missing but never re-applies a
                 # restart policy to an existing container, so the per-container
                 # rule runs after it (covers adguard/syncthing too).
-                sg docker -c "docker compose up -d"; rc=$?
+                _compose_up_quiet || { fail "docker compose up failed"; rc=1; }
                 _svc_power_all start || rc=1
                 ;;
             stop)    _svc_power_all stop    || rc=1 ;;
@@ -2361,7 +2364,7 @@ _unified_service_picker() {
             echo ""
             [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
         fi
-        [[ "$action" == start ]] && { _picker_data_guard all || return 1; }
+        [[ "$action" == start || "$action" == restart ]] && { _picker_data_guard all || return 1; }
         local all_rc=0
         if ((lap_act)); then
             if systemctl --user "$action" syncthing 2>/dev/null; then
@@ -2373,7 +2376,8 @@ _unified_service_picker() {
         if [[ "$action" == start ]]; then
             # compose up -d creates what is missing but never re-applies a
             # restart policy; the per-container rule after it does.
-            ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && sg docker -c 'docker compose up -d'" || all_rc=1
+            ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && $(declare -f _compose _compose_up_quiet); _IMMICH_COMPOSE=docker-compose.yml _IMMICH_ENV=.env _compose_up_quiet" \
+                || { fail "docker compose up failed"; all_rc=1; }
         fi
         _svc_power_all_remote "$action" || all_rc=1
         if (( all_rc != 0 )); then
@@ -2427,7 +2431,7 @@ _unified_service_picker() {
         [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return 0; }
     fi
 
-    [[ "$action" == start ]] && { _picker_data_guard "$cname" || return 1; }
+    [[ "$action" == start || "$action" == restart ]] && { _picker_data_guard "$cname" || return 1; }
     if ! _svc_power_remote "$action" "$cname"; then
         fail "${action^} failed: $cname"
         return 1
@@ -2558,7 +2562,7 @@ step_deploy() {
     _install_smart_playlists
 
     cd "$SCRIPT_DIR"
-    if ! sg docker -c "docker compose up -d"; then
+    if ! _compose up -d; then
         echo ""
         fail "One or more containers failed to start."
         info "Check logs: ${BOLD}federver → 7 → 5${NC}  (or: docker compose logs)"
@@ -3964,7 +3968,13 @@ _remove_stale_privcloud_cmd() {
     fi
 }
 
-_immich_compose() { docker compose -f "$_IMMICH_COMPOSE" --env-file "$_IMMICH_ENV" "$@"; }
+# The one compose helper for this checkout's stack (its compose file and .env, whatever the cwd).
+# Docker runs through the docker group: plain docker, or `sg docker` when the group was added in
+# this very login (the rule _svc_docker_fn uses).
+_compose() {
+    if docker info &>/dev/null; then docker compose -f "$_IMMICH_COMPOSE" --env-file "$_IMMICH_ENV" "$@"
+    else sg docker -c "$(printf '%q ' docker compose -f "$_IMMICH_COMPOSE" --env-file "$_IMMICH_ENV" "$@")"; fi
+}
 _immich_up()      { curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; }
 _immich_urls() {
     local ip
@@ -4038,7 +4048,7 @@ _immich_ensure_docker() { # step
 # caller before it waits for Immich / reports the update.
 _immich_keep_autostart() {
     local ids id rc=0
-    ids="$(_immich_compose ps -aq "${_IMMICH_SERVICES[@]}")" || rc=1
+    ids="$(_compose ps -aq "${_IMMICH_SERVICES[@]}")" || rc=1
     if (( rc == 0 )); then
         for id in $ids; do _svc_power start "$id" || rc=1; done
     fi
@@ -4122,7 +4132,7 @@ step_immich_install() {
 
     echo ""
     echo -e "  ${BOLD}Pulling ${#_IMMICH_SERVICES[@]} images (first time takes a few minutes)...${NC}"
-    _immich_compose pull "${_IMMICH_SERVICES[@]}" || { fail "Pulling the images failed."; return 1; }
+    _compose pull "${_IMMICH_SERVICES[@]}" || { fail "Pulling the images failed."; return 1; }
     echo ""
     ok "Install complete. Next: federver -> 7 -> 6 (Deploy) starts Immich"
 }
@@ -4202,7 +4212,7 @@ step_immich_status() {
             else
                 echo -e "  ${YELLOW}  $line${NC}"
             fi
-        done < <(_immich_compose ps --format "table {{.Name}}\t{{.Status}}" "${_IMMICH_SERVICES[@]}" 2>/dev/null)
+        done < <(_compose ps --format "table {{.Name}}\t{{.Status}}" "${_IMMICH_SERVICES[@]}" 2>/dev/null)
 
         if ! $has_containers; then
             warn "No Immich containers running."
@@ -4228,8 +4238,8 @@ step_immich_status() {
     echo -e "  ${BOLD}Recent errors${NC}"
     local errors_found=false container err_lines eline
     for container in "${_IMMICH_SERVICES[@]}"; do
-        if $compose_ok && [[ -n "$(_immich_compose ps -aq "$container" 2>/dev/null)" ]]; then
-            err_lines="$(_immich_compose logs --no-color --no-log-prefix --tail 50 "$container" 2>&1 | grep -iE 'error|fatal|panic|failed|exception|denied' | tail -3)"
+        if $compose_ok && [[ -n "$(_compose ps -aq "$container" 2>/dev/null)" ]]; then
+            err_lines="$(_compose logs --no-color --no-log-prefix --tail 50 "$container" 2>&1 | grep -iE 'error|fatal|panic|failed|exception|denied' | tail -3)"
             if [[ -n "$err_lines" ]]; then
                 errors_found=true
                 echo -e "  ${RED}-- $container --${NC}"
@@ -4329,7 +4339,7 @@ step_immich_update() {
     before_ml="$(docker images -q "ghcr.io/immich-app/immich-machine-learning:${ver}" 2>/dev/null || echo "")"
 
     info "Checking for updates..."
-    _immich_compose pull --quiet "${_IMMICH_SERVICES[@]}" 2>/dev/null || { fail "Could not pull the images. Check the server's internet connection."; return 1; }
+    _compose pull --quiet "${_IMMICH_SERVICES[@]}" 2>/dev/null || { fail "Could not pull the images. Check the server's internet connection."; return 1; }
 
     after_server="$(docker images -q "ghcr.io/immich-app/immich-server:${ver}" 2>/dev/null || echo "")"
     after_ml="$(docker images -q "ghcr.io/immich-app/immich-machine-learning:${ver}" 2>/dev/null || echo "")"
@@ -4352,7 +4362,7 @@ step_immich_update() {
     fi
 
     echo ""
-    _immich_compose up -d "${_IMMICH_SERVICES[@]}" || { fail "docker compose up failed."; return 1; }
+    _compose up -d "${_IMMICH_SERVICES[@]}" || { fail "docker compose up failed."; return 1; }
     _immich_keep_autostart
 
     echo ""
@@ -4364,7 +4374,17 @@ step_immich_update() {
 
 # True when Immich accepts the API key. It goes in on stdin (-H @-), never on the arg list
 # (visible to other local users via `ps`).
-_immich_key_ok() { curl -sf -H @- http://localhost:2283/api/users/me <<<"x-api-key: $1" &>/dev/null; }
+# _immich_key_code prints the HTTP status ("000" when Immich did not answer); _immich_key_ok = 2xx.
+_immich_key_code() { curl -s -o /dev/null -w '%{http_code}' -H @- http://localhost:2283/api/users/me <<<"x-api-key: $1" 2>/dev/null || true; }
+_immich_key_ok() { [[ "$(_immich_key_code "$1")" == 2* ]]; }
+# One line for a rejected key, by the status Immich answered with.
+_immich_key_fail() {
+    case "$1" in
+        401) fail "This key is not on this Immich server (deleted, mistyped or from another server) - create one: Account Settings → API Keys → New API Key, with All permissions (the secret is shown only once)" ;;
+        403) fail "This key lacks permissions - create one with \"All\" permissions (upload needs asset.upload)" ;;
+        *)   fail "Could not check the key (HTTP $1)" ;;
+    esac
+}
 
 step_immich_upload() {
     info "Bulk-uploads a photo folder on the server into Immich (Immich CLI)."
@@ -4393,7 +4413,7 @@ step_immich_upload() {
 
     # API key: a saved one is checked first (/api/users/me); valid = Enter keeps it. The file is
     # 600 under a 700 dir, the key is read silently and only ever on stdin / by env name.
-    local api_key="" saved="" attempts=0 keyf="${XDG_CONFIG_HOME:-$HOME/.config}/federver/immich-api-key"
+    local api_key="" saved="" code="" attempts=0 keyf="${XDG_CONFIG_HOME:-$HOME/.config}/federver/immich-api-key"
     [[ -r "$keyf" ]] && saved="$(<"$keyf")"
     if [[ -n "$saved" ]]; then
         if _immich_key_ok "$saved"; then
@@ -4418,17 +4438,20 @@ step_immich_upload() {
             continue
         fi
 
-        if _immich_key_ok "$api_key"; then
+        echo "  Key received: ****${api_key: -4} (${#api_key} characters)"
+        code=$(_immich_key_code "$api_key")
+        if [[ "$code" == 2* ]]; then
             ( umask 077; mkdir -p "$(dirname "$keyf")"; printf '%s\n' "$api_key" > "$keyf" )
             chmod 600 "$keyf" 2>/dev/null || true
             break
         fi
 
         attempts=$((attempts + 1))
+        _immich_key_fail "$code"
         if (( attempts < 3 )); then
-            fail "Invalid API key. Try again ($((3 - attempts)) attempts left)."
+            info "Try again ($((3 - attempts)) attempts left)."
         else
-            fail "Invalid API key. Giving up."
+            fail "Giving up."
             return 1
         fi
     done
@@ -4553,6 +4576,7 @@ step_immich_backup_once() {
         fail "Not configured yet. Run: federver -> 9 -> Install"
         return 1
     fi
+    info "Needs sudo to read the photo library and dump the database…"
     if ! sudo -v; then
         fail "Need sudo to read the photos and run the backup - nothing was started."
         return 1
@@ -4567,10 +4591,10 @@ step_immich_backup_once() {
     echo ""
     local scope
     read -rp "  Choose [0-3] (default: 1): " scope
-    local do_photos=true do_db=true scope_name=both
+    local do_photos=true do_db=true scope_name=both scope_text="Photos + database"
     case "$scope" in
-        2)        do_db=false; scope_name=photos ;;
-        3)        do_photos=false; scope_name=db ;;
+        2)        do_db=false; scope_name=photos; scope_text="Photos only" ;;
+        3)        do_photos=false; scope_name=db; scope_text="Database only" ;;
         1|"")     ;;
         0|q)      return 2 ;;
         *)        fail "Invalid choice."; return 1 ;;
@@ -4578,6 +4602,7 @@ step_immich_backup_once() {
 
     # Show what we're backing up (size only what we'll copy)
     local photos_size="-" db_size="-"
+    $do_photos && info "Measuring photo library…"
     $do_photos && photos_size="$(set -o pipefail; sudo du -sh --block-size=1G "$upload_loc" 2>/dev/null | awk '{print $1" GB"}' || echo "unknown")"
     $do_db     && db_size="$(set -o pipefail; sudo du -sh --block-size=1M "$db_loc" 2>/dev/null | awk '{print $1" MB"}' || echo "unknown")"
     $do_photos && echo "    Photos:   $upload_loc ($photos_size)"
@@ -4617,13 +4642,6 @@ step_immich_backup_once() {
     fi
     echo ""
 
-    # No downtime: the script dumps the live DB instead of stopping the stack, or
-    # cold-copies the data dir when Immich is already down.
-    local pg_running=false
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx immich_postgres; then
-        pg_running=true
-    fi
-
     # Photo copy mode (only relevant when copying photos): append, or a mirror that
     # first passes the source guard + preview and then the deletion question.
     local sync_mode=append mirror_flag=()
@@ -4643,53 +4661,114 @@ step_immich_backup_once() {
     if [[ "$sync_mode" != mirror ]]; then
         echo ""
         echo -e "  ${BOLD}Backup summary${NC}"
-        echo "    Scope:        $scope_name"
+        echo "    Scope:        $scope_text"
         echo "    Destination:  $backup_dir/"
-        echo "    Mode:         append only"
+        $do_photos && echo "    Mode:         append only"
         _confirm_yn "Start backup?" || { warn "Cancelled."; return 0; }
     fi
 
     # The ONE script: the installed one when it is current, else the same generator
     # into a temp file (with a temp config) - no second implementation.
-    local script=$_IMMICH_BACKUP_BIN tmp="" conf_tmp="" args=(--once --dest "$dest" --scope "$scope_name") rc=0
+    local script=$_IMMICH_BACKUP_BIN tmp="" conf_tmp="" res args=(--once --dest "$dest" --scope "$scope_name") rc=0 runner
     [[ "$sync_mode" == mirror ]] && args+=(--mirror)
+    res=$(mktemp) || { fail "Could not create a temp file - nothing was backed up."; return 1; }
+    trap "rm -f '$res'; trap - RETURN" RETURN
     if [[ ! -x "$script" ]] || _immich_backup_outdated; then
         tmp=$(mktemp) && conf_tmp=$(mktemp) || { rm -f "$tmp"; fail "Could not create a temp file - nothing was backed up."; return 1; }
-        trap "rm -f '$tmp' '$conf_tmp'; trap - RETURN" RETURN
+        trap "rm -f '$res' '$tmp' '$conf_tmp'; trap - RETURN" RETURN
         _immich_backup_conf "$(dirname "$_IMMICH_ENV")" "$dest" 0 > "$conf_tmp"
         _immich_backup_script "$conf_tmp" "$_IMMICH_BACKUP_LOG" > "$tmp"
         script=$tmp
         bash -n "$script" || { fail "The generated backup script has a syntax error - nothing was backed up."; return 1; }
-        echo ""
-        sudo bash "$script" "${args[@]}" || rc=$?
+        runner=(sudo bash "$script")
     else
-        echo ""
-        sudo "$script" "${args[@]}" || rc=$?
+        runner=(sudo "$script")
+    fi
+    echo ""
+    # The script's own timestamped lines are kept in $res and read for the result block, not echoed.
+    "${runner[@]}" "${args[@]}" > "$res" 2>&1 &
+    _immich_once_wait $! "$res" "$db_size"
+    rc=$?
+    _immich_once_result "$rc" "$res" "$backup_dir" "$scope_name"
+}
+
+# Screen side of the one-time backup: waits for the script (pid $1, output in file $2, read by
+# _immich_once_result) and shows only what the user waits on, as it starts. $3 = database size
+# text. On a terminal the photo copy ticks in place (the same \r ticker as the mirror preview):
+# elapsed time, files and bytes copied so far, counted from the F|bytes|name lines rsync writes.
+# Ctrl-C stops the script and returns 130.
+_immich_once_wait() {
+    local pid=$1 res=$2 shown_db=0 shown_ph=0 shown_cold=0 t0 el nf nb intr=0 oldtrap rc=0
+    oldtrap=$(trap -p INT)
+    trap 'intr=1; kill "$pid" 2>/dev/null' INT
+    while :; do
+        (( shown_db )) || { grep -q "Dumping database" "$res" 2>/dev/null && { echo "  Dumping database${3:+ ($3)}…"; shown_db=1; }; }
+        (( shown_cold )) || { grep -q "Immich is stopped" "$res" 2>/dev/null && { echo "  Immich is stopped - copying the database files directly"; shown_cold=1; }; }
+        if (( ! shown_ph )) && grep -q "Syncing photos" "$res" 2>/dev/null; then
+            shown_ph=1; t0=$SECONDS
+            [[ -t 1 ]] || echo "  Syncing photos…"
+        fi
+        kill -0 "$pid" 2>/dev/null || break
+        if [[ -t 1 ]] && (( shown_ph )); then
+            el=$((SECONDS - t0))
+            read -r nf nb < <(awk -F'|' '$1 == "F" && $3 !~ /\/$/ { n++; b += $2 } END { print n + 0, b + 0 }' "$res")
+            printf '\r\033[K  Syncing photos… %dm %02ds, %s files so far, %s' $((el / 60)) $((el % 60)) "$(_commas "$nf")" "$(_size_h "$nb")"
+        fi
+        sleep 0.5
+    done
+    [[ -t 1 ]] && (( shown_ph )) && printf '\r\033[K  Syncing photos… done\n'
+    wait "$pid" || rc=$?
+    if [[ -n "$oldtrap" ]]; then eval "$oldtrap"; else trap - INT; fi
+    (( intr )) && return 130
+    return $rc
+}
+
+# 3412 -> 3,412
+_commas() { sed -E ':a;s/([0-9])([0-9]{3})($|,)/\1,\2\3/;ta' <<<"$1"; }
+
+# bytes -> "145 MB" / "1.4 GB" (1024-based, like du)
+_size_h() { awk -v b="${1:-0}" 'BEGIN{ if (b >= 1073741824) printf "%.1f GB", b/1073741824; else if (b >= 1048576) printf "%d MB", b/1048576; else if (b >= 1024) printf "%d KB", b/1024; else printf "%d B", b }'; }
+
+# The one result block of a one-time backup. $1 rc, $2 file with the script's output, $3 backup dir
+# (<dest>/immich), $4 scope (photos|db|both).
+_immich_once_result() {
+    local rc=$1 res=$2 bdir=$3 scope=$4 line
+    echo ""
+    if (( rc == 130 )); then
+        fail "Cancelled - the backup was stopped; a partial copy may be at $bdir/. Run it again to finish."
+        return 1
     fi
     if (( rc != 0 )); then
+        while IFS= read -r line; do [[ "$line" == F\|* ]] || echo "    $line"; done < "$res"
         fail "Backup failed (see above)."
         return 1
     fi
-
-    echo ""
-    ok "Backup complete!"
-    echo "    Location: $backup_dir"
-    $do_photos && echo "    Photos:   $backup_dir/photos"
-    if $do_db && $pg_running; then
-        echo "    Database: $backup_dir/db/immich-db-*.sql.gz (SQL dump)"
-    elif $do_db; then
-        echo "    Database: $backup_dir/db/postgres (data dir)"
+    local dump cold n bytes what=() lines=()
+    dump=$(sed -n 's/.*DB dump ok → //p' "$res" | tail -1)           # immich/db/immich-db-<stamp>.sql.gz
+    cold=$(grep -c 'Database copied' "$res")
+    if [[ -n "$dump" ]]; then
+        bytes=$(stat -c %s "$bdir/db/${dump##*/}" 2>/dev/null)
+        if [[ "$scope" == db ]]; then what+=("database${bytes:+ ($(_size_h "$bytes"))}"); lines+=("db/${dump##*/}")
+        else what+=("database"); lines+=("db/${dump##*/}${bytes:+ ($(_size_h "$bytes"))}"); fi
+    elif (( cold )); then
+        what+=("database"); lines+=("db/postgres/ (data dir copy)")
     fi
-    echo "    Config:   $backup_dir/.env"
-    echo ""
-    echo "  To restore on any machine:"
-    echo "    1. Clone privcloud, then federver -> 9 -> Install"
-    $do_photos && echo "    2. Point config to the backed-up photos directory"
-    if $do_db && $pg_running; then
-        echo "    3. Start Immich (federver -> 7 -> 2), then load the dump:"
-        echo "         gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres"
-    elif $do_db; then
-        echo "    3. Copy db/postgres/ and .env back, then federver -> 7 -> 2 (Start)"
+    if [[ "$scope" != db ]]; then
+        n=$(sed -n 's/^Number of \(regular \)\{0,1\}files transferred: *//p' "$res" | tail -1)
+        bytes=$(sed -n 's/^Total transferred file size: *\([0-9,]*\) bytes.*/\1/p' "$res" | tail -1)
+        what=("photos" "${what[@]}"); lines=("photos/: ${n:-0} new file$([[ "${n:-0}" == 1 ]] || echo s), $(_size_h "${bytes//,/}")" "${lines[@]}")
+    fi
+    local joined="${what[0]}"; [[ ${#what[@]} -gt 1 ]] && joined="${what[0]} + ${what[1]}"
+    ok "Backup complete - $joined → $bdir/"
+    for line in "${lines[@]}"; do echo "    $line"; done
+    [[ -f "$bdir/.env" ]] && echo "    .env (config copy)"
+    if [[ -n "$dump" ]]; then
+        echo "  Restore: federver → 9 → 3 (Install), federver → 7 → 2 (Start), then"
+        echo "    gunzip -c $bdir/db/${dump##*/} | docker exec -i immich_postgres psql -U postgres"
+    elif (( cold )); then
+        echo "  Restore: federver → 9 → 3 (Install), copy db/postgres/ and .env back, then federver → 7 → 2 (Start)"
+    else
+        echo "  Restore: federver → 9 → 3 (Install), then copy photos/ back to the photo library"
     fi
     return 0
 }
@@ -5253,6 +5332,7 @@ db_cold() {
     echo "$(date): Database copied → immich/db/postgres/"
 }
 if [ "$scope" != photos ]; then
+    [ "$once" = 0 ] || echo "$(date): Dumping database…"
     if [ "$once" = 1 ] && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx immich_postgres; then db_cold
     else db_online; fi
 fi
@@ -5262,9 +5342,10 @@ fi
 if [ "$scope" != db ]; then
     if [ -n "$UPLOAD_LOCATION" ] && [ -d "$UPLOAD_LOCATION" ]; then
         if command -v rsync >/dev/null 2>&1; then
+            [ "$once" = 0 ] || echo "$(date): Syncing photos…"
             args=(-a)
             for e in "${EXCLUDES[@]}"; do args+=(--exclude="$e"); done
-            [ "$once" = 0 ] || args+=(--info=progress2)
+            [ "$once" = 0 ] || args+=(--stats --out-format='F|%l|%n')   # the screen reads the totals and the live count from it
             [ "$mirror" = 0 ] || args+=(--delete)
             if rsync "${args[@]}" "$UPLOAD_LOCATION/" "$PHOTOS_DIR/"; then
                 echo "$(date): Photos synced → $PHOTOS_DIR/"
@@ -5333,7 +5414,7 @@ step_immich_backup() {
     local cur_oncal cur_dest
     cur_oncal=$(systemctl cat immich-backup.timer 2>/dev/null | sed -n 's/^OnCalendar=//p' | head -1)
     cur_dest=$(_configured_backup_dir)
-    [[ -n "$cur_oncal" ]] && echo "  Current schedule: $cur_oncal${cur_dest:+ -> $cur_dest}"
+    [[ -n "$cur_oncal" ]] && echo "  Current schedule: $(_sched_text "$cur_oncal")${cur_dest:+ -> $cur_dest}"
     local keep_hint="Enter = "; [[ -n "$cur_dest" ]] && keep_hint="Enter keeps it: "
     read -rp "  Backup destination (${keep_hint}${default_dir}, q = back): " BACKUP_DIR   # -r: a backslash in a path is kept
     [[ "$BACKUP_DIR" == "q" ]] && return 2
@@ -5363,7 +5444,7 @@ step_immich_backup() {
     echo ""
     local cadence oncal retention_days
     if [[ -n "$cur_oncal" ]]; then
-        read -p "  Choice [0-2] (Enter keeps the current: $cur_oncal): " cadence
+        read -p "  Choice [0-2] (Enter keeps the current: $(_sched_text "$cur_oncal")): " cadence
         [[ -z "$cadence" ]] && cadence=keep
     else
         read -p "  Choice [0-2]: " cadence
@@ -5381,7 +5462,7 @@ step_immich_backup() {
             local day cur_day=""
             case "$cur_oncal" in Sun\ *) cur_day=1 ;; Mon\ *) cur_day=2 ;; Sat\ *) cur_day=3 ;; esac
             if [[ -n "$cur_day" ]]; then
-                read -p "  Choice [0-3] (Enter keeps the current: ${cur_oncal%% *}): " day
+                read -p "  Choice [0-3] (Enter keeps the current: $(_sched_text "$cur_oncal")): " day
                 day="${day:-$cur_day}"
             else
                 read -p "  Choice [0-3]: " day
@@ -5579,15 +5660,14 @@ _immich_backup_status() {
         local note="next: ${next:-unknown}"
         [ "$enabled" = "enabled" ] || note="DISABLED — ${note}"
         _immich_backup_outdated && note="outdated - run Set up again; ${note}"
-        printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "${oncal:-unknown}" "systemd" "backup" "$note"
+        printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$([[ -n "$oncal" ]] && _sched_text "$oncal" || echo unknown)" "timer" "backup" "$note"
     elif [ "$mechanism" = "cron" ]; then
         # One row per matching cron line; human schedule in When, raw spec in Schedule.
         printf '%s\n' "$cron_matches" | while IFS= read -r l; do
             [ -z "$l" ] && continue
             local spec when
             spec=$(echo "$l" | awk '{print $1,$2,$3,$4,$5}')
-            when=$(_cron_to_english "$spec" 2>/dev/null || echo "$spec")
-            printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$spec" "$when" "backup" "(legacy cron)"
+            printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$(_sched_text "$spec")" "cron" "backup" "(legacy cron)"
         done
     elif [ "$cron_checked" -eq 1 ]; then
         # No timer, root cron readable, no Immich line → genuinely off.
@@ -5611,7 +5691,8 @@ _immich_backup_status() {
     echo -e "  ${BLUE}${RULE}${NC}"
     if [ -s "$_IMMICH_BACKUP_LOG" ] && grep -qE 'Backup (complete|FAILED)' "$_IMMICH_BACKUP_LOG" 2>/dev/null; then
         grep -E 'Backup (complete|FAILED)' "$_IMMICH_BACKUP_LOG" | tail -n 8 | while IFS= read -r line; do
-            local when=${line%%: Backup*} status
+            local when status
+            when=$(_when_short "${line%%: Backup*}")
             if [[ "$line" == *"Backup complete"* ]]; then
                 status="${GREEN}✓ ok${NC}"
             else
@@ -6449,8 +6530,8 @@ _mirror_preview() {
                 END { print d + 0, c + 0 }' "$list")
             live=""
             if (( nd + nc > 0 )); then
-                live=" · $(sed -E ':a;s/([0-9])([0-9]{3})($|,)/\1,\2\3/;ta' <<<"$nd") to delete"
-                live+=" · $(sed -E ':a;s/([0-9])([0-9]{3})($|,)/\1,\2\3/;ta' <<<"$nc") to copy so far"
+                live=" · $(_commas "$nd") to delete"
+                live+=" · $(_commas "$nc") to copy so far"
             fi
             printf '\r\033[K  %s... %ds%s' "$msg" "$t" "$live"
         done
@@ -6914,17 +6995,17 @@ _sync_mode_cell() {
     esac
 }
 
-# The "last: ..." text of a job (Status rows and Last runs): ok green, skipped yellow, failed red.
-_sync_result_text() {  # job_name -> the coloured "last: ..." text of its last run
+# The result text of a job (Status rows and Last runs, the one wording): ok green, skipped yellow, failed red.
+_sync_result_text() {  # job_name -> the coloured result text of its last run
     local kind when exitc
     IFS='|' read -r kind when exitc <<<"$(_sync_last_result "$HOME/.local/share/sync-jobs/$1.log")"
     case "$kind" in
-        ok)      echo -e "${GREEN}last: ok${NC}" ;;
-        vanished) echo -e "${GREEN}last: ok (some files vanished)${NC}" ;;
-        skipped) echo -e "${YELLOW}last: skipped${exitc:+ ($exitc)}${NC}" ;;
-        fail)    echo -e "${RED}last: failed (exit ${exitc})${NC}" ;;
-        running) echo -e "${YELLOW}last: running?${NC}" ;;
-        *)       echo -e "${DIM}last: never${NC}" ;;
+        ok)      echo -e "${GREEN}✓ ok${NC}" ;;
+        vanished) echo -e "${GREEN}✓ ok (some files vanished)${NC}" ;;
+        skipped) echo -e "${YELLOW}⚠ skipped${exitc:+ ($exitc)}${NC}" ;;
+        fail)    echo -e "${RED}✗ failed (exit ${exitc})${NC}" ;;
+        running) echo -e "${YELLOW}? running?${NC}" ;;
+        *)       echo -e "${DIM}never${NC}" ;;
     esac
 }
 # Last result of a sync job from its log: "kind|when|exit", kind = ok | vanished (ok,
@@ -7075,6 +7156,38 @@ _sync_execute_or_schedule() {
             ;;
     esac
 }
+
+# One readable schedule format for every Status table: "daily 03:00" / "weekly Sun 03:00".
+# Takes a 5-field cron expression or a systemd OnCalendar spec; anything else (every 15 min,
+# odd specs) falls back to _cron_to_english / the raw text.
+_sched_text() {  # spec
+    local spec=$1 dow="" t="" d
+    local -a f; read -ra f <<<"$spec"
+    if (( ${#f[@]} == 5 )); then
+        if [[ "${f[0]}" =~ ^[0-9]+$ && "${f[1]}" =~ ^[0-9]+$ && "${f[2]}${f[3]}" == "**" ]]; then
+            t=$(printf '%02d:%02d' "${f[1]}" "${f[0]}")
+            case "${f[4]}" in
+                \*) echo "daily $t"; return ;;
+                [0-7]) d=(Sun Mon Tue Wed Thu Fri Sat Sun); echo "weekly ${d[${f[4]}]} $t"; return ;;
+            esac
+        fi
+        _cron_to_english "$spec"; return
+    fi
+    case "$spec" in
+        daily)  echo "daily 00:00"; return ;;
+        weekly) echo "weekly Mon 00:00"; return ;;
+        Mon|Tue|Wed|Thu|Fri|Sat|Sun) echo "weekly $spec 00:00"; return ;;
+    esac
+    [[ "${f[0]:-}" =~ ^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$ ]] && { dow=${f[0]}; f=("${f[@]:1}"); }
+    if [[ "${f[0]:-}" == "*-*-*" && "${f[1]:-}" =~ ^([0-9]{2}):([0-9]{2})(:00)?$ ]]; then
+        t="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+        [[ -n "$dow" ]] && echo "weekly $dow $t" || echo "daily $t"; return
+    fi
+    echo "$spec"
+}
+
+# A log timestamp as "YYYY-MM-DD HH:MM" (the one date format of Status); the raw text when unreadable.
+_when_short() { date -d "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$1"; }
 
 # Translate a 5-field cron expression into short plain English.
 _cron_to_english() {
@@ -7477,7 +7590,7 @@ _sync_show_status() {
     # Render immich-backup from systemd timer if available, else fall back
     # to the legacy cron line.
     if [[ -n "$server_timer_oncal" ]]; then
-        printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$server_timer_oncal" "systemd" "backup" "append" "(14 → 6)"
+        printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$(_sched_text "$server_timer_oncal")" "timer" "backup" "append" "(14 → 6)"
     fi
     if [[ -n "$server_crons" ]]; then
         echo "$server_crons" | while IFS= read -r line; do
@@ -7485,13 +7598,13 @@ _sync_show_status() {
             if echo "$line" | grep -q "immich-backup" && [[ -z "$server_timer_oncal" ]]; then
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
-                when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$sched" "$when" "backup" "append" "(14 → 6, legacy cron)"
+                when=cron
+                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$(_sched_text "$sched")" "$when" "backup" "append" "(14 → 6, legacy cron)"
             elif echo "$line" | grep -q "disk-check"; then
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
-                when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "disk-check" "$sched" "$when" "monitor" "-" "(14 → 7)"
+                when=cron
+                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "disk-check" "$(_sched_text "$sched")" "$when" "monitor" "-" "(14 → 7)"
             fi
         done
     fi
@@ -7520,14 +7633,9 @@ _sync_show_status() {
         name=${_sync_jobs[i]}; sched=${_sync_job_scheds[i]}
         script_path="$HOME/.local/bin/sync-${name}.sh"
         if _sync_rec_load "$name"; then direction=$J_direction; mode=$J_mode; else direction=sync; mode=-; fi
-        if [[ "${_sync_job_types[i]}" == cron ]]; then
-            when=$(_cron_to_english "$sched"); tag=""
-            [[ -n "${_sync_job_paused[i]}" ]] && tag="${YELLOW}(paused)${NC}"
-        else
-            when="weekly"; tag="${DIM}timer${NC}"
-            [[ -n "${_sync_job_paused[i]}" ]] && tag="${YELLOW}(paused)${NC}"
-        fi
-        printf "  %-20s %-18s %-16s %-10s " "$name" "$sched" "$when" "$direction"
+        when=${_sync_job_types[i]}; tag=""   # cron | timer: the mechanism, in When; Schedule is the readable time
+        [[ -n "${_sync_job_paused[i]}" ]] && tag="${YELLOW}(paused)${NC}"
+        printf "  %-20s %-18s %-16s %-10s " "$name" "$(_sched_text "$sched")" "$when" "$direction"
         echo -e "$(_sync_mode_cell "$mode") $(_sync_result_text "$name") $tag"
         if [[ -n "${_sync_cannot[$name]+x}" ]]; then
             echo -e "  ${YELLOW}  cannot convert: ${_sync_cannot[$name]}${NC} ${DIM}($script_path)${NC}"
@@ -7991,7 +8099,7 @@ _sync_one_time_backup() {
         echo -e "  ${BOLD}1)${NC} Upload:   laptop → server"
         echo -e "  ${BOLD}2)${NC} Download: server → laptop"
         echo -e "  ${BOLD}3)${NC} Local:    laptop → laptop    ${DIM}(e.g. backup to a USB drive)${NC}"
-        echo -e "  ${BOLD}4)${NC} Server:   server → server    ${DIM}(e.g. /mnt/data → backup USB on the server)${NC}"
+        echo -e "  ${BOLD}4)${NC} Server:   server → server    ${DIM}(e.g. data drive → backup drive on the server)${NC}"
         echo -e "  ${BOLD}0)${NC} Back"
         echo ""
         read -p "  Choice [1/2/3/4/0]: " direction
@@ -9006,9 +9114,9 @@ step_reset_password() {
                 return
             fi
             cd "$SCRIPT_DIR"
-            sg docker -c "docker compose down navidrome" > /dev/null 2>&1
+            _compose down navidrome > /dev/null 2>&1
             sg docker -c "docker volume rm privcloud_navidrome-data" > /dev/null 2>&1
-            sg docker -c "docker compose up -d navidrome" > /dev/null 2>&1
+            _compose up -d navidrome > /dev/null 2>&1
             ok "Navidrome reset. Open to create a new account:"
             echo -e "    ${BLUE}http://$IP:4533${NC}"
             ;;
@@ -9022,9 +9130,9 @@ step_reset_password() {
                 return
             fi
             cd "$SCRIPT_DIR"
-            sg docker -c "docker compose down uptime-kuma" > /dev/null 2>&1
+            _compose down uptime-kuma > /dev/null 2>&1
             sg docker -c "docker volume rm privcloud_uptime-kuma-data" > /dev/null 2>&1
-            sg docker -c "docker compose up -d uptime-kuma" > /dev/null 2>&1
+            _compose up -d uptime-kuma > /dev/null 2>&1
             ok "Uptime Kuma reset. Open to create new account:"
             echo -e "    ${BLUE}http://$IP:3001${NC}"
             ;;
@@ -9048,7 +9156,7 @@ _SMB_POLL=3             # seconds between phone-connect polls
 _SMB_WAIT_TRIES=40      # x _SMB_POLL = 2 minutes
 _SMB_NAMES=(); _SMB_PATHS=(); _SMB_USER=""; _SMB_PW=""; _SMB_REAL=""
 
-_smb_exists()  { sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx samba; }
+_smb_exists()  { sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${1:-samba}"; }
 _smb_running() { sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qx samba; }
 _smb_listening() { sudo ss -ltnH 'sport = :445' 2>/dev/null | grep -q .; }
 
@@ -9521,7 +9629,7 @@ _smb_setup() {
     if _smb_listening; then
         fail "Port 445 is already in use:"
         sudo ss -ltnpH 'sport = :445' 2>/dev/null | sed 's/^/    /'
-        if sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx samba-poc; then
+        if _smb_exists samba-poc; then
             echo -e "  The Samba proof-of-concept container is still there. Remove it first:"
             echo -e "    ${YELLOW}cd ~/samba-poc && docker compose -p samba-poc down && rm -rf ~/samba-poc${NC}"
         else
@@ -9736,7 +9844,7 @@ if [[ "${1:-}" == "--run" && -n "${2:-}" ]]; then
             fail "Step '$2' is not defined even after git pull."
             exit 1
         fi
-        info "Step '$2' not found — pulling latest from main..."
+        info "Step '$2' not found — pulling latest of $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "this branch")..."
         git pull --ff-only > /dev/null 2>&1 || true
         export _SETUP_RETRIED=1
         exec "$0" "$@"

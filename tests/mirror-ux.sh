@@ -11,7 +11,7 @@ T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 { grep -E '^MIRROR_WIPE_MIN=' "$SRC"
-  for f in ok fail info warn _mirror_flush _mirror_ask _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
+  for f in ok fail info warn _mirror_flush _mirror_ask _mirror_scan _mirror_wipe_sized _mirror_preview _commas _mirror_delete_q; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 # mp = what a one-time copy does: the preview, then (after the box) the one question.
 cat >> "$T/fn.sh" <<'X'
 mp() { _mirror_preview "$@"; local r=$?

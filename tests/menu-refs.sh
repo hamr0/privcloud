@@ -55,5 +55,7 @@ check 7b "run_step does not clear by itself (the banner function is the one plac
 
 # 8 the server hop (_on_server) runs ssh through the wrapper with LogLevel=ERROR: no "Connection to <ip> closed."
 # after every step, while real connection errors (level ERROR) still print. (-q would hide those too.)
-check 8a "_on_server hop: ssh -t via the wrapper (never 'command ssh') with LogLevel=ERROR" 'extract_fn _on_server "$S" | grep -q "ssh -o LogLevel=ERROR -t \"\$SERVER_USER@\$SERVER_IP\"" && ! extract_fn _on_server "$S" | grep -q "command ssh"'
+check 8a "the ssh() wrapper itself passes LogLevel=ERROR (not -q): every hop is quiet, errors stay" '! extract_fn ssh "$S" | grep -q -- " -q" && (export _SSH_OPTS="-o ConnectTimeout=8"; mkdir -p "$T/bin"; printf "#!/bin/bash\necho \"\$*\"\n" > "$T/bin/ssh"; chmod +x "$T/bin/ssh"; eval "$(extract_fn ssh "$S")"; PATH="$T/bin:$PATH"; [[ "$(ssh -t host cmd)" == *"-o LogLevel=ERROR"*"-o ConnectTimeout=8"*"-t host cmd"* ]])'
+check 8b "_on_server hop: ssh -t via the wrapper (never 'command ssh'), no per-call LogLevel copy" 'extract_fn _on_server "$S" | grep -q "ssh -t \"\$SERVER_USER@\$SERVER_IP\"" && ! extract_fn _on_server "$S" | grep -q "command ssh\|LogLevel"'
+check 9a "no hardcoded /mnt/data example in the sync direction menu or the Immich path prompt (public repo: generic wording)" '! grep -E "Server: +server → server|New Immich path" "$S" | grep -q "/mnt/data"'
 check_total

@@ -19,9 +19,9 @@ CR=$'\033[R]'; CY=$'\033[Y]'   # status() swaps these in for RED/YELLOW
 { for f in ok fail info warn ssh _shq; do extract_fn "$f" "$SRC"; done   # ssh may be missing in an old copy: skipped
   grep -E "^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_RSYNC_FLAGS=|^_SSH_OPTS=|^export RSYNC_RSH=|^_SYNC_REC_KEYS=" "$SRC"
   for f in _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _dest_check _require_dest_drive _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
-           _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mode_cell _sync_result_text _sync_last_result _sync_change_mode \
+           _mirror_scan _mirror_wipe_sized _mirror_preview _commas _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mode_cell _sync_result_text _sync_last_result _sync_change_mode \
            _sync_execute_or_schedule _sync_show_status _sync_rec_write _sync_rec_load _sync_write_launcher _sync_default_name _sync_valid_name _sync_job_operands _sync_job_steps _sync_job_go _sync_job_run _sync_prepare_dest _sync_rec_set_schedule _sync_rec_mode _sync_job_import_legacy _sync_import_all_legacy _sync_tokenize _pick_server_endpoint _tcp_open _is_server _sync_edit_job _sync_list_jobs _sync_cron_split _sync_registry_load _sync_job_delete _sync_delete_job _sync_change_schedule _sync_remove_timer _confirm_delete _cron_cmd _cron_get _cron_drop _cron_set _cron_remove_line _cron_replace_line \
-           _cron_to_english _sync_one_time_backup; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
+           _cron_to_english _sched_text _when_short _sync_one_time_backup; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 source "$T/fn.sh"
 type _sync_one_time_backup >/dev/null 2>&1 || echo "FAIL  setup: mirror functions not found in $SRC (older setup.sh?)"
 
@@ -338,20 +338,23 @@ OUT=$(status); RC=0
 row() { grep -E "^  $1 " <<<"$OUT" | head -n 1; }
 check 9a "mirror job row shows 'mirror' in the destructive colour" "[[ \"\$(row j1)\" == *\"\${CR}mirror\"* ]]"
 check 9b "converted old job (no stored mode) shows append" '[[ "$(row old)" == *append* && "$(row old)" != *mirror* ]]'
-check 9c "skipped last result shown in yellow on the mirror row" "[[ \"\$(row j1)\" == *\"\${CY}last: skipped (source empty)\"* ]]"
-check 9d "clean last result shown on the converted row" '[[ "$(row old)" == *"last: ok"* ]]'
+check 9c "skipped last result shown in yellow on the mirror row" "[[ \"\$(row j1)\" == *\"\${CY}⚠ skipped (source empty)\"* ]]"
+check 9d "clean last result shown on the converted row" '[[ "$(row old)" == *"✓ ok"* ]]'
 check 9e "Immich backup row shows append" '[[ "$(row immich-backup)" == *append* ]]'
 check 9f "table has a Copy column" '[[ "$OUT" == *"Name"*"Copy"*"Note"* ]]'
 check 9g "Last runs table also reports the skip" '[[ "$OUT" == *"j1"*"skipped (source empty)"* ]]'
+echo "---- sample: Sync Status rows ----"; grep -E "^  (j1|old|immich-backup) " <<<"$OUT" | sed -E 's/\x1b\[[0-9;]*m//g; s/\x1b\[[A-Z]\]//g'; echo "----------------------------------"
+check 9q "Schedule column: one readable format; When column names the mechanism; no raw '*-*-*' or 'systemd'" '[[ "$(row immich-backup)" == *"daily 03:00"*timer* && "$(row old)" == *"daily 03:30"*cron* && "$OUT" != *"*-*-*"* && "$OUT" != *systemd* ]]'
+check 9r "Note column holds only the result (one wording with Last runs): no job type leaks into it" '[[ "$(row old)" != *"ok timer"* && "$(row old)" == *"✓ ok"* ]] && [[ "$OUT" != *"last:"* ]]'
 printf '2026-11-21 03:00:01: SKIPPED j1 - could not check source (mirror refused, nothing deleted)\n' >> "$LOG"
 OUT=$(status)
-check 9m "Status names the real reason of the last skip" "[[ \"\$(row j1)\" == *\"last: skipped (could not check source)\"* ]]"
+check 9m "Status names the real reason of the last skip" "[[ \"\$(row j1)\" == *\"⚠ skipped (could not check source)\"* ]]"
 printf '2026-11-22 03:00:01: SKIPPED j1 - source empty or drive not mounted (mirror refused, nothing deleted)\n' >> "$LOG"
 OUT=$(status)
-check 9n "a skip logged by an older script keeps its own wording" "[[ \"\$(row j1)\" == *\"last: skipped (source empty or drive not mounted)\"* ]]"
+check 9n "a skip logged by an older script keeps its own wording" "[[ \"\$(row j1)\" == *\"⚠ skipped (source empty or drive not mounted)\"* ]]"
 printf '2026-11-23 03:00:01: SKIPPED j1 - would delete 4 files (over the mirror limit), nothing deleted\n' >> "$LOG"
 OUT=$(status)
-check 9o "a wipe-cap skip is shown with its count" "[[ \"\$(row j1)\" == *\"last: skipped (would delete 4 files (over the mirror limit))\"* ]]"
+check 9o "a wipe-cap skip is shown with its count" "[[ \"\$(row j1)\" == *\"⚠ skipped (would delete 4 files (over the mirror limit))\"* ]]"
 # systemd-timer job rows too
 mkdir -p "$T/home/.config/systemd/user"
 printf '[Timer]\nOnCalendar=Sat\n' > "$T/home/.config/systemd/user/sync-wk.timer"
@@ -359,21 +362,22 @@ J_name=wk J_mode=mirror J_direction=upload J_src=$T/s J_dest=$T/d J_src_loc=loca
 _sync_rec_write; _sync_write_launcher wk
 OUT=$(status)
 check 9h "timer job row shows its mode" '[[ "$(row wk)" == *mirror* ]]'
+check 9s "timer job row: the mechanism appears once (When), not again in Note; weekly time is readable" '[ "$(grep -o timer <<<"$(row wk)" | wc -l)" = 1 ] && [[ "$(row wk)" == *"weekly "* ]]'
 rm -rf "$T/home/.config"
 # A REAL run of a job: a failed rsync must log its own exit code and show as
-# "last: failed (exit N)"; a clean run as "last: ok".
+# "✗ failed (exit N)"; a clean run as "✓ ok".
 mkjob append "\n" >/dev/null
 logexit() { grep -oP 'Sync finished: j1 \(exit \K[0-9]+' "$LOG" | tail -n 1; }
 rm -rf "$T/s"
 jobrun j1; LE=$(logexit)
 OUT=$(status)
 check 9i "real failed run (missing source) logs a non-zero exit" '[ -n "$LE" ] && [ "$LE" != 0 ]'
-check 9j "Status shows last: failed (exit N) with that same N" '[[ "$(row j1)" == *"last: failed (exit $LE)"* ]]'
+check 9j "Status shows ✗ failed (exit N) with that same N" '[[ "$(row j1)" == *"✗ failed (exit $LE)"* ]]'
 check 9k "the job exits with the rsync code (a timer unit shows failed)" '[ "$JRC" != 0 ] && [ "$JRC" = "$LE" ]'
 mkdir -p "$T/s"; echo a > "$T/s/a"
 jobrun j1
 OUT=$(status)
-check 9l "a clean real run after it: log says exit 0, Status shows last: ok, job exits 0" '[ "$(logexit)" = 0 ] && [ "$JRC" = 0 ] && [[ "$(row j1)" == *"last: ok"* ]]'
+check 9l "a clean real run after it: log says exit 0, Status shows ✓ ok, job exits 0" '[ "$(logexit)" = 0 ] && [ "$JRC" = 0 ] && [[ "$(row j1)" == *"✓ ok"* ]]'
 
 # ── 10 Edit job -> Change copy mode ──────────────────────────────────────
 mkjob append "\n" >/dev/null

@@ -4686,9 +4686,11 @@ step_immich_backup_once() {
     fi
     echo ""
     # The script's own timestamped lines are kept in $res and read for the result block, not echoed.
+    local t0=$SECONDS ph_size=""
+    if $do_photos && [[ "$photos_size" != unknown ]]; then ph_size=$photos_size; fi
     "${runner[@]}" "${args[@]}" > "$res" 2>&1 &
     _immich_once_wait $! "$res" "$db_size" || rc=$?
-    _immich_once_result "$rc" "$res" "$backup_dir" "$scope_name"
+    _immich_once_result "$rc" "$res" "$backup_dir" "$scope_name" "$ph_size" "$((SECONDS - t0))"
 }
 
 # Screen side of the one-time backup: waits for the script (pid $1, output in file $2, read by
@@ -4737,10 +4739,20 @@ _commas() { sed -E ':a;s/([0-9])([0-9]{3})($|,)/\1,\2\3/;ta' <<<"$1"; }
 # bytes -> "145 MB" / "1.4 GB" (1024-based, like du)
 _size_h() { awk -v b="${1:-0}" 'BEGIN{ if (b >= 1073741824) printf "%.1f GB", b/1073741824; else if (b >= 1048576) printf "%d MB", b/1048576; else if (b >= 1024) printf "%d KB", b/1024; else printf "%d B", b }'; }
 
-# The one result block of a one-time backup. $1 rc, $2 file with the script's output, $3 backup dir
-# (<dest>/immich), $4 scope (photos|db|both).
+# 48 -> "48s", 125 -> "2m 05s", 3720 -> "1h 02m"
+_dur_h() {
+    local s=${1:-0}
+    if (( s >= 3600 )); then printf '%dh %02dm' $((s / 3600)) $((s % 3600 / 60))
+    elif (( s >= 60 )); then printf '%dm %02ds' $((s / 60)) $((s % 60))
+    else printf '%ds' "$s"; fi
+}
+
+# The one result block of a backup run. $1 rc, $2 file with the script's output (or one run's lines
+# of the backup log), $3 backup dir (<dest>/immich), $4 scope (photos|db|both), $5 size of the photo
+# library as text (omitted when unknown), $6 seconds the run took (omitted when unknown), $7 = 0 when
+# the run does not copy .env (the scheduled one), so an older one-time copy is not claimed.
 _immich_once_result() {
-    local rc=$1 res=$2 bdir=$3 scope=$4 line
+    local rc=$1 res=$2 bdir=$3 scope=$4 phsize=${5:-} took=${6:-} envcopy=${7:-1} line
     echo ""
     if (( rc == 130 )); then
         fail "Cancelled - the backup was stopped; a partial copy may be at $bdir/. Run it again to finish."
@@ -4751,35 +4763,37 @@ _immich_once_result() {
         fail "Backup failed (see above)."
         return 1
     fi
-    local dump cold n bytes what=() lines=()
-    dump=$(sed -n 's/.*DB dump ok → //p' "$res" | tail -1)           # immich/db/immich-db-<stamp>.sql.gz
-    cold=$(grep -c "Database copied" "$res" || true)
-    if [[ -n "$dump" ]]; then
-        bytes=$(stat -c %s "$bdir/db/${dump##*/}" 2>/dev/null || true)
-        if [[ "$scope" == db ]]; then what+=("database${bytes:+ ($(_size_h "$bytes"))}"); lines+=("db/${dump##*/}")
-        else what+=("database"); lines+=("db/${dump##*/}${bytes:+ ($(_size_h "$bytes"))}"); fi
-    elif (( cold )); then
-        what+=("database"); lines+=("db/postgres/ (data dir copy)")
-    fi
+    local dump cold n bytes del what
+    ok "Backup complete - $(date +%H:%M)${took:+, took $(_dur_h "$took")}"
+    echo ""
+    echo "    Saved to  $bdir/"
     if [[ "$scope" != db ]]; then
         n=$(sed -n 's/^Number of \(regular \)\{0,1\}files transferred: *//p' "$res" | tail -1)
         bytes=$(sed -n 's/^Total transferred file size: *\([0-9,]*\) bytes.*/\1/p' "$res" | tail -1)
-        what=("photos" "${what[@]}")
-        if [[ -n "$n" ]]; then lines=("photos/: $n new file$([[ "$n" == 1 ]] || echo s), $(_size_h "${bytes//,/}")" "${lines[@]}")
-        else lines=("photos/: synced" "${lines[@]}"); fi
+        del=$(sed -n 's/^Number of deleted files: *\([0-9,]*\).*/\1/p' "$res" | tail -1)
+        n=${n//,/}; del=${del//,/}
+        if [[ -z "$n" ]]; then what="copied"
+        elif (( n == 0 )); then what="already up to date (nothing new since the last backup)"
+        else what="$(_commas "$n") new photo$([[ "$n" == 1 ]] || echo s) added ($(_size_h "${bytes//,/}"))"; fi
+        if [[ -n "$del" ]] && (( del > 0 )); then
+            [[ "$n" == 0 ]] && what="nothing new"
+            what+=", $(_commas "$del") removed (gone from the library)"
+        fi
+        echo "    Photos    ${phsize:+$phsize, }$what"
     fi
-    local joined="${what[0]}"; [[ ${#what[@]} -gt 1 ]] && joined="${what[0]} + ${what[1]}"
-    ok "Backup complete - $joined → $bdir/"
-    for line in "${lines[@]}"; do echo "    $line"; done
-    [[ -f "$bdir/.env" ]] && echo "    .env (config copy)"
-    if [[ -n "$dump" ]]; then
-        echo "  Restore: federver → 9 → 3 (Install), federver → 7 → 2 (Start), then"
-        echo "    gunzip -c $bdir/db/${dump##*/} | docker exec -i immich_postgres psql -U postgres"
-    elif (( cold )); then
-        echo "  Restore: federver → 9 → 3 (Install), copy db/postgres/ and .env back, then federver → 7 → 2 (Start)"
-    else
-        echo "  Restore: federver → 9 → 3 (Install), then copy photos/ back to the photo library"
+    if [[ "$scope" != photos ]]; then
+        dump=$(sed -n 's/.*DB dump ok → //p' "$res" | tail -1)           # immich/db/immich-db-<stamp>.sql.gz
+        cold=$(grep -c "Database copied" "$res" || true)
+        if [[ -n "$dump" ]]; then
+            bytes=$(stat -c %s "$bdir/db/${dump##*/}" 2>/dev/null || true)
+            echo "    Database  ${bytes:+$(_size_h "$bytes"), }saved as ${dump##*/}"
+        elif (( cold )); then
+            echo "    Database  copied the data folder (Immich was stopped)"
+        fi
     fi
+    [[ "$envcopy" == 1 && -f "$bdir/.env" ]] && echo "    Settings  .env copied"
+    echo ""
+    echo "    How to restore: customer guide → \"Restore Immich\""
     return 0
 }
 
@@ -5500,7 +5514,7 @@ step_immich_backup() {
     echo ""
     echo -e "  ${BOLD}Backup schedule summary${NC}"
     echo "    Destination: $BACKUP_DIR"
-    echo "    Schedule:    $oncal"
+    echo "    Schedule:    $(_sched_text "$oncal")"
     echo "    Retention:   ${retention_days} days of DB dumps (photos: append-only copy)"
     _confirm_yn "Set up this backup?" || { warn "Cancelled - nothing changed."; return 0; }
     sudo mkdir -p "$BACKUP_DIR"
@@ -5569,7 +5583,7 @@ TIMEREOF
 
     echo ""
     ok "Immich backup configured (systemd timer):"
-    echo -e "    Schedule:    ${BOLD}${oncal}${NC}"
+    echo -e "    Schedule:    ${BOLD}$(_sched_text "$oncal")${NC}"
     echo -e "    Destination: ${BOLD}$BACKUP_DIR${NC}"
     echo -e "    Includes:    ${BOLD}database + photos${NC} ${DIM}(no downtime)${NC}"
     echo -e "      • DB dumps → ${DIM}$BACKUP_DIR/immich/db/immich-db-*.sql.gz${NC}"
@@ -5583,7 +5597,7 @@ TIMEREOF
     # initial run). So offer to run once now: confirms it works and seeds the
     # first backup instead of waiting up to a week.
     if _confirm_yn "Run the first backup now to verify it works?"; then
-        _immich_backup_run --yes || true   # a start failure must not skip the hints below
+        _immich_backup_run --yes --wait || true   # a start failure or a failed backup must not skip the hints below
     fi
 
     echo ""
@@ -5593,7 +5607,7 @@ TIMEREOF
 
 # Start the scheduled backup now, detached under systemd so it keeps running
 # even if the SSH session closes. Shows a few log lines for confidence.
-_immich_backup_run() { # [--yes]  (--yes: the caller just asked)
+_immich_backup_run() { # [--yes] [--wait]  (--yes: the caller just asked; --wait: show the result, see _immich_backup_wait)
     if [ ! -x "$_IMMICH_BACKUP_BIN" ]; then
         warn "No scheduled Immich backup is configured yet."
         info "Set one up first: federver → 9 → Backup - Scheduled - Set up  (or federver → 16 → 6)."
@@ -5612,7 +5626,10 @@ _immich_backup_run() { # [--yes]  (--yes: the caller just asked)
         return 1
     fi
     info "Starting backup (runs under systemd — continues even if you disconnect)..."
+    local n0=0
+    [[ -f "$_IMMICH_BACKUP_LOG" ]] && n0=$(wc -l < "$_IMMICH_BACKUP_LOG")   # this run's lines are the ones after these
     sudo systemctl start --no-block immich-backup.service || { fail "Could not start the backup service."; return 1; }
+    if [[ "${2:-}" == --wait ]]; then _immich_backup_wait "$n0"; return; fi
     sleep 3
     echo ""
     info "Recent log (it keeps running in the background):"
@@ -5623,6 +5640,48 @@ _immich_backup_run() { # [--yes]  (--yes: the caller just asked)
     fi
     echo ""
     info "Watch live:  tail -f $_IMMICH_BACKUP_LOG"
+}
+
+# Waits for the backup service _immich_backup_run just started and shows its result in the same
+# block as a one-time backup, built from the lines this run added to the log ($1 = the log's line
+# count before the start). On a terminal a ticker shows the elapsed time; the service polls are
+# readable without sudo. Gives up after $2 seconds (default 2 h); Ctrl-C stops only the waiting.
+_immich_backup_wait() {
+    local n0=$1 max=${2:-7200} t0=$SECONDS el=0 intr=0 seen=0 st final="" res oldtrap rc=0 dest
+    res=$(mktemp) || { fail "Could not create a temp file - the backup keeps running in the background."; return 1; }
+    oldtrap=$(trap -p INT)
+    trap 'intr=1' INT
+    [[ -t 1 ]] || echo "  Running the first backup…"
+    info "Ctrl-C stops only the waiting - the backup keeps running."
+    while :; do
+        el=$((SECONDS - t0))
+        tail -n +$((n0 + 1)) "$_IMMICH_BACKUP_LOG" 2>/dev/null > "$res" || true
+        final=$(grep -E 'Backup (complete|FAILED)' "$res" | tail -1 || true)
+        [[ -n "$final" ]] && break
+        st=$(systemctl show immich-backup.service -p ActiveState,SubState,ExecMainStatus 2>/dev/null || true)
+        if [[ "$st" == *ActiveState=activating* || "$st" == *ActiveState=active* ]]; then seen=1
+        elif (( seen || el > 10 )); then break; fi   # stopped without a result line (a start that never ran also lands here)
+        (( intr )) && break
+        (( el >= max )) && break
+        [[ -t 1 ]] && _tick "$(printf '  Running the first backup… %dm %02ds' $((el / 60)) $((el % 60)))"
+        sleep 1
+    done
+    [[ -t 1 ]] && printf '\r\033[K'
+    if [[ -n "$oldtrap" ]]; then eval "$oldtrap"; else trap - INT; fi
+    if [[ -n "$final" ]]; then
+        dest=$(_configured_backup_dir)
+        [[ "$final" == *"Backup complete"* ]] || rc=1
+        _immich_once_result "$rc" "$res" "${dest:-?}/immich" both "" "$el" 0 || true
+    elif (( intr )); then
+        echo ""; info "Stopped waiting - the backup keeps running in the background. Result: federver → 9 → 9"
+    elif (( el >= max )); then
+        echo ""; warn "Still running in the background - check federver → 9 → 9"
+    else
+        echo ""; fail "The backup service stopped without a result. Log: $_IMMICH_BACKUP_LOG"
+        rm -f "$res"; return 1
+    fi
+    rm -f "$res"
+    return $rc
 }
 
 # Immich-backup-only status (Option C): report just THIS backup's schedule and
@@ -5674,7 +5733,7 @@ _immich_backup_status() {
     if [ "$mechanism" = "timer" ]; then
         # Next-run + enabled state ride in the Note column (the fleet table has no
         # dedicated columns for them) so the detail isn't lost to the table format.
-        local note="next: ${next:-unknown}"
+        local note="next: $([[ -n "$next" ]] && _when_short "$next" || echo unknown)"
         [ "$enabled" = "enabled" ] || note="DISABLED — ${note}"
         _immich_backup_outdated && note="outdated - run Set up again; ${note}"
         printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$([[ -n "$oncal" ]] && _sched_text "$oncal" || echo unknown)" "timer" "backup" "$note"

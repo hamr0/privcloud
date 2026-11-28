@@ -22,7 +22,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T
 rw() { sed -e "s|/usr/local/bin/immich-backup.sh|$BIN|g" -e "s|/var/log/immich-backup.log|$LOG|g" \
            -e "s|/etc/systemd/system/|$UNITS/|g" -e "s|/etc/immich-backup.conf|$CONF|g"; }
 fns() { local f; for f in "$@"; do extract_fn "$f" "$SRC" | rw; done; }
-FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _sched_text _when_short _immich_backup_remove _immich_docker_group _compose step_immich_backup_once _immich_once_wait _commas _tick _immich_once_result _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
+FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_wait _immich_backup_status _sched_text _when_short _immich_backup_remove _immich_docker_group _compose step_immich_backup_once _immich_once_wait _commas _tick _immich_once_result _dur_h _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
 mkrun() {  # rebuild run.sh from the CURRENT $SRC (functions that do not exist yet are skipped)
   {
     printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC= BLUE=\nDRY_RUN=0\nMIRROR_WIPE_MIN=1000\n_FV_SELF=%q\n' "$T/app/setup.sh"
@@ -62,8 +62,14 @@ cat > "$T/bin/systemctl" <<'X'
 case "$*" in
   *"show immich-backup.timer"*) [ -e "$UNITS/immich-backup.timer" ] && echo loaded || echo not-found ;;
   "cat immich-backup.timer") cat "$UNITS/immich-backup.timer" 2>/dev/null ;;
-  "list-timers"*) echo "Sat 2026-11-28 03:00:00 UTC 5h left - - immich-backup.timer immich-backup.service" ;;
+  "list-timers"*) echo "$(date -d '2026-11-28 03:00:00' '+%a %F %T %Z') 5h left - - immich-backup.timer immich-backup.service" ;;
   "is-enabled"*) echo enabled ;;
+  "start --no-block immich-backup.service") echo "$*" >> "$T/systemctl.log"
+    # SVC_RUN: behave like systemd - the installed script runs detached, the service reads as active while it lives
+    [ -n "$SVC_RUN" ] && { setsid bash "$BIN" >/dev/null 2>&1 </dev/null & echo $! > "$T/svc.pid"; } ;;
+  "show immich-backup.service"*)
+    if [ -n "$SVC_RUN" ] && kill -0 "$(cat "$T/svc.pid" 2>/dev/null)" 2>/dev/null; then printf 'ActiveState=activating\nSubState=start\nExecMainStatus=0\n'
+    else printf 'ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n'; fi ;;
   "start "*) echo "$*" >> "$T/systemctl.log" ;;
 esac
 exit 0
@@ -84,7 +90,7 @@ esac
 exit 0
 X
 chmod +x "$T/bin/"*
-export PATH="$T/bin:$PATH" T UNITS CRON_FILE RS_LOG=$T/rs.log PG_UP=$T/pg.up COMPOSE_UP=$T/compose.up
+export PATH="$T/bin:$PATH" T BIN UNITS CRON_FILE RS_LOG=$T/rs.log PG_UP=$T/pg.up COMPOSE_UP=$T/compose.up
 : > "$PG_UP"
 
 CHECK_DIAG="rc=\$RC out='\$OUT'"
@@ -136,7 +142,7 @@ check 2c "Set up again, Enter at the destination: keeps the configured one" '[ $
 fresh; setup_sched
 runbk
 go "" _immich_backup_status
-check 3a "Status (timer): one row with the schedule from the unit, next run in the Note" '[[ "$OUT" == *"immich-backup"*"daily 03:00"*"timer"*"next: Sat 2026-11-28"* && "$OUT" != *"*-*-*"* && "$OUT" != *systemd* ]]'
+check 3a "Status (timer): one row with the schedule from the unit, next run in the Note" '[[ "$OUT" == *"immich-backup"*"daily 03:00"*"timer"*"next: 2026-11-28 03:00"* && "$OUT" != *"03:00:00"* && "$OUT" != *"next: Sat"* && "$OUT" != *"*-*-*"* && "$OUT" != *systemd* ]]'
 check 3b "Status: Last runs shows the run as ok" '[[ "$OUT" == *"Last runs"* && "$OUT" == *"✓ ok"* ]]'
 printf 'Sat Nov 28 03:00:01 UTC 2026: Backup FAILED (exit 1) — systemd will retry\n' >> "$LOG"
 go "" _immich_backup_status
@@ -239,7 +245,7 @@ one_fresh; go "\n$ONE\n\n\n" step_immich_backup_once
 check 7a "both, append, schedule not set up: rc 0; photos in <dest>/immich/photos, no --delete" '[ $RC = 0 ] && [ -f "$ONE/immich/photos/library/u1/a.jpg" ] && ! grep -q -- --delete "$RS_LOG" && [ ! -e "$ONE/privcloud-backup" ]'
 check 7b "online dump <dest>/immich/db/immich-db-*.sql.gz, gzip, mode 600" 'f=$(ls "$ONE"/immich/db/immich-db-*.sql.gz 2>/dev/null | head -1); [ -n "$f" ] && [ "$(mode "$f")" = 600 ] && [ "$(zcat "$f")" = SQLDUMP ]'
 check 7c ".env copied beside the backup, mode 600" '[ "$(mode "$ONE/immich/.env")" = 600 ] && cmp -s "$T/app/.env" "$ONE/immich/.env"'
-check 7d "restore hint points at the federver menu (no ./privcloud)" '[[ "$OUT" == *"federver → 7 → 2 (Start)"* && "$OUT" != *"./privcloud"* ]]'
+check 7d "restore hint points at the customer guide section (no ./privcloud, no command on the screen)" '[[ "$OUT" == *"How to restore: customer guide → \"Restore Immich\""* && "$OUT" != *"./privcloud"* && "$OUT" != *"psql"* ]]'
 check 7e "no installed script: the generated one ran from a temp file (sudo bash <tmp> --once ...) and left nothing behind" 'grep -q "^sudo bash /.* --once --dest $ONE --scope both\$" "$T/sudo.log" && [ ! -e "$BIN" ] && t=$(sed -n "s/^sudo bash \(\/[^ ]*\) --once.*/\1/p" "$T/sudo.log" | head -1) && [ -n "$t" ] && [ ! -e "$t" ]'
 check 7f "excludes apply to the one-time copy too (no thumbs/encoded-video/backups; same-named subfolder kept)" '[ ! -e "$ONE/immich/photos/thumbs" ] && [ ! -e "$ONE/immich/photos/encoded-video" ] && [ ! -e "$ONE/immich/photos/backups" ] && [ -f "$ONE/immich/photos/library/thumbs/keep.jpg" ]'
 
@@ -384,13 +390,13 @@ one_fresh; go "\n$ONE\n\n\n" step_immich_backup_once
 echo "---- sample: one-time both ----"; echo "$OUT"; echo "-------------------------------"
 check 10a "both: says why sudo, then measures, dumps, syncs - each BEFORE its result" '[ $RC = 0 ] && awk "/Needs sudo to read the photo library and dump the database/{a=NR} /Measuring photo library/{b=NR} /Dumping database/{c=NR} /Syncing photos/{d=NR} /Backup complete/{e=NR} END{exit !(a&&b&&c&&d&&e&&a<b&&b<c&&c<d&&d<e)}" <<<"$OUT"'
 check 10b "both: no raw timestamped script lines, no rsync progress/stats, no old Location/Config block" '! grep -qE "^ *[A-Z][a-z]{2} [A-Z][a-z]{2} +[0-9]+ |Number of files|to-chk|Total file size|Location:|Config: |To restore" <<<"$OUT" && [[ "$OUT" != *"DB dump ok"* && "$OUT" != *"Photos synced"* ]]'
-check 10c "both: one result block naming the dump just written, photos line, .env, and a numbered-free restore" 'dump=$(ls "$ONE"/immich/db/ | head -1); [[ "$OUT" == *"✓ Backup complete - photos + database → $ONE/immich/"* && "$OUT" == *"    db/$dump ("*" B)"* && "$OUT" == *"    photos/: 2 new files, "[0-9]*" B"* && "$OUT" == *"    .env (config copy)"* && "$OUT" == *"federver → 9 → 3 (Install), federver → 7 → 2 (Start), then"* && "$OUT" == *"gunzip -c $ONE/immich/db/$dump | docker exec -i immich_postgres psql -U postgres"* && "$OUT" != *"  3. "* ]]'
+check 10c "both: the approved screen - finish time + took, Saved to, Photos (size, new photos), Database (size, file), Settings, guide pointer; no command, no old wording" 'dump=$(ls "$ONE"/immich/db/ | head -1); [[ "$OUT" =~ "✓ Backup complete - "[0-9][0-9]:[0-9][0-9]", took "[0-9]+s ]] && [[ "$OUT" == *"    Saved to  $ONE/immich/"* && "$OUT" == *"    Photos    1 GB, 2 new photos added ("*" B)"* && "$OUT" == *"    Database  "*" B, saved as $dump"* && "$OUT" == *"    Settings  .env copied"* && "$OUT" == *"    How to restore: customer guide → \"Restore Immich\""* && "$OUT" != *"gunzip"* && "$OUT" != *"Restore:"* && "$OUT" != *"photos/:"* && "$OUT" != *"(config copy)"* ]]'
 one_fresh; go "3\n$ONE\n\n" step_immich_backup_once
 echo "---- sample: one-time database only ----"; echo "$OUT"; echo "----------------------------------------"
 check 10d "db only: summary says 'Database only' and has no Mode line; no photo measuring or sync lines" '[[ "$OUT" == *"Scope:        Database only"* && "$OUT" != *"Mode:  "* && "$OUT" != *"Measuring photo library"* && "$OUT" != *"Syncing photos"* ]]'
-check 10e "db only: result block is '✓ Backup complete - database (N MB)' + dump file, no photos line" 'dump=$(ls "$ONE"/immich/db/ | head -1); [[ "$OUT" == *"✓ Backup complete - database ("*" B) → $ONE/immich/"* && "$OUT" == *"    db/$dump"* && "$OUT" != *"photos/:"* ]]'
+check 10e "db only: Database line only (size, file), no Photos line" 'dump=$(ls "$ONE"/immich/db/ | head -1); [[ "$OUT" == *"✓ Backup complete - "* && "$OUT" == *"    Saved to  $ONE/immich/"* && "$OUT" == *"    Database  "*" B, saved as $dump"* && "$OUT" != *"    Photos  "* ]]'
 one_fresh; go "2\n$ONE\n\n\n" step_immich_backup_once
-check 10f "photos only: summary says 'Photos only' with Mode; result has the photos line and no dump" '[[ "$OUT" == *"Scope:        Photos only"* && "$OUT" == *"Mode:         append only"* && "$OUT" == *"✓ Backup complete - photos → "* && "$OUT" == *"photos/: 2 new files"* && "$OUT" != *"gunzip"* ]]'
+check 10f "photos only: summary says 'Photos only' with Mode; result has the Photos line and no Database line" '[[ "$OUT" == *"Scope:        Photos only"* && "$OUT" == *"Mode:         append only"* && "$OUT" == *"✓ Backup complete - "* && "$OUT" == *"    Photos    1 GB, 2 new photos added ("* && "$OUT" != *"    Database  "* ]]'
 one_fresh; FAIL_DUMP=1 go "3\n$ONE\n\n" step_immich_backup_once
 check 10g "a failure shows the script's lines (so the reason is visible) and no success block" '[ $RC = 1 ] && [[ "$OUT" == *"DB dump FAILED"* && "$OUT" == *"Backup failed"* && "$OUT" != *"✓ Backup complete"* && "$OUT" != *"Restore:"* ]]'
 check 10h "scheduled run unchanged: log keeps the timestamped lines Status parses, final line 'Backup complete → <dest>'" 'fresh; setup_sched; runbk; [[ "$LOGTXT" == *"DB dump ok"* && "$LOGTXT" == *"Photos synced"* ]] && tail -n 1 "$LOG" | grep -q "Backup complete → $DEST\$" && ! grep -q "Dumping database\|Syncing photos\|--stats" "$LOG" "$RS_LOG"'
@@ -409,7 +415,7 @@ check 12a "_size_h: under 1 MB is shown in B or KB, never '0 MB'" '[ "$(inrun _s
 one_fresh; : > "$T/tty.in"
 TTY=$(RS_SLEEP=2 script -qec "printf '2\n$ONE\n\n\n' | bash $T/app/run.sh --run step_immich_backup_once" /dev/null 2>&1 | tr -d '\r')
 echo "---- sample: ticker (raw, \\r shown as newline) ----"; echo "$TTY" | grep -a "Syncing photos" | tail -3 | cat -v | cut -c1-120; echo "---------------------------------------------------"
-check 12b "tty: photo copy shows 'Syncing photos… Nm SSs, N files so far, SIZE' and the result follows" '[[ "$TTY" == *"Syncing photos… 0m 0"*" files so far, "* && "$TTY" == *"✓ Backup complete - photos → $ONE/immich/"* ]]'
+check 12b "tty: photo copy shows 'Syncing photos… Nm SSs, N files so far, SIZE' and the result follows" '[[ "$TTY" == *"Syncing photos… 0m 0"*" files so far, "* && "$TTY" == *"✓ Backup complete - "* && "$TTY" == *"Saved to  $ONE/immich/"* ]]'
 one_fresh
 TTYN=$(COLUMNS=30 RS_SLEEP=2 script -qec "printf '2\n$ONE\n\n\n' | bash $T/app/run.sh --run step_immich_backup_once" /dev/null 2>&1)
 MAXN=$(tr '\r' '\n' <<<"$TTYN" | sed 's/\x1b\[K//g' | grep -a 'Syncing photos… [0-9]' | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
@@ -429,13 +435,13 @@ check 12f "result for rc 130: 'Cancelled', no success block" '[[ "$OUT" == *"Can
 # no match (and a kill -0 on a root child) passed them and failed live.
 CHECK_DIAG="rc=\$RC out='\$OUT' lv='\$LV'"
 one_fresh; run_errexit step_immich_backup_once < <(printf '\n%s\n\n\n' "$ONE")
-check 13a "errexit, both/append: result block printed, rc 0 (dump written, no 'Database copied' line)" '[ $RC = 0 ] && [[ "$OUT" == *"Dumping database"* && "$OUT" == *"✓ Backup complete - photos + database"* && "$OUT" == *"gunzip -c"* ]]'
+check 13a "errexit, both/append: result block printed, rc 0 (dump written, no 'Database copied' line)" '[ $RC = 0 ] && [[ "$OUT" == *"Dumping database"* && "$OUT" == *"✓ Backup complete - "* && "$OUT" == *"    Database  "*"saved as immich-db-"* ]]'
 one_fresh; run_errexit step_immich_backup_once < <(printf '3\n%s\n\n' "$ONE")
-check 13b "errexit, database only: result block printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"✓ Backup complete - database ("* ]]'
+check 13b "errexit, database only: result block printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"✓ Backup complete - "* && "$OUT" == *"    Database  "* ]]'
 one_fresh; run_errexit step_immich_backup_once < <(printf '2\n%s\n\n\n' "$ONE")
-check 13c "errexit, photos only: result block printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"✓ Backup complete - photos → "* && "$OUT" == *"photos/: 2 new files"* ]]'
+check 13c "errexit, photos only: result block printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"✓ Backup complete - "* && "$OUT" == *"    Photos    1 GB, 2 new photos added"* ]]'
 one_fresh; rm -f "$PG_UP"; run_errexit step_immich_backup_once < <(printf '3\n%s\n\n' "$ONE")
-check 13d "errexit, cold database copy: result block printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"data dir copy"* ]]'
+check 13d "errexit, cold database copy: result block printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"    Database  copied the data folder (Immich was stopped)"* ]]'
 one_fresh; FAIL_DUMP=1 run_errexit step_immich_backup_once < <(printf '3\n%s\n\n' "$ONE")
 check 13e "errexit, failed dump: the failure block is printed, rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"Backup failed"* ]]'
 # The backup child is root (sudo): kill -0 from the user gets EPERM. Simulate it: kill -0 always fails.
@@ -450,7 +456,7 @@ check 13f "child that kill -0 cannot signal: the wait still announces the dump a
 # more normal-operation non-zero returns inside the screen helpers
 printf '%s\n' "x DB dump ok → immich/db/gone.sql.gz" > "$T/rs.res"
 run_errexit _immich_once_result 0 "$T/rs.res" "$ONE/immich" both
-check 13g "errexit: result block when the dump file named in the output is gone (stat fails): block still printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Backup complete"* && "$OUT" == *"db/gone.sql.gz"* ]]'
+check 13g "errexit: result block when the dump file named in the output is gone (stat fails): block still printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Backup complete"* && "$OUT" == *"    Database  saved as gone.sql.gz"* ]]'
 run_errexit _sched_text "30 09 * * *"; r1=$OUT; rc1=$RC
 run_errexit _sched_text "05 08 * * 1"
 check 13h "_sched_text: a cron hour/minute written 08 or 09 is read as decimal (not octal: printf gave 00:00 and rc 1)" '[ $rc1 = 0 ] && [ "$r1" = "daily 09:30" ] && [ $RC = 0 ] && [ "$OUT" = "weekly Mon 08:05" ]'
@@ -474,5 +480,68 @@ run_errexit step_immich_backup_once < <(printf '\n%s\n\n\n' "$ONE")
 check 14e "one-time run with a same-format but stale installed script uses the generated temp script (announce line, old script not run)" '[ $RC = 0 ] && [[ "$OUT" == *"Dumping database"* && "$OUT" != *OLD-SCRIPT-RAN* ]]'
 printf '%s\n' "plain line" > "$T/ns.res"
 run_errexit _immich_once_result 0 "$T/ns.res" "$ONE/immich" photos
-check 14f "photos result without stats lines: 'photos/: synced', no fabricated '0 new files'" '[ $RC = 0 ] && [[ "$OUT" == *"photos/: synced"* && "$OUT" != *"0 new file"* ]]'
+check 14f "photos result without stats lines: 'copied', no fabricated count" '[ $RC = 0 ] && [[ "$OUT" == *"    Photos    copied"* && "$OUT" != *"new photo"* && "$OUT" != *"up to date"* ]]'
+# ── 15 the one-time result screen says what happened in plain words ──
+one_fresh; go "\n$ONE\n\n\n" step_immich_backup_once
+go "\n$ONE\n\n\n" step_immich_backup_once
+echo "---- sample: one-time both, nothing new ----"; echo "$OUT"; echo "--------------------------------------------"
+check 15a "second run, nothing changed: 'already up to date (nothing new since the last backup)', size of the library kept" '[ $RC = 0 ] && [[ "$OUT" == *"    Photos    1 GB, already up to date (nothing new since the last backup)"* && "$OUT" != *"new photo"* ]]'
+echo new > "$T/up/library/u1/b.jpg"
+go "\n$ONE\n\n\n" step_immich_backup_once
+echo "---- sample: one-time both, 1 new ----"; echo "$OUT"; echo "--------------------------------------"
+check 15b "one new file: '1 new photo added (N B)' (singular)" '[[ "$OUT" == *"    Photos    1 GB, 1 new photo added ("*" B)"* ]]'
+one_fresh; mkdir -p "$ONE/immich/photos"; echo stray > "$ONE/immich/photos/stray"
+go "\n$ONE\ndelete\ny\n" step_immich_backup_once
+check 15c "mirror that deleted a file: '1 removed (gone from the library)' after the new photos" '[ $RC = 0 ] && [[ "$OUT" == *"2 new photos added ("*"), 1 removed (gone from the library)"* ]]'
+one_fresh; go "\n$ONE\n\n\n" step_immich_backup_once
+check 15d "append run: no 'removed' wording" '[[ "$OUT" != *removed* ]]'
+go "2\n$ONE\n\n\n" step_immich_backup_once
+check 15e "photos only, nothing new: Photos line, no Database line" '[[ "$OUT" == *"    Photos    1 GB, already up to date"* && "$OUT" != *"    Database  "* ]]'
+check 15f "_dur_h: 48s, 2m 05s, 1h 02m" '[ "$(inrun _dur_h 48)" = "48s" ] && [ "$(inrun _dur_h 125)" = "2m 05s" ] && [ "$(inrun _dur_h 3720)" = "1h 02m" ]'
+check 15g "the restore command lives only in the customer guide: one 'Restore Immich' section, one gunzip|psql line, none in setup.sh" '[ "$(grep -c "^## Restore Immich\$" "$H/../customer-guide.md")" = 1 ] && [ "$(grep -c "psql -U postgres" "$H/../customer-guide.md")" = 1 ] && ! grep -q "gunzip -c" "$SRC" && ! grep -q "Moving to a new machine" "$H/../customer-guide.md"'
+
+# ── 16 Set up's "Run the first backup now?" waits and shows the result ──
+# SVC_RUN=1 makes the systemctl stub run the installed script detached, like systemd.
+svc_done() { local p; p=$(cat "$T/svc.pid" 2>/dev/null); while [ -n "$p" ] && kill -0 "$p" 2>/dev/null; do sleep 0.2; done; }
+firstrun() { # Set up's answers: destination, "Continue anyway?" (same drive as the photos), daily, confirm, "y" to the first backup
+  printf '%s\ny\n1\n\ny\n' "$DEST"
+}
+cd "$T/app"   # run_errexit has no BASH_SOURCE, so Set up looks for .env in the current directory
+fresh; : > "$LOG"; echo "Mon Jan  5 03:00:00 AM UTC 2026: Backup complete → $DEST" > "$LOG"
+SVC_RUN=1 run_errexit step_immich_backup < <(firstrun); svc_done
+echo "---- sample: Set up, first backup ok ----"; echo "$OUT" | sed -n '/Running the first/,$p'; echo "------------------------------------------"
+check 16a "first backup ok: waits, then the result block of THIS run (the old 'Backup complete' log line is not taken for it), hints still follow" '[ $RC = 0 ] && [[ "$OUT" == *"Running the first backup…"* && "$OUT" =~ "✓ Backup complete - "[0-9][0-9]:[0-9][0-9]", took "[0-9]+s ]] && [[ "$OUT" == *"    Saved to  $DEST/immich/"* && "$OUT" == *"    Photos    copied"* && "$OUT" == *"    Database  "*" B, saved as immich-db-"* && "$OUT" == *"How to restore: customer guide"* && "$OUT" == *"Manage it anytime"* && "$OUT" != *"Settings"* && "$OUT" != *"Recent log"* ]]'
+fresh; echo "Mon Jan  5 03:00:00 AM UTC 2026: Backup complete → $DEST" > "$LOG"
+SVC_RUN=1 FAIL_DUMP=1 run_errexit step_immich_backup < <(firstrun); svc_done
+echo "---- sample: Set up, first backup failed ----"; echo "$OUT" | sed -n '/Running the first/,$p'; echo "---------------------------------------------"
+check 16b "first backup failed: the script's lines and 'Backup failed', no success block (despite the older 'complete' line in the log), Set up still ends with its hints, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"DB dump FAILED"* && "$OUT" == *"Backup failed (see above)."* && "$OUT" != *"✓ Backup complete"* && "$OUT" == *"Manage it anytime"* ]]'
+# on a terminal the wait ticks in place
+fresh; : > "$LOG"
+TTYW=$(SVC_RUN=1 RS_SLEEP=3 script -qec "printf '%s\ny\n1\n\ny\n' '$DEST' | bash $T/app/run.sh --run step_immich_backup" /dev/null 2>&1 | tr -d '\r'); svc_done
+check 16c "tty: 'Running the first backup… Nm SSs' ticks in place, then the result" '[[ "$TTYW" == *"Running the first backup… 0m 0"* && "$TTYW" == *$'"'"'\033[K'"'"'* && "$TTYW" == *"✓ Backup complete - "* && "$TTYW" == *"Saved to  $DEST/immich/"* ]]'
+cd "$H"
+check 16d "no tty: one plain 'Running the first backup…' line, no ticker codes (16a)" '[[ "$OUT" != *$'"'"'\033[K'"'"'* ]]'
+# direct: the wait itself. The service is started like Run now does; the log is empty before it.
+fresh; setup_sched; : > "$LOG"
+WT=$(SVC_RUN=1 RS_SLEEP=4 bash -c "$(sed '$d' "$T/app/run.sh"); sudo systemctl start --no-block immich-backup.service; _immich_backup_wait 0 2; echo RC=\$?" 2>&1)
+alive=0; kill -0 "$(cat "$T/svc.pid")" 2>/dev/null && alive=1; svc_done
+check 16e "gives up after the limit: 'still running in the background - check federver → 9 → 9', rc 0, the backup itself keeps running" '[[ "$WT" == *"Still running in the background - check federver → 9 → 9"* && "$WT" == *RC=0* && "$WT" != *"✓ Backup complete"* ]] && [ $alive = 1 ]'
+fresh; setup_sched; : > "$LOG"
+WC=$(SVC_RUN=1 RS_SLEEP=4 bash -c "$(sed '$d' "$T/app/run.sh"); sudo systemctl start --no-block immich-backup.service; ( sleep 1.5; kill -INT \$\$ ) & _immich_backup_wait 0 60; echo RC=\$?" 2>&1)
+alive=0; kill -0 "$(cat "$T/svc.pid")" 2>/dev/null && alive=1; svc_done
+check 16f "Ctrl-C while waiting: says it only stopped waiting, rc 0, the backup is still running (and says so up front)" '[[ "$WC" == *"Ctrl-C stops only the waiting"* && "$WC" == *"Stopped waiting - the backup keeps running in the background"* && "$WC" == *RC=0* ]] && [ $alive = 1 ]'
+fresh; setup_sched; : > "$LOG"; rm -f "$T/svc.pid"
+WN=$(bash -c "$(sed '$d' "$T/app/run.sh"); sudo systemctl start --no-block immich-backup.service; _immich_backup_wait 0 600; echo RC=\$?" 2>&1)
+check 16g "service never ran and the log stayed empty: says it stopped without a result (rc 1), does not wait for the limit" '[[ "$WN" == *"stopped without a result"* && "$WN" == *RC=1* ]]'
+fresh; setup_sched; : > "$T/systemctl.log"; go "\n" _immich_backup_run
+check 16h "Run now (9 → 10) keeps its background behaviour: starts, shows the recent log, no wait" '[ $RC = 0 ] && grep -q "start --no-block immich-backup.service" "$T/systemctl.log" && [[ "$OUT" == *"Recent log"* && "$OUT" != *"Running the first backup"* ]]'
+
+# ── 17 short dates and schedules: Status Note, Set up summary ──
+fresh; go "$DEST\ny\n2\n1\n\nn\n" step_immich_backup
+check 17a "Set up (weekly): the summary and the result both say 'weekly Sun 03:00', never the raw OnCalendar" '[ $RC = 0 ] && [[ "$OUT" == *"    Schedule:    weekly Sun 03:00"* && "$OUT" != *"*-*-*"* && "$OUT" != *"03:00:00"* ]] && [ "$(grep -c "Schedule:    weekly Sun 03:00" <<<"$OUT")" = 2 ]'
+fresh; go "$DEST\ny\n1\n\nn\n" step_immich_backup
+check 17b "Set up (daily): 'daily 03:00'" '[[ "$OUT" == *"    Schedule:    daily 03:00"* && "$OUT" != *"*-*-*"* ]]'
+fresh; setup_sched; go "" _immich_backup_status
+check 17c "Status Note: 'next: 2026-11-28 03:00' - no weekday, seconds or zone" '[[ "$OUT" == *"timer"*"backup"*"next: 2026-11-28 03:00"* && ! "$OUT" =~ next:\ [A-Z][a-z][a-z] && "$OUT" != *"03:00:00"* ]]'
+
 check_total

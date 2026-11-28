@@ -4368,7 +4368,17 @@ step_immich_update() {
 
 # True when Immich accepts the API key. It goes in on stdin (-H @-), never on the arg list
 # (visible to other local users via `ps`).
-_immich_key_ok() { curl -sf -H @- http://localhost:2283/api/users/me <<<"x-api-key: $1" &>/dev/null; }
+# _immich_key_code prints the HTTP status ("000" when Immich did not answer); _immich_key_ok = 2xx.
+_immich_key_code() { curl -s -o /dev/null -w '%{http_code}' -H @- http://localhost:2283/api/users/me <<<"x-api-key: $1" 2>/dev/null || true; }
+_immich_key_ok() { [[ "$(_immich_key_code "$1")" == 2* ]]; }
+# One line for a rejected key, by the status Immich answered with.
+_immich_key_fail() {
+    case "$1" in
+        401) fail "Immich doesn't know this key (deleted or mistyped) - create a new one: Account Settings → API Keys" ;;
+        403) fail "This key lacks permissions - create one with \"All\" permissions (upload needs asset.upload)" ;;
+        *)   fail "Could not check the key (HTTP $1)" ;;
+    esac
+}
 
 step_immich_upload() {
     info "Bulk-uploads a photo folder on the server into Immich (Immich CLI)."
@@ -4397,7 +4407,7 @@ step_immich_upload() {
 
     # API key: a saved one is checked first (/api/users/me); valid = Enter keeps it. The file is
     # 600 under a 700 dir, the key is read silently and only ever on stdin / by env name.
-    local api_key="" saved="" attempts=0 keyf="${XDG_CONFIG_HOME:-$HOME/.config}/federver/immich-api-key"
+    local api_key="" saved="" code="" attempts=0 keyf="${XDG_CONFIG_HOME:-$HOME/.config}/federver/immich-api-key"
     [[ -r "$keyf" ]] && saved="$(<"$keyf")"
     if [[ -n "$saved" ]]; then
         if _immich_key_ok "$saved"; then
@@ -4422,17 +4432,20 @@ step_immich_upload() {
             continue
         fi
 
-        if _immich_key_ok "$api_key"; then
+        echo "  Key received (${#api_key} characters)"
+        code=$(_immich_key_code "$api_key")
+        if [[ "$code" == 2* ]]; then
             ( umask 077; mkdir -p "$(dirname "$keyf")"; printf '%s\n' "$api_key" > "$keyf" )
             chmod 600 "$keyf" 2>/dev/null || true
             break
         fi
 
         attempts=$((attempts + 1))
+        _immich_key_fail "$code"
         if (( attempts < 3 )); then
-            fail "Invalid API key. Try again ($((3 - attempts)) attempts left)."
+            info "Try again ($((3 - attempts)) attempts left)."
         else
-            fail "Invalid API key. Giving up."
+            fail "Giving up."
             return 1
         fi
     done

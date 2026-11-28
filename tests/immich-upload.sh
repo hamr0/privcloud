@@ -16,7 +16,7 @@ mkdir -p "$T/bin" "$T/app/scripts" "$T/photos/trip"
 touch "$T/photos/trip/a.jpg" "$T/photos/b.mp4"
 {
   printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC=\nDRY_RUN=0\n_FV_SELF=%q\n' "$T/app/setup.sh"
-  for f in ok fail info warn _immich_up _immich_docker_group _immich_key_ok _ask_path _confirm_yn step_immich_upload step_immich_fix_gp; do extract_fn "$f" "$SRC"; done
+  for f in ok fail info warn _immich_up _immich_docker_group _immich_key_code _immich_key_ok _immich_key_fail _ask_path _confirm_yn step_immich_upload step_immich_fix_gp; do extract_fn "$f" "$SRC"; done
   printf '[ "$1" = --run ] && { "$2"; exit $?; }\n'
 } > "$T/app/run.sh"
 printf '#!/bin/bash\necho "fixgp $*" >> "$FIX_LOG"\n' > "$T/app/scripts/google-takeout-fix.sh"
@@ -36,7 +36,9 @@ cat > "$T/bin/curl" <<'X'
 #!/bin/bash
 case "$*" in
   *server/ping*) [ -e "$UP" ] && echo pong; exit 0 ;;
-  *users/me*) grep -q 'x-api-key: goodkey' ; exit ;;   # key arrives on stdin (-H @-)
+  *users/me*) k=$(cat)                              # key arrives on stdin (-H @-)
+              case "$k" in *goodkey*) c=200 ;; *noperm*) c=403 ;; *down*) c=000 ;; *) c=401 ;; esac
+              case "$*" in *%{http_code}*) printf '%s' "$c" ;; esac; [ "$c" = 200 ]; exit ;;
 esac
 exit 0
 X
@@ -102,4 +104,11 @@ go "\nq\n" step_immich_upload
 check 7f "q at the photos path = back (rc 2), nothing uploaded" '[ $RC = 2 ] && [ ! -s "$RUN_LOG" ]'
 check 7g "album prompt says Enter = Flat; path prompt says q = back (read -p is silent off a tty: source checked)" 'extract_fn step_immich_upload "$SRC" | grep -q "(Enter = Flat)" && extract_fn _ask_path "$SRC" | grep -q "q = back"'
 
+
+# 8 the key check: length echo (never the key) and one message per HTTP status; only a 2xx key is saved
+rm -rf "$XDG_CONFIG_HOME"
+go "bad\nnoperm\ndown\n" step_immich_upload
+check 8a "401 / 403 / no answer: three different messages, nothing saved, gives up" '[ $RC = 1 ] && [[ "$OUT" == *"Immich doesn'"'"'t know this key (deleted or mistyped) - create a new one: Account Settings → API Keys"* && "$OUT" == *"This key lacks permissions - create one with \"All\" permissions (upload needs asset.upload)"* && "$OUT" == *"Could not check the key (HTTP 000)"* && ! -e "$KEYF" ]]'
+go "goodkey\n/no/such/dir\n" step_immich_upload
+check 8b "after Enter: 'Key received (7 characters)', never the key itself" '[[ "$OUT" == *"Key received (7 characters)"* && "$OUT" != *goodkey* ]]'
 check_total

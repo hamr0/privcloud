@@ -22,7 +22,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T
 rw() { sed -e "s|/usr/local/bin/immich-backup.sh|$BIN|g" -e "s|/var/log/immich-backup.log|$LOG|g" \
            -e "s|/etc/systemd/system/|$UNITS/|g" -e "s|/etc/immich-backup.conf|$CONF|g"; }
 fns() { local f; for f in "$@"; do extract_fn "$f" "$SRC" | rw; done; }
-FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove _immich_docker_group _immich_compose step_immich_backup_once _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
+FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove _immich_docker_group _immich_compose step_immich_backup_once _immich_once_progress _immich_once_result _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
 mkrun() {  # rebuild run.sh from the CURRENT $SRC (functions that do not exist yet are skipped)
   {
     printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC= BLUE=\nDRY_RUN=0\nMIRROR_WIPE_MIN=1000\n_FV_SELF=%q\n' "$T/app/setup.sh"
@@ -239,7 +239,7 @@ one_fresh; go "\n$ONE\n\n\n" step_immich_backup_once
 check 7a "both, append, schedule not set up: rc 0; photos in <dest>/immich/photos, no --delete" '[ $RC = 0 ] && [ -f "$ONE/immich/photos/library/u1/a.jpg" ] && ! grep -q -- --delete "$RS_LOG" && [ ! -e "$ONE/privcloud-backup" ]'
 check 7b "online dump <dest>/immich/db/immich-db-*.sql.gz, gzip, mode 600" 'f=$(ls "$ONE"/immich/db/immich-db-*.sql.gz 2>/dev/null | head -1); [ -n "$f" ] && [ "$(mode "$f")" = 600 ] && [ "$(zcat "$f")" = SQLDUMP ]'
 check 7c ".env copied beside the backup, mode 600" '[ "$(mode "$ONE/immich/.env")" = 600 ] && cmp -s "$T/app/.env" "$ONE/immich/.env"'
-check 7d "restore hint points at the federver menu (no ./privcloud)" '[[ "$OUT" == *"federver -> 7 -> 2"* && "$OUT" != *"./privcloud"* ]]'
+check 7d "restore hint points at the federver menu (no ./privcloud)" '[[ "$OUT" == *"federver → 7 → 2 (Start)"* && "$OUT" != *"./privcloud"* ]]'
 check 7e "no installed script: the generated one ran from a temp file (sudo bash <tmp> --once ...) and left nothing behind" 'grep -q "^sudo bash /.* --once --dest $ONE --scope both\$" "$T/sudo.log" && [ ! -e "$BIN" ] && t=$(sed -n "s/^sudo bash \(\/[^ ]*\) --once.*/\1/p" "$T/sudo.log" | head -1) && [ -n "$t" ] && [ ! -e "$t" ]'
 check 7f "excludes apply to the one-time copy too (no thumbs/encoded-video/backups; same-named subfolder kept)" '[ ! -e "$ONE/immich/photos/thumbs" ] && [ ! -e "$ONE/immich/photos/encoded-video" ] && [ ! -e "$ONE/immich/photos/backups" ] && [ -f "$ONE/immich/photos/library/thumbs/keep.jpg" ]'
 
@@ -372,10 +372,26 @@ check 9f "Run now: shows destination and last run, n = nothing started" '[ $RC =
 go "\n" _immich_backup_run
 check 9g "Run now: Enter = start" '[ $RC = 0 ] && grep -q "start --no-block immich-backup.service" "$T/systemctl.log"'
 one_fresh; go "\n$ONE\n\n\n" step_immich_backup_once
-check 9h "one-time: summary (scope, destination, mode) is printed before the single Start question" '[ $RC = 0 ] && [[ "$OUT" == *"Backup summary"* && "$OUT" == *"Scope:        both"* && "$OUT" == *"Mode:         append only"* ]]'
+check 9h "one-time: summary (scope, destination, mode) is printed before the single Start question" '[ $RC = 0 ] && [[ "$OUT" == *"Backup summary"* && "$OUT" == *"Scope:        Photos + database"* && "$OUT" == *"Mode:         append only"* ]]'
 one_fresh; go "\n$ONE\n\nn\n" step_immich_backup_once
 check 9i "one-time: mode answered first, then ONE Start question; n = nothing created at the destination" '[ $RC = 0 ] && [ ! -e "$ONE/immich" ] && [ ! -s "$RS_LOG" ]'
 one_fresh; go "q\n" step_immich_backup_once
 check 9j "one-time: q at the scope = back (rc 2)" '[ $RC = 2 ]'
 
+
+# ── 10 one-time screens: one clean result block, long steps announced, log lines parsed not echoed ──
+one_fresh; go "\n$ONE\n\n\n" step_immich_backup_once
+echo "---- sample: one-time both ----"; echo "$OUT"; echo "-------------------------------"
+check 10a "both: says why sudo, then measures, dumps, syncs - each BEFORE its result" '[ $RC = 0 ] && awk "/Needs sudo to read the photo library and dump the database/{a=NR} /Measuring photo library/{b=NR} /Dumping database/{c=NR} /Syncing photos/{d=NR} /Backup complete/{e=NR} END{exit !(a&&b&&c&&d&&e&&a<b&&b<c&&c<d&&d<e)}" <<<"$OUT"'
+check 10b "both: no raw timestamped script lines, no rsync progress/stats, no old Location/Config block" '! grep -qE "^ *[A-Z][a-z]{2} [A-Z][a-z]{2} +[0-9]+ |Number of files|to-chk|Total file size|Location:|Config: |To restore" <<<"$OUT" && [[ "$OUT" != *"DB dump ok"* && "$OUT" != *"Photos synced"* ]]'
+check 10c "both: one result block naming the dump just written, photos line, .env, and a numbered-free restore" 'dump=$(ls "$ONE"/immich/db/ | head -1); [[ "$OUT" == *"✓ Backup complete - photos + database → $ONE/immich/"* && "$OUT" == *"    db/$dump ("*" MB)"* && "$OUT" == *"    photos/: 2 new files, 0 MB"* && "$OUT" == *"    .env (config copy)"* && "$OUT" == *"federver → 9 → 3 (Install), federver → 7 → 2 (Start), then"* && "$OUT" == *"gunzip -c $ONE/immich/db/$dump | docker exec -i immich_postgres psql -U postgres"* && "$OUT" != *"  3. "* ]]'
+one_fresh; go "3\n$ONE\n\n" step_immich_backup_once
+echo "---- sample: one-time database only ----"; echo "$OUT"; echo "----------------------------------------"
+check 10d "db only: summary says 'Database only' and has no Mode line; no photo measuring or sync lines" '[[ "$OUT" == *"Scope:        Database only"* && "$OUT" != *"Mode:  "* && "$OUT" != *"Measuring photo library"* && "$OUT" != *"Syncing photos"* ]]'
+check 10e "db only: result block is '✓ Backup complete - database (N MB)' + dump file, no photos line" 'dump=$(ls "$ONE"/immich/db/ | head -1); [[ "$OUT" == *"✓ Backup complete - database ("*" MB) → $ONE/immich/"* && "$OUT" == *"    db/$dump"* && "$OUT" != *"photos/:"* ]]'
+one_fresh; go "2\n$ONE\n\n\n" step_immich_backup_once
+check 10f "photos only: summary says 'Photos only' with Mode; result has the photos line and no dump" '[[ "$OUT" == *"Scope:        Photos only"* && "$OUT" == *"Mode:         append only"* && "$OUT" == *"✓ Backup complete - photos → "* && "$OUT" == *"photos/: 2 new files"* && "$OUT" != *"gunzip"* ]]'
+one_fresh; FAIL_DUMP=1 go "3\n$ONE\n\n" step_immich_backup_once
+check 10g "a failure shows the script's lines (so the reason is visible) and no success block" '[ $RC = 1 ] && [[ "$OUT" == *"DB dump FAILED"* && "$OUT" == *"Backup failed"* && "$OUT" != *"✓ Backup complete"* && "$OUT" != *"Restore:"* ]]'
+check 10h "scheduled run unchanged: log keeps the timestamped lines Status parses, final line 'Backup complete → <dest>'" 'fresh; setup_sched; runbk; [[ "$LOGTXT" == *"DB dump ok"* && "$LOGTXT" == *"Photos synced"* ]] && tail -n 1 "$LOG" | grep -q "Backup complete → $DEST\$" && ! grep -q "Dumping database\|Syncing photos\|--stats" "$LOG" "$RS_LOG"'
 check_total

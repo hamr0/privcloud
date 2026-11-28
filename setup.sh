@@ -4570,6 +4570,7 @@ step_immich_backup_once() {
         fail "Not configured yet. Run: federver -> 9 -> Install"
         return 1
     fi
+    info "Needs sudo to read the photo library and dump the database…"
     if ! sudo -v; then
         fail "Need sudo to read the photos and run the backup - nothing was started."
         return 1
@@ -4584,10 +4585,10 @@ step_immich_backup_once() {
     echo ""
     local scope
     read -rp "  Choose [0-3] (default: 1): " scope
-    local do_photos=true do_db=true scope_name=both
+    local do_photos=true do_db=true scope_name=both scope_text="Photos + database"
     case "$scope" in
-        2)        do_db=false; scope_name=photos ;;
-        3)        do_photos=false; scope_name=db ;;
+        2)        do_db=false; scope_name=photos; scope_text="Photos only" ;;
+        3)        do_photos=false; scope_name=db; scope_text="Database only" ;;
         1|"")     ;;
         0|q)      return 2 ;;
         *)        fail "Invalid choice."; return 1 ;;
@@ -4595,6 +4596,7 @@ step_immich_backup_once() {
 
     # Show what we're backing up (size only what we'll copy)
     local photos_size="-" db_size="-"
+    $do_photos && info "Measuring photo library…"
     $do_photos && photos_size="$(set -o pipefail; sudo du -sh --block-size=1G "$upload_loc" 2>/dev/null | awk '{print $1" GB"}' || echo "unknown")"
     $do_db     && db_size="$(set -o pipefail; sudo du -sh --block-size=1M "$db_loc" 2>/dev/null | awk '{print $1" MB"}' || echo "unknown")"
     $do_photos && echo "    Photos:   $upload_loc ($photos_size)"
@@ -4634,13 +4636,6 @@ step_immich_backup_once() {
     fi
     echo ""
 
-    # No downtime: the script dumps the live DB instead of stopping the stack, or
-    # cold-copies the data dir when Immich is already down.
-    local pg_running=false
-    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx immich_postgres; then
-        pg_running=true
-    fi
-
     # Photo copy mode (only relevant when copying photos): append, or a mirror that
     # first passes the source guard + preview and then the deletion question.
     local sync_mode=append mirror_flag=()
@@ -4660,53 +4655,89 @@ step_immich_backup_once() {
     if [[ "$sync_mode" != mirror ]]; then
         echo ""
         echo -e "  ${BOLD}Backup summary${NC}"
-        echo "    Scope:        $scope_name"
+        echo "    Scope:        $scope_text"
         echo "    Destination:  $backup_dir/"
-        echo "    Mode:         append only"
+        $do_photos && echo "    Mode:         append only"
         _confirm_yn "Start backup?" || { warn "Cancelled."; return 0; }
     fi
 
     # The ONE script: the installed one when it is current, else the same generator
     # into a temp file (with a temp config) - no second implementation.
-    local script=$_IMMICH_BACKUP_BIN tmp="" conf_tmp="" args=(--once --dest "$dest" --scope "$scope_name") rc=0
+    local script=$_IMMICH_BACKUP_BIN tmp="" conf_tmp="" res args=(--once --dest "$dest" --scope "$scope_name") rc=0 runner
     [[ "$sync_mode" == mirror ]] && args+=(--mirror)
+    res=$(mktemp) || { fail "Could not create a temp file - nothing was backed up."; return 1; }
+    trap "rm -f '$res'; trap - RETURN" RETURN
     if [[ ! -x "$script" ]] || _immich_backup_outdated; then
         tmp=$(mktemp) && conf_tmp=$(mktemp) || { rm -f "$tmp"; fail "Could not create a temp file - nothing was backed up."; return 1; }
-        trap "rm -f '$tmp' '$conf_tmp'; trap - RETURN" RETURN
+        trap "rm -f '$res' '$tmp' '$conf_tmp'; trap - RETURN" RETURN
         _immich_backup_conf "$(dirname "$_IMMICH_ENV")" "$dest" 0 > "$conf_tmp"
         _immich_backup_script "$conf_tmp" "$_IMMICH_BACKUP_LOG" > "$tmp"
         script=$tmp
         bash -n "$script" || { fail "The generated backup script has a syntax error - nothing was backed up."; return 1; }
-        echo ""
-        sudo bash "$script" "${args[@]}" || rc=$?
+        runner=(sudo bash "$script")
     else
-        echo ""
-        sudo "$script" "${args[@]}" || rc=$?
+        runner=(sudo "$script")
     fi
+    echo ""
+    # The script's own timestamped lines are kept in $res and read for the result block, not echoed.
+    "${runner[@]}" "${args[@]}" 2>&1 | _immich_once_progress "$res" "$db_size"
+    rc=${PIPESTATUS[0]}
+    _immich_once_result "$rc" "$res" "$backup_dir" "$scope_name"
+}
+
+# Screen side of the one-time backup: the script's lines go to the file $1 (read by
+# _immich_once_result); only what the user waits on is shown, as it starts. $2 = database size text.
+_immich_once_progress() {
+    local line
+    while IFS= read -r line; do
+        printf '%s\n' "$line" >> "$1"
+        case "$line" in
+            *"Dumping database"*)    echo "  Dumping database${2:+ ($2)}…" ;;
+            *"Syncing photos"*)      echo "  Syncing photos…" ;;
+            *"Immich is stopped"*)   echo "  Immich is stopped - copying the database files directly" ;;
+        esac
+    done
+}
+
+# bytes -> "145 MB" / "1.4 GB" (1024-based, like du)
+_size_h() { awk -v b="${1:-0}" 'BEGIN{ if (b >= 1073741824) printf "%.1f GB", b/1073741824; else printf "%d MB", b/1048576 }'; }
+
+# The one result block of a one-time backup. $1 rc, $2 file with the script's output, $3 backup dir
+# (<dest>/immich), $4 scope (photos|db|both).
+_immich_once_result() {
+    local rc=$1 res=$2 bdir=$3 scope=$4 line
+    echo ""
     if (( rc != 0 )); then
+        while IFS= read -r line; do echo "    $line"; done < "$res"
         fail "Backup failed (see above)."
         return 1
     fi
-
-    echo ""
-    ok "Backup complete!"
-    echo "    Location: $backup_dir"
-    $do_photos && echo "    Photos:   $backup_dir/photos"
-    if $do_db && $pg_running; then
-        echo "    Database: $backup_dir/db/immich-db-*.sql.gz (SQL dump)"
-    elif $do_db; then
-        echo "    Database: $backup_dir/db/postgres (data dir)"
+    local dump cold n bytes what=() lines=()
+    dump=$(sed -n 's/.*DB dump ok → //p' "$res" | tail -1)           # immich/db/immich-db-<stamp>.sql.gz
+    cold=$(grep -c 'Database copied' "$res")
+    if [[ -n "$dump" ]]; then
+        bytes=$(stat -c %s "$bdir/db/${dump##*/}" 2>/dev/null)
+        if [[ "$scope" == db ]]; then what+=("database${bytes:+ ($(_size_h "$bytes"))}"); lines+=("db/${dump##*/}")
+        else what+=("database"); lines+=("db/${dump##*/}${bytes:+ ($(_size_h "$bytes"))}"); fi
+    elif (( cold )); then
+        what+=("database"); lines+=("db/postgres/ (data dir copy)")
     fi
-    echo "    Config:   $backup_dir/.env"
-    echo ""
-    echo "  To restore on any machine:"
-    echo "    1. Clone privcloud, then federver -> 9 -> Install"
-    $do_photos && echo "    2. Point config to the backed-up photos directory"
-    if $do_db && $pg_running; then
-        echo "    3. Start Immich (federver -> 7 -> 2), then load the dump:"
-        echo "         gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres"
-    elif $do_db; then
-        echo "    3. Copy db/postgres/ and .env back, then federver -> 7 -> 2 (Start)"
+    if [[ "$scope" != db ]]; then
+        n=$(sed -n 's/^Number of \(regular \)\{0,1\}files transferred: *//p' "$res" | tail -1)
+        bytes=$(sed -n 's/^Total transferred file size: *\([0-9,]*\) bytes.*/\1/p' "$res" | tail -1)
+        what=("photos" "${what[@]}"); lines=("photos/: ${n:-0} new file$([[ "${n:-0}" == 1 ]] || echo s), $(_size_h "${bytes//,/}")" "${lines[@]}")
+    fi
+    local joined="${what[0]}"; [[ ${#what[@]} -gt 1 ]] && joined="${what[0]} + ${what[1]}"
+    ok "Backup complete - $joined → $bdir/"
+    for line in "${lines[@]}"; do echo "    $line"; done
+    [[ -f "$bdir/.env" ]] && echo "    .env (config copy)"
+    if [[ -n "$dump" ]]; then
+        echo "  Restore: federver → 9 → 3 (Install), federver → 7 → 2 (Start), then"
+        echo "    gunzip -c $bdir/db/${dump##*/} | docker exec -i immich_postgres psql -U postgres"
+    elif (( cold )); then
+        echo "  Restore: federver → 9 → 3 (Install), copy db/postgres/ and .env back, then federver → 7 → 2 (Start)"
+    else
+        echo "  Restore: federver → 9 → 3 (Install), then copy photos/ back to the photo library"
     fi
     return 0
 }
@@ -5270,6 +5301,7 @@ db_cold() {
     echo "$(date): Database copied → immich/db/postgres/"
 }
 if [ "$scope" != photos ]; then
+    [ "$once" = 0 ] || echo "$(date): Dumping database…"
     if [ "$once" = 1 ] && ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx immich_postgres; then db_cold
     else db_online; fi
 fi
@@ -5279,9 +5311,10 @@ fi
 if [ "$scope" != db ]; then
     if [ -n "$UPLOAD_LOCATION" ] && [ -d "$UPLOAD_LOCATION" ]; then
         if command -v rsync >/dev/null 2>&1; then
+            [ "$once" = 0 ] || echo "$(date): Syncing photos…"
             args=(-a)
             for e in "${EXCLUDES[@]}"; do args+=(--exclude="$e"); done
-            [ "$once" = 0 ] || args+=(--info=progress2)
+            [ "$once" = 0 ] || args+=(--stats)   # the screen reads the totals from it
             [ "$mirror" = 0 ] || args+=(--delete)
             if rsync "${args[@]}" "$UPLOAD_LOCATION/" "$PHOTOS_DIR/"; then
                 echo "$(date): Photos synced → $PHOTOS_DIR/"

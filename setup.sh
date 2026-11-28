@@ -9131,7 +9131,7 @@ _SMB_POLL=3             # seconds between phone-connect polls
 _SMB_WAIT_TRIES=40      # x _SMB_POLL = 2 minutes
 _SMB_NAMES=(); _SMB_PATHS=(); _SMB_USER=""; _SMB_PW=""; _SMB_REAL=""
 
-_smb_exists()  { sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx samba; }
+_smb_exists()  { sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "${1:-samba}"; }
 _smb_running() { sudo docker ps --format '{{.Names}}' 2>/dev/null | grep -qx samba; }
 _smb_listening() { sudo ss -ltnH 'sport = :445' 2>/dev/null | grep -q .; }
 
@@ -9604,7 +9604,7 @@ _smb_setup() {
     if _smb_listening; then
         fail "Port 445 is already in use:"
         sudo ss -ltnpH 'sport = :445' 2>/dev/null | sed 's/^/    /'
-        if sudo docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx samba-poc; then
+        if _smb_exists samba-poc; then
             echo -e "  The Samba proof-of-concept container is still there. Remove it first:"
             echo -e "    ${YELLOW}cd ~/samba-poc && docker compose -p samba-poc down && rm -rf ~/samba-poc${NC}"
         else

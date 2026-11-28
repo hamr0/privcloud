@@ -5514,7 +5514,7 @@ step_immich_backup() {
     echo ""
     echo -e "  ${BOLD}Backup schedule summary${NC}"
     echo "    Destination: $BACKUP_DIR"
-    echo "    Schedule:    $oncal"
+    echo "    Schedule:    $(_sched_text "$oncal")"
     echo "    Retention:   ${retention_days} days of DB dumps (photos: append-only copy)"
     _confirm_yn "Set up this backup?" || { warn "Cancelled - nothing changed."; return 0; }
     sudo mkdir -p "$BACKUP_DIR"
@@ -5583,7 +5583,7 @@ TIMEREOF
 
     echo ""
     ok "Immich backup configured (systemd timer):"
-    echo -e "    Schedule:    ${BOLD}${oncal}${NC}"
+    echo -e "    Schedule:    ${BOLD}$(_sched_text "$oncal")${NC}"
     echo -e "    Destination: ${BOLD}$BACKUP_DIR${NC}"
     echo -e "    Includes:    ${BOLD}database + photos${NC} ${DIM}(no downtime)${NC}"
     echo -e "      • DB dumps → ${DIM}$BACKUP_DIR/immich/db/immich-db-*.sql.gz${NC}"
@@ -5733,7 +5733,7 @@ _immich_backup_status() {
     if [ "$mechanism" = "timer" ]; then
         # Next-run + enabled state ride in the Note column (the fleet table has no
         # dedicated columns for them) so the detail isn't lost to the table format.
-        local note="next: ${next:-unknown}"
+        local note="next: $([[ -n "$next" ]] && _when_short "$next" || echo unknown)"
         [ "$enabled" = "enabled" ] || note="DISABLED — ${note}"
         _immich_backup_outdated && note="outdated - run Set up again; ${note}"
         printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$([[ -n "$oncal" ]] && _sched_text "$oncal" || echo unknown)" "timer" "backup" "$note"

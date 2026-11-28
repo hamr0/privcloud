@@ -62,7 +62,7 @@ cat > "$T/bin/systemctl" <<'X'
 case "$*" in
   *"show immich-backup.timer"*) [ -e "$UNITS/immich-backup.timer" ] && echo loaded || echo not-found ;;
   "cat immich-backup.timer") cat "$UNITS/immich-backup.timer" 2>/dev/null ;;
-  "list-timers"*) echo "Sat 2026-11-28 03:00:00 UTC 5h left - - immich-backup.timer immich-backup.service" ;;
+  "list-timers"*) echo "$(date -d '2026-11-28 03:00:00' '+%a %F %T %Z') 5h left - - immich-backup.timer immich-backup.service" ;;
   "is-enabled"*) echo enabled ;;
   "start --no-block immich-backup.service") echo "$*" >> "$T/systemctl.log"
     # SVC_RUN: behave like systemd - the installed script runs detached, the service reads as active while it lives
@@ -142,7 +142,7 @@ check 2c "Set up again, Enter at the destination: keeps the configured one" '[ $
 fresh; setup_sched
 runbk
 go "" _immich_backup_status
-check 3a "Status (timer): one row with the schedule from the unit, next run in the Note" '[[ "$OUT" == *"immich-backup"*"daily 03:00"*"timer"*"next: Sat 2026-11-28"* && "$OUT" != *"*-*-*"* && "$OUT" != *systemd* ]]'
+check 3a "Status (timer): one row with the schedule from the unit, next run in the Note" '[[ "$OUT" == *"immich-backup"*"daily 03:00"*"timer"*"next: 2026-11-28 03:00"* && "$OUT" != *"03:00:00"* && "$OUT" != *"next: Sat"* && "$OUT" != *"*-*-*"* && "$OUT" != *systemd* ]]'
 check 3b "Status: Last runs shows the run as ok" '[[ "$OUT" == *"Last runs"* && "$OUT" == *"✓ ok"* ]]'
 printf 'Sat Nov 28 03:00:01 UTC 2026: Backup FAILED (exit 1) — systemd will retry\n' >> "$LOG"
 go "" _immich_backup_status
@@ -535,5 +535,13 @@ WN=$(bash -c "$(sed '$d' "$T/app/run.sh"); sudo systemctl start --no-block immic
 check 16g "service never ran and the log stayed empty: says it stopped without a result (rc 1), does not wait for the limit" '[[ "$WN" == *"stopped without a result"* && "$WN" == *RC=1* ]]'
 fresh; setup_sched; : > "$T/systemctl.log"; go "\n" _immich_backup_run
 check 16h "Run now (9 → 10) keeps its background behaviour: starts, shows the recent log, no wait" '[ $RC = 0 ] && grep -q "start --no-block immich-backup.service" "$T/systemctl.log" && [[ "$OUT" == *"Recent log"* && "$OUT" != *"Running the first backup"* ]]'
+
+# ── 17 short dates and schedules: Status Note, Set up summary ──
+fresh; go "$DEST\ny\n2\n1\n\nn\n" step_immich_backup
+check 17a "Set up (weekly): the summary and the result both say 'weekly Sun 03:00', never the raw OnCalendar" '[ $RC = 0 ] && [[ "$OUT" == *"    Schedule:    weekly Sun 03:00"* && "$OUT" != *"*-*-*"* && "$OUT" != *"03:00:00"* ]] && [ "$(grep -c "Schedule:    weekly Sun 03:00" <<<"$OUT")" = 2 ]'
+fresh; go "$DEST\ny\n1\n\nn\n" step_immich_backup
+check 17b "Set up (daily): 'daily 03:00'" '[[ "$OUT" == *"    Schedule:    daily 03:00"* && "$OUT" != *"*-*-*"* ]]'
+fresh; setup_sched; go "" _immich_backup_status
+check 17c "Status Note: 'next: 2026-11-28 03:00' - no weekday, seconds or zone" '[[ "$OUT" == *"timer"*"backup"*"next: 2026-11-28 03:00"* && ! "$OUT" =~ next:\ [A-Z][a-z][a-z] && "$OUT" != *"03:00:00"* ]]'
 
 check_total

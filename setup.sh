@@ -2085,7 +2085,7 @@ _services_action() {
     # Pre-flight: starting a container that bind-mounts the data drive while that
     # drive isn't mounted fails with "no such device" and silently writes empty
     # dirs to the system disk. Guard the data-backed services before we try.
-    if [[ "$action" == "start" ]]; then
+    if [[ "$action" == "start" || "$action" == "restart" ]]; then
         local _media _files
         _media=$(_env_get MUSIC_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null)
         _files=$(_env_get FILES_LOCATION "$SCRIPT_DIR/.env" 2>/dev/null)
@@ -2364,7 +2364,7 @@ _unified_service_picker() {
             echo ""
             [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
         fi
-        [[ "$action" == start ]] && { _picker_data_guard all || return 1; }
+        [[ "$action" == start || "$action" == restart ]] && { _picker_data_guard all || return 1; }
         local all_rc=0
         if ((lap_act)); then
             if systemctl --user "$action" syncthing 2>/dev/null; then
@@ -2431,7 +2431,7 @@ _unified_service_picker() {
         [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return 0; }
     fi
 
-    [[ "$action" == start ]] && { _picker_data_guard "$cname" || return 1; }
+    [[ "$action" == start || "$action" == restart ]] && { _picker_data_guard "$cname" || return 1; }
     if ! _svc_power_remote "$action" "$cname"; then
         fail "${action^} failed: $cname"
         return 1

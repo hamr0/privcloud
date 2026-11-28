@@ -97,4 +97,15 @@ check 4a "Start All: compose up ran, its raw 'Container ... Started' lines are n
 export COMPOSE_RC=1; go a
 check 4b "Start All: compose up failing shows its output and a fail line, and the run fails" '[ $RC != 0 ] && [[ "$OUT" == *"Container navidrome Started"* && "$OUT" == *"docker compose up failed"* ]]'
 unset COMPOSE_RC
+
+# 5 Restart has the same data-drive guard as Start: refused before anything is sent to the server
+rgo() { : > "$SSH_LOG"; : > "$T/acts.log"; OUT=$(printf '%s\n' "$1" | _unified_service_picker restart 2>&1); RC=$?; }
+export PS_OUT='navidrome|Up 2 hours\nfilebrowser|Up 2 hours\n'
+setdata files; export FINDMNT_SRC=""
+rgo 2; check 5a "Restart navidrome, drive unmounted: refused, nothing sent to the server" '[ $RC != 0 ] && [ ! -s "$SSH_LOG" ] && [[ "$OUT" == *"not mounted"* ]]'
+rgo 3; check 5b "Restart filebrowser, drive unmounted: refused, nothing sent" '[ $RC != 0 ] && [ ! -s "$SSH_LOG" ] && [[ "$OUT" == *"not mounted"* ]]'
+rgo a; check 5c "Restart All, drive unmounted: refused, nothing sent, no laptop-side restart" '[ $RC != 0 ] && [ ! -s "$SSH_LOG" ] && [ ! -s "$T/acts.log" ] && [[ "$OUT" == *"not mounted"* ]]'
+export FINDMNT_SRC=/dev/sdb1; setdata files
+rgo 2; check 5d "Restart navidrome, drive mounted: goes through" '[ $RC = 0 ] && [ -s "$SSH_LOG" ]'
+check 5e "_services_action (server side) guards restart too" 'extract_fn _services_action "$SRC" | grep -q "\"start\" || \"\$action\" == \"restart\""'
 check_total

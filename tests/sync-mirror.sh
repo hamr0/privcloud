@@ -19,7 +19,7 @@ CR=$'\033[R]'; CY=$'\033[Y]'   # status() swaps these in for RED/YELLOW
 { for f in ok fail info warn ssh _shq; do extract_fn "$f" "$SRC"; done   # ssh may be missing in an old copy: skipped
   grep -E "^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_RSYNC_FLAGS=|^_SSH_OPTS=|^export RSYNC_RSH=|^_SYNC_REC_KEYS=" "$SRC"
   for f in _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _dest_check _require_dest_drive _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
-           _mirror_scan _mirror_wipe_sized _mirror_preview _commas _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mode_cell _sync_result_text _sync_last_result _sync_change_mode \
+           _mirror_scan _mirror_wipe_sized _mirror_preview _commas _tick _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mode_cell _sync_result_text _sync_last_result _sync_change_mode \
            _sync_execute_or_schedule _sync_show_status _sync_rec_write _sync_rec_load _sync_write_launcher _sync_default_name _sync_valid_name _sync_job_operands _sync_job_steps _sync_job_go _sync_job_run _sync_prepare_dest _sync_rec_set_schedule _sync_rec_mode _sync_job_import_legacy _sync_import_all_legacy _sync_tokenize _pick_server_endpoint _tcp_open _is_server _sync_edit_job _sync_list_jobs _sync_cron_split _sync_registry_load _sync_job_delete _sync_delete_job _sync_change_schedule _sync_remove_timer _confirm_delete _cron_cmd _cron_get _cron_drop _cron_set _cron_remove_line _cron_replace_line \
            _cron_to_english _sched_text _when_short _sync_one_time_backup; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 source "$T/fn.sh"

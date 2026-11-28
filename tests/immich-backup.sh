@@ -22,7 +22,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T
 rw() { sed -e "s|/usr/local/bin/immich-backup.sh|$BIN|g" -e "s|/var/log/immich-backup.log|$LOG|g" \
            -e "s|/etc/systemd/system/|$UNITS/|g" -e "s|/etc/immich-backup.conf|$CONF|g"; }
 fns() { local f; for f in "$@"; do extract_fn "$f" "$SRC" | rw; done; }
-FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _sched_text _when_short _immich_backup_remove _immich_docker_group _compose step_immich_backup_once _immich_once_wait _commas _immich_once_result _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
+FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _sched_text _when_short _immich_backup_remove _immich_docker_group _compose step_immich_backup_once _immich_once_wait _commas _tick _immich_once_result _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
 mkrun() {  # rebuild run.sh from the CURRENT $SRC (functions that do not exist yet are skipped)
   {
     printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC= BLUE=\nDRY_RUN=0\nMIRROR_WIPE_MIN=1000\n_FV_SELF=%q\n' "$T/app/setup.sh"
@@ -410,6 +410,10 @@ one_fresh; : > "$T/tty.in"
 TTY=$(RS_SLEEP=2 script -qec "printf '2\n$ONE\n\n\n' | bash $T/app/run.sh --run step_immich_backup_once" /dev/null 2>&1 | tr -d '\r')
 echo "---- sample: ticker (raw, \\r shown as newline) ----"; echo "$TTY" | grep -a "Syncing photos" | tail -3 | cat -v | cut -c1-120; echo "---------------------------------------------------"
 check 12b "tty: photo copy shows 'Syncing photos… Nm SSs, N files so far, SIZE' and the result follows" '[[ "$TTY" == *"Syncing photos… 0m 0"*" files so far, "* && "$TTY" == *"✓ Backup complete - photos → $ONE/immich/"* ]]'
+one_fresh
+TTYN=$(COLUMNS=30 RS_SLEEP=2 script -qec "printf '2\n$ONE\n\n\n' | bash $T/app/run.sh --run step_immich_backup_once" /dev/null 2>&1)
+MAXN=$(tr '\r' '\n' <<<"$TTYN" | sed 's/\x1b\[K//g' | grep -a 'Syncing photos… [0-9]' | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+check 12g "tty, COLUMNS=30: the photo-copy ticker frames are at most 29 characters (and there are frames)" '[ "$MAXN" -gt 0 ] && [ "$MAXN" -le 29 ]'
 check 12c "no-tty run (the suite): one plain 'Syncing photos…' line, no ticker control codes" 'one_fresh; go "2\n$ONE\n\n\n" step_immich_backup_once; [[ "$OUT" == *"  Syncing photos…"* && "$OUT" != *"so far"* && "$OUT" != *$'"'"'\033[K'"'"'* ]]'
 check 12d "the rsync call carries the live-count format only in --once; the scheduled run's rsync and log are untouched" 'fresh; setup_sched; runbk; ! grep -q "out-format\|--stats" "$RS_LOG" && ! grep -q "F|" "$LOG" && tail -n 1 "$LOG" | grep -q "Backup complete → $DEST\$"'
 # Ctrl-C while waiting: the script is stopped, rc 130, and the result is a cancel notice, not a success block

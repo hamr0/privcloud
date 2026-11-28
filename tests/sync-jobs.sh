@@ -18,7 +18,7 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 { for f in ok fail info warn ssh _shq _tcp_open _is_server _pick_server_endpoint _resolve_server_endpoint \
            _cron_cmd _cron_get _cron_drop _cron_set _cron_add_sync _cron_remove_line _cron_replace_line _cron_to_english _sched_text _when_short \
            _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _dest_check _require_dest_drive _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
-           _mirror_scan _mirror_wipe_sized _mirror_preview _commas _mirror_delete_q _mirror_confirm _mirror_gate _src_size _confirm_delete \
+           _mirror_scan _mirror_wipe_sized _mirror_preview _commas _tick _mirror_delete_q _mirror_confirm _mirror_gate _src_size _confirm_delete \
            _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode _sync_mode_cell _sync_result_text _sync_last_result \
            _sync_result_text _sync_change_mode _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _sync_delete_job _sync_job_delete _sync_cron_split _sync_registry_load _sync_change_schedule _sync_install_timer _sync_remove_timer \

@@ -11,7 +11,7 @@ T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 { grep -E '^MIRROR_WIPE_MIN=' "$SRC"
-  for f in ok fail info warn _mirror_flush _mirror_ask _mirror_scan _mirror_wipe_sized _mirror_preview _commas _mirror_delete_q; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
+  for f in ok fail info warn _mirror_flush _mirror_ask _mirror_scan _mirror_wipe_sized _mirror_preview _commas _tick _mirror_delete_q; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 # mp = what a one-time copy does: the preview, then (after the box) the one question.
 cat >> "$T/fn.sh" <<'X'
 mp() { _mirror_preview "$@"; local r=$?
@@ -65,7 +65,7 @@ echo "RC=\$?"
 X
 RAW=$(script -qec "bash $T/tty.sh" /dev/null 2>&1; true)
 OUT=$RAW
-check 3a "tty: ticker shows elapsed seconds" '[[ "$RAW" == *"1s"* && "$RAW" == *"Checking what a mirror would delete"* ]]'
+check 3a "tty: ticker shows elapsed seconds" '[[ "$RAW" == *"1s"* && "$RAW" == *"Checking mirror"* ]]'
 check 3b "tty: the ticker line is cleared before the result" '[[ "$RAW" == *$'"'"'\033[K'"'"'* && "$RAW" == *"would be deleted at /d"* ]]'
 check 3c "tty: temp file removed" '[ -z "$(ls -A "$T/tmp")" ]'
 
@@ -83,7 +83,7 @@ OUT=$(mp local /s /d "echo oops; exit 23" copy 2>&1)
 check 4d "failed preview leaves no new list file" '[ "$(ls "$T/state/federver" | wc -l)" = 5 ]'
 BIG="awk 'BEGIN{for(i=1;i<=200000;i++) print \"del.|d\" (i%7) \"/f\" i}'"
 S0=$(date +%s.%N); OUT=$(echo n | mp local /s /d "$BIG" copy 2>&1); RC=$?; S1=$(date +%s.%N)
-check 4e "200k-line deletion list is counted from the file" '[ $RC = 1 ] && [[ "$(plain "$OUT")" == *"⚠ 200000 files would be deleted at /d:"* ]]'
+check 4e "200k-line deletion list is counted from the file" '[ $RC = 1 ] && [[ "$(plain "$OUT")" == *"⚠ 200,000 files would be deleted at /d:"* ]]'
 check 4f "the preview never holds the whole output in a variable" '! declare -f _mirror_preview | grep -Eq "out=|\$\(cat"'
 echo "      (200k preview took $(awk -v a="$S0" -v b="$S1" 'BEGIN{printf "%.1f", b-a}')s)"
 
@@ -101,17 +101,20 @@ check 5e "files directly at the top level are grouped as (top level)" '[[ "$OUT"
 gen() { echo "awk 'BEGIN{for(i=1;i<=$1;i++) print \"del.|f\" i}'"; }   # n top-level files
 chk() { OUT=$(printf '%s\n' "$1" | mp local /s /d "$2" "${3:-copy}" 2>&1); RC=$?; OUT=$(plain "$OUT"); }
 chk "" "$(gen 1500)"
-check 6a "1500 files: typed-count prompt, no y/N" '[ $RC = 1 ] && [[ "$OUT" == *"Type 1500 to delete and copy, Enter = cancel: "* && "$OUT" != *"[y/N]"* ]]'
-check 6b "prompt is red" '[[ "$(printf "%s\n" 1500 | mp local /s /d "$(gen 1500)" copy 2>&1)" == *"$(printf "${RED}Type 1500 to delete and copy")"* ]]'
+check 6a "1500 files: typed-count prompt, no y/N" '[ $RC = 1 ] && [[ "$OUT" == *"Type 1,500 to delete and copy, Enter = cancel: "* && "$OUT" != *"[y/N]"* ]]'
+check 6b "prompt is red" '[[ "$(printf "%s\n" 1500 | mp local /s /d "$(gen 1500)" copy 2>&1)" == *"$(printf "${RED}Type 1,500 to delete and copy")"* ]]'
 chk 1500 "$(gen 1500)"; check 6c "exact count accepted -> rc 0" '[ $RC = 0 ]'
 for ans in y yes 1499 1501 ""; do chk "$ans" "$(gen 1500)"
   check 6d "answer [$ans] cancels" '[ $RC = 1 ] && [[ "$OUT" == *"Cancelled - nothing changed."* ]]'; done
 chk y "$(gen 1000)"; check 6e "exactly $MIRROR_WIPE_MIN files: still the plain y/N" '[ $RC = 0 ] && [[ "$OUT" != *"Type "* ]]'
-chk 1001 "$(gen 1001)"; check 6f "one over the limit: typed count" '[ $RC = 0 ] && [[ "$OUT" == *"Type 1001 to delete and copy"* ]]'
+chk 1001 "$(gen 1001)"; check 6f "one over the limit: typed count" '[ $RC = 0 ] && [[ "$OUT" == *"Type 1,001 to delete and copy"* ]]'
+chk 1,001 "$(gen 1001)"; check 6f2 "typed count with the comma accepted" '[ $RC = 0 ]'
+chk 1500 "$(gen 1500)"; check 6f3 "summary and header numbers carry thousands separators" '[[ "$OUT" == *"⚠ 1,500 files would be deleted at /d:"* && "$OUT" == *"(top level)  1,500 files"* ]]'
+chk 1,50 "$(gen 1500)"; check 6f4 "a wrong number with a comma still cancels" '[ $RC = 1 ]'
 WH="printf 'del.|keep/a\\ndel.|gone/x\\ndel.|gone/y\\ndel.|gone/\\n'"
 chk 3 "$WH"; check 6g "3 files but a whole folder goes: typed count 3 accepted" '[ $RC = 0 ] && [[ "$OUT" == *"gone/  2 files  ← whole folder deleted"* && "$OUT" == *"Type 3 to delete and copy"* ]]'
 chk y "$WH"; check 6h "whole folder + y -> cancelled" '[ $RC = 1 ]'
-chk 1500 "$(gen 1500)" save; check 6i "save mode: typed count to save the job" '[ $RC = 0 ] && [[ "$OUT" == *"Type 1500 to save this job as mirror, Enter = cancel: "* ]]'
+chk 1500 "$(gen 1500)" save; check 6i "save mode: typed count to save the job" '[ $RC = 0 ] && [[ "$OUT" == *"Type 1,500 to save this job as mirror, Enter = cancel: "* ]]'
 chk y "$(gen 1500)" save; check 6j "save mode + y -> cancelled" '[ $RC = 1 ]'
 chk y "printf 'del.|a\\n'" save; check 6k "small save: y/N as before" '[ $RC = 0 ] && [[ "$OUT" == *"Save this job as mirror? [y/N]: "* ]]'
 chk y "printf 'del.|e1/\\\\ndel.|a\\\\n'"; check 6m "an empty top-level folder alone is not a wipe: y/N" '[ $RC = 0 ] && [[ "$OUT" != *"Type "* ]]'
@@ -159,7 +162,7 @@ export XDG_STATE_HOME="$T/state"
 echo n | mp local /s /d "sleep 0.3; for r in 1 2 3 4; do for i in 1 2 3; do echo del.\\|d\\\$r\\\$i; echo send\\|c\\\$r\\\$i; done; sleep 1; done" copy
 X
 RAW=$(timeout 20 script -qec "bash $T/live.sh" /dev/null 2>&1; true)
-check 9a "tty: progress line shows 'N to delete' and 'M to copy so far'" '[[ "$RAW" =~ [0-9]s\ ·\ [0-9,]+\ to\ delete\ ·\ [0-9,]+\ to\ copy\ so\ far ]]'
+check 9a "tty: progress line shows elapsed, 'N to delete' and 'M to copy' (short form)" '[[ "$RAW" =~ [0-9]s\ ·\ [0-9,]+\ to\ delete\ ·\ [0-9,]+\ to\ copy ]]'
 check 9b "tty: the counts grow while the dry run is still going" '[ "$(grep -o "[0-9,]* to delete ·" <<<"$RAW" | sort -u | wc -l)" -ge 2 ]'
 cat > "$T/live2.sh" <<X
 source "$T/fn.sh"
@@ -169,7 +172,32 @@ export XDG_STATE_HOME="$T/state"
 echo n | mp local /s /d "sleep 2.5; echo 'del.|a'" copy
 X
 RAW2=$(timeout 20 script -qec "bash $T/live2.sh" /dev/null 2>&1; true)
-check 9c "tty: seconds only until rsync prints its first line" '[[ "$RAW2" == *"... 1s"$'"'"'\r'"'"'* && "$RAW2" == *"... 2s"$'"'"'\r'"'"'* ]]'
+check 9c "tty: seconds only until rsync prints its first line" '[[ "$RAW2" == *"Checking mirror… 1s"$'"'"'\r'"'"'* && "$RAW2" == *"Checking mirror… 2s"$'"'"'\r'"'"'* ]]'
+# the ticker never outgrows the terminal (a wrapped line cannot be rewound with \r)
+cat > "$T/wide.sh" <<X
+source "$T/fn.sh"
+_mirror_guard() { return 0; }
+_mirror_refuse() { :; }
+export XDG_STATE_HOME="$T/state"
+echo n | mp local /s /d "sleep 0.3; for r in 1 2 3; do for i in 1 2 3 4 5 6 7 8 9; do echo del.\\|d\\\$r\\\$i; echo send\\|c\\\$r\\\$i; done; sleep 1; done" copy
+X
+RAW3=$(COLUMNS=60 timeout 20 script -qec "bash $T/wide.sh" /dev/null 2>&1; true)
+FR=$(tr '\r' '\n' <<<"$RAW3" | sed 's/\x1b\[K//g' | grep -a 'Checking')
+MAXW=$(awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }' <<<"$FR")
+check 9e "tty, COLUMNS=60: every ticker frame is at most 59 characters (and there are frames)" '[ -n "$FR" ] && [ "$MAXW" -le 59 ]'
+RAW4=$(COLUMNS=30 timeout 20 script -qec "bash $T/wide.sh" /dev/null 2>&1; true)
+MAXW4=$(tr '\r' '\n' <<<"$RAW4" | sed 's/\x1b\[K//g' | grep -a 'Checking' | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+check 9f "tty, COLUMNS=30: still at most 29 characters" '[ "$MAXW4" -gt 0 ] && [ "$MAXW4" -le 29 ]'
+# the ticker counts what the summary counts: files (folders are counted separately, not as "to delete")
+cat > "$T/same.sh" <<X
+source "$T/fn.sh"
+_mirror_guard() { return 0; }
+_mirror_refuse() { :; }
+export XDG_STATE_HOME="$T/state"
+echo n | mp local /s /d "sleep 0.3; echo 'del.|f1'; echo 'del.|f2'; echo 'del.|f3'; echo 'del.|e1/'; echo 'del.|e2/'; sleep 2.2" copy
+X
+RAW5=$(timeout 20 script -qec "bash $T/same.sh" /dev/null 2>&1; true)
+check 9g "ticker 'to delete' = the summary's file count (3), folders not added; summary says 3 files (+ 2 empty folders)" '[[ "$RAW5" == *" 3 to delete"* && "$RAW5" != *" 5 to delete"* && "$RAW5" == *"3 files (+ 2 empty folders) would be deleted"* ]]'
 OUT=$(echo n | mp local /s /d "$LIST" copy 2>&1)
 check 9d "no terminal: no ticker, no live counts" '[[ "$OUT" != *" to copy so far"* ]]'
 cat > "$T/tick.sh" <<X

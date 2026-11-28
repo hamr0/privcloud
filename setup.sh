@@ -1908,7 +1908,7 @@ _storage_change_immich() {
     warn "Changing this does NOT move existing data."
     warn "Move files manually first, then update the path here."
     echo ""
-    read -p "  New Immich path (e.g. /mnt/data/immich): " new_base
+    read -p "  New Immich path (a folder on the data drive): " new_base
 
     if [[ -z "$new_base" ]]; then
         fail "Path is required."
@@ -4374,7 +4374,7 @@ _immich_key_ok() { [[ "$(_immich_key_code "$1")" == 2* ]]; }
 # One line for a rejected key, by the status Immich answered with.
 _immich_key_fail() {
     case "$1" in
-        401) fail "Immich doesn't know this key (deleted or mistyped) - create a new one: Account Settings → API Keys" ;;
+        401) fail "This key is not on this Immich server (deleted, mistyped or from another server) - create one: Account Settings → API Keys → New API Key, with All permissions (the secret is shown only once)" ;;
         403) fail "This key lacks permissions - create one with \"All\" permissions (upload needs asset.upload)" ;;
         *)   fail "Could not check the key (HTTP $1)" ;;
     esac
@@ -4432,7 +4432,7 @@ step_immich_upload() {
             continue
         fi
 
-        echo "  Key received (${#api_key} characters)"
+        echo "  Key received: ****${api_key: -4} (${#api_key} characters)"
         code=$(_immich_key_code "$api_key")
         if [[ "$code" == 2* ]]; then
             ( umask 077; mkdir -p "$(dirname "$keyf")"; printf '%s\n' "$api_key" > "$keyf" )
@@ -8008,7 +8008,7 @@ _sync_one_time_backup() {
         echo -e "  ${BOLD}1)${NC} Upload:   laptop → server"
         echo -e "  ${BOLD}2)${NC} Download: server → laptop"
         echo -e "  ${BOLD}3)${NC} Local:    laptop → laptop    ${DIM}(e.g. backup to a USB drive)${NC}"
-        echo -e "  ${BOLD}4)${NC} Server:   server → server    ${DIM}(e.g. /mnt/data → backup USB on the server)${NC}"
+        echo -e "  ${BOLD}4)${NC} Server:   server → server    ${DIM}(e.g. data drive → backup drive on the server)${NC}"
         echo -e "  ${BOLD}0)${NC} Back"
         echo ""
         read -p "  Choice [1/2/3/4/0]: " direction

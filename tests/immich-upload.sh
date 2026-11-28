@@ -108,7 +108,7 @@ check 7g "album prompt says Enter = Flat; path prompt says q = back (read -p is 
 # 8 the key check: length echo (never the key) and one message per HTTP status; only a 2xx key is saved
 rm -rf "$XDG_CONFIG_HOME"
 go "bad\nnoperm\ndown\n" step_immich_upload
-check 8a "401 / 403 / no answer: three different messages, nothing saved, gives up" '[ $RC = 1 ] && [[ "$OUT" == *"Immich doesn'"'"'t know this key (deleted or mistyped) - create a new one: Account Settings → API Keys"* && "$OUT" == *"This key lacks permissions - create one with \"All\" permissions (upload needs asset.upload)"* && "$OUT" == *"Could not check the key (HTTP 000)"* && ! -e "$KEYF" ]]'
+check 8a "401 / 403 / no answer: three different messages, nothing saved, gives up" '[ $RC = 1 ] && [[ "$OUT" == *"This key is not on this Immich server (deleted, mistyped or from another server) - create one: Account Settings → API Keys → New API Key, with All permissions (the secret is shown only once)"* && "$OUT" == *"This key lacks permissions - create one with \"All\" permissions (upload needs asset.upload)"* && "$OUT" == *"Could not check the key (HTTP 000)"* && ! -e "$KEYF" ]]'
 go "goodkey\n/no/such/dir\n" step_immich_upload
-check 8b "after Enter: 'Key received (7 characters)', never the key itself" '[[ "$OUT" == *"Key received (7 characters)"* && "$OUT" != *goodkey* ]]'
+check 8b "after Enter: masked 'Key received: ****dkey (7 characters)' (last 4 only), never the key itself" '[[ "$OUT" == *"Key received: ****dkey (7 characters)"* && "$OUT" != *goodkey* ]]'
 check_total

@@ -5383,7 +5383,7 @@ step_immich_backup() {
     local cur_oncal cur_dest
     cur_oncal=$(systemctl cat immich-backup.timer 2>/dev/null | sed -n 's/^OnCalendar=//p' | head -1)
     cur_dest=$(_configured_backup_dir)
-    [[ -n "$cur_oncal" ]] && echo "  Current schedule: $cur_oncal${cur_dest:+ -> $cur_dest}"
+    [[ -n "$cur_oncal" ]] && echo "  Current schedule: $(_sched_text "$cur_oncal")${cur_dest:+ -> $cur_dest}"
     local keep_hint="Enter = "; [[ -n "$cur_dest" ]] && keep_hint="Enter keeps it: "
     read -rp "  Backup destination (${keep_hint}${default_dir}, q = back): " BACKUP_DIR   # -r: a backslash in a path is kept
     [[ "$BACKUP_DIR" == "q" ]] && return 2
@@ -5413,7 +5413,7 @@ step_immich_backup() {
     echo ""
     local cadence oncal retention_days
     if [[ -n "$cur_oncal" ]]; then
-        read -p "  Choice [0-2] (Enter keeps the current: $cur_oncal): " cadence
+        read -p "  Choice [0-2] (Enter keeps the current: $(_sched_text "$cur_oncal")): " cadence
         [[ -z "$cadence" ]] && cadence=keep
     else
         read -p "  Choice [0-2]: " cadence
@@ -5431,7 +5431,7 @@ step_immich_backup() {
             local day cur_day=""
             case "$cur_oncal" in Sun\ *) cur_day=1 ;; Mon\ *) cur_day=2 ;; Sat\ *) cur_day=3 ;; esac
             if [[ -n "$cur_day" ]]; then
-                read -p "  Choice [0-3] (Enter keeps the current: ${cur_oncal%% *}): " day
+                read -p "  Choice [0-3] (Enter keeps the current: $(_sched_text "$cur_oncal")): " day
                 day="${day:-$cur_day}"
             else
                 read -p "  Choice [0-3]: " day
@@ -5629,15 +5629,14 @@ _immich_backup_status() {
         local note="next: ${next:-unknown}"
         [ "$enabled" = "enabled" ] || note="DISABLED — ${note}"
         _immich_backup_outdated && note="outdated - run Set up again; ${note}"
-        printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "${oncal:-unknown}" "systemd" "backup" "$note"
+        printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$([[ -n "$oncal" ]] && _sched_text "$oncal" || echo unknown)" "timer" "backup" "$note"
     elif [ "$mechanism" = "cron" ]; then
         # One row per matching cron line; human schedule in When, raw spec in Schedule.
         printf '%s\n' "$cron_matches" | while IFS= read -r l; do
             [ -z "$l" ] && continue
             local spec when
             spec=$(echo "$l" | awk '{print $1,$2,$3,$4,$5}')
-            when=$(_cron_to_english "$spec" 2>/dev/null || echo "$spec")
-            printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$spec" "$when" "backup" "(legacy cron)"
+            printf "  %-20s %-18s %-16s %-10s %s\n" "immich-backup" "$(_sched_text "$spec")" "cron" "backup" "(legacy cron)"
         done
     elif [ "$cron_checked" -eq 1 ]; then
         # No timer, root cron readable, no Immich line → genuinely off.
@@ -5661,7 +5660,8 @@ _immich_backup_status() {
     echo -e "  ${BLUE}${RULE}${NC}"
     if [ -s "$_IMMICH_BACKUP_LOG" ] && grep -qE 'Backup (complete|FAILED)' "$_IMMICH_BACKUP_LOG" 2>/dev/null; then
         grep -E 'Backup (complete|FAILED)' "$_IMMICH_BACKUP_LOG" | tail -n 8 | while IFS= read -r line; do
-            local when=${line%%: Backup*} status
+            local when status
+            when=$(_when_short "${line%%: Backup*}")
             if [[ "$line" == *"Backup complete"* ]]; then
                 status="${GREEN}✓ ok${NC}"
             else
@@ -6964,17 +6964,17 @@ _sync_mode_cell() {
     esac
 }
 
-# The "last: ..." text of a job (Status rows and Last runs): ok green, skipped yellow, failed red.
-_sync_result_text() {  # job_name -> the coloured "last: ..." text of its last run
+# The result text of a job (Status rows and Last runs, the one wording): ok green, skipped yellow, failed red.
+_sync_result_text() {  # job_name -> the coloured result text of its last run
     local kind when exitc
     IFS='|' read -r kind when exitc <<<"$(_sync_last_result "$HOME/.local/share/sync-jobs/$1.log")"
     case "$kind" in
-        ok)      echo -e "${GREEN}last: ok${NC}" ;;
-        vanished) echo -e "${GREEN}last: ok (some files vanished)${NC}" ;;
-        skipped) echo -e "${YELLOW}last: skipped${exitc:+ ($exitc)}${NC}" ;;
-        fail)    echo -e "${RED}last: failed (exit ${exitc})${NC}" ;;
-        running) echo -e "${YELLOW}last: running?${NC}" ;;
-        *)       echo -e "${DIM}last: never${NC}" ;;
+        ok)      echo -e "${GREEN}✓ ok${NC}" ;;
+        vanished) echo -e "${GREEN}✓ ok (some files vanished)${NC}" ;;
+        skipped) echo -e "${YELLOW}⚠ skipped${exitc:+ ($exitc)}${NC}" ;;
+        fail)    echo -e "${RED}✗ failed (exit ${exitc})${NC}" ;;
+        running) echo -e "${YELLOW}? running?${NC}" ;;
+        *)       echo -e "${DIM}never${NC}" ;;
     esac
 }
 # Last result of a sync job from its log: "kind|when|exit", kind = ok | vanished (ok,
@@ -7125,6 +7125,38 @@ _sync_execute_or_schedule() {
             ;;
     esac
 }
+
+# One readable schedule format for every Status table: "daily 03:00" / "weekly Sun 03:00".
+# Takes a 5-field cron expression or a systemd OnCalendar spec; anything else (every 15 min,
+# odd specs) falls back to _cron_to_english / the raw text.
+_sched_text() {  # spec
+    local spec=$1 dow="" t="" d
+    local -a f; read -ra f <<<"$spec"
+    if (( ${#f[@]} == 5 )); then
+        if [[ "${f[0]}" =~ ^[0-9]+$ && "${f[1]}" =~ ^[0-9]+$ && "${f[2]}${f[3]}" == "**" ]]; then
+            t=$(printf '%02d:%02d' "${f[1]}" "${f[0]}")
+            case "${f[4]}" in
+                \*) echo "daily $t"; return ;;
+                [0-7]) d=(Sun Mon Tue Wed Thu Fri Sat Sun); echo "weekly ${d[${f[4]}]} $t"; return ;;
+            esac
+        fi
+        _cron_to_english "$spec"; return
+    fi
+    case "$spec" in
+        daily)  echo "daily 00:00"; return ;;
+        weekly) echo "weekly Mon 00:00"; return ;;
+        Mon|Tue|Wed|Thu|Fri|Sat|Sun) echo "weekly $spec 00:00"; return ;;
+    esac
+    [[ "${f[0]:-}" =~ ^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$ ]] && { dow=${f[0]}; f=("${f[@]:1}"); }
+    if [[ "${f[0]:-}" == "*-*-*" && "${f[1]:-}" =~ ^([0-9]{2}):([0-9]{2})(:00)?$ ]]; then
+        t="${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
+        [[ -n "$dow" ]] && echo "weekly $dow $t" || echo "daily $t"; return
+    fi
+    echo "$spec"
+}
+
+# A log timestamp as "YYYY-MM-DD HH:MM" (the one date format of Status); the raw text when unreadable.
+_when_short() { date -d "$1" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$1"; }
 
 # Translate a 5-field cron expression into short plain English.
 _cron_to_english() {
@@ -7527,7 +7559,7 @@ _sync_show_status() {
     # Render immich-backup from systemd timer if available, else fall back
     # to the legacy cron line.
     if [[ -n "$server_timer_oncal" ]]; then
-        printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$server_timer_oncal" "systemd" "backup" "append" "(14 → 6)"
+        printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$(_sched_text "$server_timer_oncal")" "timer" "backup" "append" "(14 → 6)"
     fi
     if [[ -n "$server_crons" ]]; then
         echo "$server_crons" | while IFS= read -r line; do
@@ -7535,13 +7567,13 @@ _sync_show_status() {
             if echo "$line" | grep -q "immich-backup" && [[ -z "$server_timer_oncal" ]]; then
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
-                when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$sched" "$when" "backup" "append" "(14 → 6, legacy cron)"
+                when=cron
+                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "immich-backup" "$(_sched_text "$sched")" "$when" "backup" "append" "(14 → 6, legacy cron)"
             elif echo "$line" | grep -q "disk-check"; then
                 local sched when
                 sched=$(echo "$line" | awk '{print $1,$2,$3,$4,$5}')
-                when=$(_cron_to_english "$sched")
-                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "disk-check" "$sched" "$when" "monitor" "-" "(14 → 7)"
+                when=cron
+                printf "  %-20s %-18s %-16s %-10s %-8s %s\n" "disk-check" "$(_sched_text "$sched")" "$when" "monitor" "-" "(14 → 7)"
             fi
         done
     fi
@@ -7570,14 +7602,9 @@ _sync_show_status() {
         name=${_sync_jobs[i]}; sched=${_sync_job_scheds[i]}
         script_path="$HOME/.local/bin/sync-${name}.sh"
         if _sync_rec_load "$name"; then direction=$J_direction; mode=$J_mode; else direction=sync; mode=-; fi
-        if [[ "${_sync_job_types[i]}" == cron ]]; then
-            when=$(_cron_to_english "$sched"); tag=""
-            [[ -n "${_sync_job_paused[i]}" ]] && tag="${YELLOW}(paused)${NC}"
-        else
-            when="weekly"; tag="${DIM}timer${NC}"
-            [[ -n "${_sync_job_paused[i]}" ]] && tag="${YELLOW}(paused)${NC}"
-        fi
-        printf "  %-20s %-18s %-16s %-10s " "$name" "$sched" "$when" "$direction"
+        when=${_sync_job_types[i]}; tag=""   # cron | timer: the mechanism, in When; Schedule is the readable time
+        [[ -n "${_sync_job_paused[i]}" ]] && tag="${YELLOW}(paused)${NC}"
+        printf "  %-20s %-18s %-16s %-10s " "$name" "$(_sched_text "$sched")" "$when" "$direction"
         echo -e "$(_sync_mode_cell "$mode") $(_sync_result_text "$name") $tag"
         if [[ -n "${_sync_cannot[$name]+x}" ]]; then
             echo -e "  ${YELLOW}  cannot convert: ${_sync_cannot[$name]}${NC} ${DIM}($script_path)${NC}"

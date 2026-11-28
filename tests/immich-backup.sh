@@ -1,6 +1,6 @@
 #!/bin/bash
 # Tests for the ONE Immich backup (setup.sh: step_immich_backup / the generated
-# immich-backup.sh / _immich_backup_status / _remove / _configured_backup_dir).
+# immich-backup.sh / _immich_backup_status _sched_text _when_short / _remove / _configured_backup_dir).
 # The real functions run in a mktemp sandbox: system paths are rewritten onto it
 # (rw), sudo/systemctl/crontab/docker are stubs, rsync is the real one behind an
 # argument logger, so the layout, excludes and append-only claims are checked on
@@ -22,7 +22,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T
 rw() { sed -e "s|/usr/local/bin/immich-backup.sh|$BIN|g" -e "s|/var/log/immich-backup.log|$LOG|g" \
            -e "s|/etc/systemd/system/|$UNITS/|g" -e "s|/etc/immich-backup.conf|$CONF|g"; }
 fns() { local f; for f in "$@"; do extract_fn "$f" "$SRC" | rw; done; }
-FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove _immich_docker_group _immich_compose step_immich_backup_once _immich_once_progress _immich_once_result _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
+FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _sched_text _when_short _immich_backup_remove _immich_docker_group _immich_compose step_immich_backup_once _immich_once_progress _immich_once_result _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
 mkrun() {  # rebuild run.sh from the CURRENT $SRC (functions that do not exist yet are skipped)
   {
     printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC= BLUE=\nDRY_RUN=0\nMIRROR_WIPE_MIN=1000\n_FV_SELF=%q\n' "$T/app/setup.sh"
@@ -136,7 +136,7 @@ check 2c "Set up again, Enter at the destination: keeps the configured one" '[ $
 fresh; setup_sched
 runbk
 go "" _immich_backup_status
-check 3a "Status (timer): one row with the schedule from the unit, next run in the Note" '[[ "$OUT" == *"immich-backup"*"*-*-* 03:00:00"*"systemd"*"next: Sat 2026-11-28"* ]]'
+check 3a "Status (timer): one row with the schedule from the unit, next run in the Note" '[[ "$OUT" == *"immich-backup"*"daily 03:00"*"timer"*"next: Sat 2026-11-28"* && "$OUT" != *"*-*-*"* && "$OUT" != *systemd* ]]'
 check 3b "Status: Last runs shows the run as ok" '[[ "$OUT" == *"Last runs"* && "$OUT" == *"✓ ok"* ]]'
 printf 'Sat Nov 28 03:00:01 UTC 2026: Backup FAILED (exit 1) — systemd will retry\n' >> "$LOG"
 go "" _immich_backup_status
@@ -365,7 +365,7 @@ fresh; rm -rf "$NEWD"; go "$NEWD\ny\n1\n\nn\n" step_immich_backup
 check 9c "Set up, y at the confirm: now it is created (mkdir after the summary)" '[ $RC = 0 ] && [ -d "$NEWD" ] && [ -x "$BIN" ]'
 fresh; setup_sched "2\n1"
 go "\ny\n\n\n\nn\n" step_immich_backup
-check 9d "Set up again with a weekly schedule: shows the current one; Enter keeps destination, cadence and day (still Sun, 21 days)" '[ $RC = 0 ] && [[ "$OUT" == *"Current schedule: Sun *-*-* 03:00:00 -> $DEST"* ]] && grep -q "OnCalendar=Sun \*-\*-\* 03:00:00" "$UNITS/immich-backup.timer" && [ "$(_env() { sed -n "s/^RETENTION_DAYS=//p" "$CONF"; }; _env)" = 21 ]'
+check 9d "Set up again with a weekly schedule: shows the current one; Enter keeps destination, cadence and day (still Sun, 21 days)" '[ $RC = 0 ] && [[ "$OUT" == *"Current schedule: weekly Sun 03:00 -> $DEST"* ]] && grep -q "OnCalendar=Sun \*-\*-\* 03:00:00" "$UNITS/immich-backup.timer" && [ "$(_env() { sed -n "s/^RETENTION_DAYS=//p" "$CONF"; }; _env)" = 21 ]'
 check 9e "prompts: destination says 'Enter keeps it' when one exists, 'q = back' always (read -p is silent off a tty: source checked)" 'extract_fn step_immich_backup "$SRC" | grep -q "Enter keeps it: " && extract_fn step_immich_backup "$SRC" | grep -q "q = back" && extract_fn step_immich_backup "$SRC" | grep -q "Enter keeps the current"'
 fresh; setup_sched; : > "$T/systemctl.log"; go "n\n" _immich_backup_run
 check 9f "Run now: shows destination and last run, n = nothing started" '[ $RC = 0 ] && [[ "$OUT" == *"Destination: $DEST"* && "$OUT" == *"Last run:"* && "$OUT" == *Cancelled* ]] && [ ! -s "$T/systemctl.log" ]'
@@ -394,4 +394,11 @@ check 10f "photos only: summary says 'Photos only' with Mode; result has the pho
 one_fresh; FAIL_DUMP=1 go "3\n$ONE\n\n" step_immich_backup_once
 check 10g "a failure shows the script's lines (so the reason is visible) and no success block" '[ $RC = 1 ] && [[ "$OUT" == *"DB dump FAILED"* && "$OUT" == *"Backup failed"* && "$OUT" != *"✓ Backup complete"* && "$OUT" != *"Restore:"* ]]'
 check 10h "scheduled run unchanged: log keeps the timestamped lines Status parses, final line 'Backup complete → <dest>'" 'fresh; setup_sched; runbk; [[ "$LOGTXT" == *"DB dump ok"* && "$LOGTXT" == *"Photos synced"* ]] && tail -n 1 "$LOG" | grep -q "Backup complete → $DEST\$" && ! grep -q "Dumping database\|Syncing photos\|--stats" "$LOG" "$RS_LOG"'
+
+# ── 11 one date format and one schedule format in Status ──
+fresh; setup_sched; mkdir -p "$(dirname "$LOG")"
+printf '%s\n' 'Sun Oct  4 03:09:45 AM CEST 2026: Backup complete → /x' > "$LOG"
+go "" _immich_backup_status
+echo "---- sample: Immich Last runs ----"; echo "$OUT" | sed -n '/Last runs/,$p' | head -6; echo "----------------------------------"
+check 11a "Last runs: the log's 'Sun Oct  4 03:09:45 AM CEST 2026' shows as 2026-10-04 03:09, aligned, still read from 'Backup complete'" '[[ "$OUT" == *"immich-backup        2026-10-04 03:09     ✓ ok"* && "$OUT" != *CEST* ]]'
 check_total

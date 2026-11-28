@@ -276,7 +276,7 @@ _svc_power_all()        { # action             (on the server itself)
 _svc_power_remote()     { ssh "$SERVER_USER@$SERVER_IP" "$(_svc_power_body "$1" "$(_shq "$2")")"; }  # action container
 # `compose up -d` creates what is missing; its raw "Container X Started" lines would double our own
 # result lines, so run it quietly and show its output only when it fails.
-_compose_up_quiet() { local out; out=$(sg docker -c "docker compose up -d" 2>&1) || { echo "$out" >&2; return 1; }; }
+_compose_up_quiet() { local out; out=$(_compose up -d 2>&1) || { echo "$out" >&2; return 1; }; }
 _svc_power_all_remote() { ssh "$SERVER_USER@$SERVER_IP" "$(_svc_power_all_body "$1")"; }              # action
 
 # Print "name|status" like `docker ps -a --format '{{.Names}}|{{.Status}}'`, but
@@ -536,7 +536,7 @@ step_emergency() {
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     cd "$SCRIPT_DIR"
     info "Starting compose stack..."
-    sg docker -c "docker compose up -d" 2>&1 | grep -v "^$" || true
+    _compose up -d 2>&1 | grep -v "^$" || true
     info "Starting standalone containers..."
     # Per-container rule (autostart follows the action). A standalone one that
     # was never installed is skipped quietly; a real failure is reported.
@@ -1885,7 +1885,7 @@ _storage_change() {
     echo ""
     info "Redeploying $app..."
     cd "$SCRIPT_DIR"
-    sg docker -c "docker compose up -d --force-recreate $service" 2>&1 | grep -v "^$"
+    _compose up -d --force-recreate "$service" 2>&1 | grep -v "^$"
 
     ok "Done. $app now uses: $new_path"
 }
@@ -1946,7 +1946,7 @@ _storage_change_immich() {
     echo ""
     info "Redeploying Immich..."
     cd "$SCRIPT_DIR"
-    sg docker -c "docker compose up -d --force-recreate immich-server database" 2>&1 | grep -v "^$"
+    _compose up -d --force-recreate immich-server database 2>&1 | grep -v "^$"
 
     ok "Done. Immich now uses: $new_base"
     echo ""
@@ -2376,7 +2376,7 @@ _unified_service_picker() {
         if [[ "$action" == start ]]; then
             # compose up -d creates what is missing but never re-applies a
             # restart policy; the per-container rule after it does.
-            ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && $(declare -f _compose_up_quiet); _compose_up_quiet" \
+            ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && $(declare -f _compose _compose_up_quiet); _IMMICH_COMPOSE=docker-compose.yml _IMMICH_ENV=.env _compose_up_quiet" \
                 || { fail "docker compose up failed"; all_rc=1; }
         fi
         _svc_power_all_remote "$action" || all_rc=1
@@ -2562,7 +2562,7 @@ step_deploy() {
     _install_smart_playlists
 
     cd "$SCRIPT_DIR"
-    if ! sg docker -c "docker compose up -d"; then
+    if ! _compose up -d; then
         echo ""
         fail "One or more containers failed to start."
         info "Check logs: ${BOLD}federver → 7 → 5${NC}  (or: docker compose logs)"
@@ -3968,7 +3968,13 @@ _remove_stale_privcloud_cmd() {
     fi
 }
 
-_immich_compose() { docker compose -f "$_IMMICH_COMPOSE" --env-file "$_IMMICH_ENV" "$@"; }
+# The one compose helper for this checkout's stack (its compose file and .env, whatever the cwd).
+# Docker runs through the docker group: plain docker, or `sg docker` when the group was added in
+# this very login (the rule _svc_docker_fn uses).
+_compose() {
+    if docker info &>/dev/null; then docker compose -f "$_IMMICH_COMPOSE" --env-file "$_IMMICH_ENV" "$@"
+    else sg docker -c "$(printf '%q ' docker compose -f "$_IMMICH_COMPOSE" --env-file "$_IMMICH_ENV" "$@")"; fi
+}
 _immich_up()      { curl -s http://localhost:2283/api/server/ping 2>/dev/null | grep -q pong; }
 _immich_urls() {
     local ip
@@ -4042,7 +4048,7 @@ _immich_ensure_docker() { # step
 # caller before it waits for Immich / reports the update.
 _immich_keep_autostart() {
     local ids id rc=0
-    ids="$(_immich_compose ps -aq "${_IMMICH_SERVICES[@]}")" || rc=1
+    ids="$(_compose ps -aq "${_IMMICH_SERVICES[@]}")" || rc=1
     if (( rc == 0 )); then
         for id in $ids; do _svc_power start "$id" || rc=1; done
     fi
@@ -4126,7 +4132,7 @@ step_immich_install() {
 
     echo ""
     echo -e "  ${BOLD}Pulling ${#_IMMICH_SERVICES[@]} images (first time takes a few minutes)...${NC}"
-    _immich_compose pull "${_IMMICH_SERVICES[@]}" || { fail "Pulling the images failed."; return 1; }
+    _compose pull "${_IMMICH_SERVICES[@]}" || { fail "Pulling the images failed."; return 1; }
     echo ""
     ok "Install complete. Next: federver -> 7 -> 6 (Deploy) starts Immich"
 }
@@ -4206,7 +4212,7 @@ step_immich_status() {
             else
                 echo -e "  ${YELLOW}  $line${NC}"
             fi
-        done < <(_immich_compose ps --format "table {{.Name}}\t{{.Status}}" "${_IMMICH_SERVICES[@]}" 2>/dev/null)
+        done < <(_compose ps --format "table {{.Name}}\t{{.Status}}" "${_IMMICH_SERVICES[@]}" 2>/dev/null)
 
         if ! $has_containers; then
             warn "No Immich containers running."
@@ -4232,8 +4238,8 @@ step_immich_status() {
     echo -e "  ${BOLD}Recent errors${NC}"
     local errors_found=false container err_lines eline
     for container in "${_IMMICH_SERVICES[@]}"; do
-        if $compose_ok && [[ -n "$(_immich_compose ps -aq "$container" 2>/dev/null)" ]]; then
-            err_lines="$(_immich_compose logs --no-color --no-log-prefix --tail 50 "$container" 2>&1 | grep -iE 'error|fatal|panic|failed|exception|denied' | tail -3)"
+        if $compose_ok && [[ -n "$(_compose ps -aq "$container" 2>/dev/null)" ]]; then
+            err_lines="$(_compose logs --no-color --no-log-prefix --tail 50 "$container" 2>&1 | grep -iE 'error|fatal|panic|failed|exception|denied' | tail -3)"
             if [[ -n "$err_lines" ]]; then
                 errors_found=true
                 echo -e "  ${RED}-- $container --${NC}"
@@ -4333,7 +4339,7 @@ step_immich_update() {
     before_ml="$(docker images -q "ghcr.io/immich-app/immich-machine-learning:${ver}" 2>/dev/null || echo "")"
 
     info "Checking for updates..."
-    _immich_compose pull --quiet "${_IMMICH_SERVICES[@]}" 2>/dev/null || { fail "Could not pull the images. Check the server's internet connection."; return 1; }
+    _compose pull --quiet "${_IMMICH_SERVICES[@]}" 2>/dev/null || { fail "Could not pull the images. Check the server's internet connection."; return 1; }
 
     after_server="$(docker images -q "ghcr.io/immich-app/immich-server:${ver}" 2>/dev/null || echo "")"
     after_ml="$(docker images -q "ghcr.io/immich-app/immich-machine-learning:${ver}" 2>/dev/null || echo "")"
@@ -4356,7 +4362,7 @@ step_immich_update() {
     fi
 
     echo ""
-    _immich_compose up -d "${_IMMICH_SERVICES[@]}" || { fail "docker compose up failed."; return 1; }
+    _compose up -d "${_IMMICH_SERVICES[@]}" || { fail "docker compose up failed."; return 1; }
     _immich_keep_autostart
 
     echo ""
@@ -9083,9 +9089,9 @@ step_reset_password() {
                 return
             fi
             cd "$SCRIPT_DIR"
-            sg docker -c "docker compose down navidrome" > /dev/null 2>&1
+            _compose down navidrome > /dev/null 2>&1
             sg docker -c "docker volume rm privcloud_navidrome-data" > /dev/null 2>&1
-            sg docker -c "docker compose up -d navidrome" > /dev/null 2>&1
+            _compose up -d navidrome > /dev/null 2>&1
             ok "Navidrome reset. Open to create a new account:"
             echo -e "    ${BLUE}http://$IP:4533${NC}"
             ;;
@@ -9099,9 +9105,9 @@ step_reset_password() {
                 return
             fi
             cd "$SCRIPT_DIR"
-            sg docker -c "docker compose down uptime-kuma" > /dev/null 2>&1
+            _compose down uptime-kuma > /dev/null 2>&1
             sg docker -c "docker volume rm privcloud_uptime-kuma-data" > /dev/null 2>&1
-            sg docker -c "docker compose up -d uptime-kuma" > /dev/null 2>&1
+            _compose up -d uptime-kuma > /dev/null 2>&1
             ok "Uptime Kuma reset. Open to create new account:"
             echo -e "    ${BLUE}http://$IP:3001${NC}"
             ;;
@@ -9813,7 +9819,7 @@ if [[ "${1:-}" == "--run" && -n "${2:-}" ]]; then
             fail "Step '$2' is not defined even after git pull."
             exit 1
         fi
-        info "Step '$2' not found — pulling latest from main..."
+        info "Step '$2' not found — pulling latest of $(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "this branch")..."
         git pull --ff-only > /dev/null 2>&1 || true
         export _SETUP_RETRIED=1
         exec "$0" "$@"

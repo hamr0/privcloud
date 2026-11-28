@@ -19,7 +19,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nIMMICH_VERSION=release\n'
 # The step functions come straight from setup.sh; run.sh is the --run entry.
 {
   printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC=\nDRY_RUN=0\n_FV_SELF=%q\n' "$T/app/run.sh"
-  for f in ok fail info warn _env_get _shq _svc_docker_fn _svc_power_body _svc_power _immich_compose _immich_up \
+  for f in ok fail info warn _env_get _shq _svc_docker_fn _svc_power_body _svc_power _compose _immich_up \
            _immich_urls _immich_needs_selinux _immich_fix_permissions _immich_docker_group \
            _immich_ensure_docker _immich_keep_autostart _immich_need_env step_immich_update; do
     extract_fn "$f" "$SRC"

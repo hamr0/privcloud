@@ -64,6 +64,11 @@ for fn in step_immich_status step_immich_update step_immich_install step_immich_
   OUT=$(cd "$SB/copy" && HOME=$SB/home PATH="$SB/bin:$PATH" timeout 30 bash ./setup.sh --run "$fn" </dev/null 2>&1)
   check "4-$fn" "--run $fn dispatches (defined, runs its own code)" '[[ "$OUT" != *"is not defined"* ]] && [[ "$OUT" != *"pulling latest"* ]]'
 done
+check 4s "one compose helper: no inline 'sg docker -c \"docker compose ...\"' left, _immich_compose is gone" '! grep -nE "sg docker -c [\"'"'"']docker compose" "$S" && ! grep -q "_immich_compose" "$S" && grep -q "^_compose() {" "$S"'
+# the stale-checkout retry names the checkout's real branch, not "main"
+printf '#!/bin/bash\n[ "$1" = rev-parse ] && echo feature-x\nexit 0\n' > "$SB/bin/git"
+OUT=$(cd "$SB/copy" && HOME=$SB/home PATH="$SB/bin:$PATH" timeout 30 bash ./setup.sh --run no_such_step </dev/null 2>&1)
+check 4r "--run retry message names the real branch (feature-x), not main" '[[ "$OUT" == *"pulling latest of feature-x"* && "$OUT" != *"from main"* ]]'
 for fn in step_immich_backup _immich_backup_status _immich_backup_run _immich_backup_remove; do
   check "4-$fn" "$fn (the existing scheduled-backup step) is defined for --run" 'extract_fn "$fn" "$S" >/dev/null'
 done
@@ -91,7 +96,7 @@ check 6d "the installer (step 1), Immich Install and Immich Update all clean up 
 
 CHECK_DIAG=
 # 7 Manage Immich Status (federver -> 9 -> 1) is about Immich's four compose services only
-for f in step_immich_status _immich_compose; do extract_fn "$f" "$S"; done > "$T/st.sh"
+for f in step_immich_status _compose; do extract_fn "$f" "$S"; done > "$T/st.sh"
 source "$T/st.sh"
 eval "$(grep -m1 '^_IMMICH_SERVICES=' "$S")"
 _immich_docker_group() { :; }; _env_get() { :; }; _immich_up() { return 1; }
@@ -117,7 +122,7 @@ for f in step_immich_install _confirm_yn; do extract_fn "$f" "$S"; done > "$T/in
 source "$T/inst.sh"
 _remove_stale_privcloud_cmd() { :; }; _immich_ensure_docker() { :; }; _immich_needs_selinux() { return 1; }
 _immich_fix_permissions() { echo FIXPERM >> "$T/inst.log"; }
-_immich_compose() { echo "compose $*" >> "$T/inst.log"; }
+_compose() { echo "compose $*" >> "$T/inst.log"; }
 printf 'UPLOAD_LOCATION=/x\n' > "$T/x.env"
 : > "$T/inst.log"; OUT=$(printf 'n\n' | step_immich_install 2>&1); RC=$?
 check 8a "Install: summary lists the config path and the four services; n = nothing pulled, no permission fix, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Install summary"* && "$OUT" == *"Config:  $T/x.env"* && "$OUT" == *"immich-server immich-machine-learning redis database"* && "$OUT" == *"Cancelled - nothing pulled"* ]] && [ ! -s "$T/inst.log" ]'

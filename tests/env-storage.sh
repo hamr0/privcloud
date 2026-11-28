@@ -15,9 +15,9 @@ mkdir -p "$T/bin" "$T/repo" "$T/home" "$T/mnt"
 cd "$T" || exit 1
 export HOME=$T/home
 BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
-{ for f in ok fail info warn _env_get _env_quote _set_env _install_smart_playlists _storage_change _storage_change_music \
+{ for f in ok fail info warn _compose _env_get _env_quote _set_env _install_smart_playlists _storage_change _storage_change_music \
            _storage_change_files _storage_change_immich _require_data_mount _drive_verdict _existing_ancestor _dest_drive_verdict \
-           _drive_mount_point; do extract_fn "$f" "$SRC"; done; grep -E '^_DRIVE_ROOTS=' "$SRC"; } > "$T/fn.sh"
+           _drive_mount_point; do extract_fn "$f" "$SRC"; done; echo "_IMMICH_COMPOSE=\$T/repo/docker-compose.yml _IMMICH_ENV=\$T/repo/.env"; grep -E '^_DRIVE_ROOTS=' "$SRC"; } > "$T/fn.sh"
 source "$T/fn.sh"
 _DRIVE_ROOTS="$T/mnt $T/media"   # the sandbox stands in for /mnt and /media (the production constant is only read, never changed)
 SCRIPT_DIR=$T/repo
@@ -25,6 +25,7 @@ SCRIPT_DIR=$T/repo
 # sudo runs the command (chown is skipped: the sandbox user owns everything); sg logs the docker command.
 printf '#!/bin/bash\n[ "$1" = chown ] && exit 0\nexec "$@"\n' > "$T/bin/sudo"
 printf '#!/bin/bash\necho "$*" >> "$SG_LOG"\n' > "$T/bin/sg"
+printf '#!/bin/bash\necho "docker $*" >> "$SG_LOG"\n' > "$T/bin/docker"   # _compose goes through docker (or sg): both are logged, never the real one
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH" SG_LOG=$T/sg.log
 
@@ -150,7 +151,7 @@ check S10 "_drive_mount_point: a real mount is named as findmnt reports it" '[ "
 
 # ── D  data defaults: one table, equal to what step_deploy writes and .env.example holds ──
 DKEYS="FILES_LOCATION MEDIA_LOCATION MUSIC_LOCATION UPLOAD_LOCATION DB_DATA_LOCATION"
-{ for f in ok fail info warn _env_get _env_quote _set_env _data_defaults _drive_verdict _require_data_mount _install_smart_playlists step_deploy; do
+{ for f in ok fail info warn _compose _env_get _env_quote _set_env _data_defaults _drive_verdict _require_data_mount _install_smart_playlists step_deploy; do
     extract_fn "$f" "$SRC"; done; grep -E '^_DRIVE_ROOTS=' "$SRC"; } > "$T/fn2.sh"
 mkdir -p "$T/dep"; cp "$T/fn2.sh" "$T/dep/fn.sh"; cp "$H/../.env.example" "$T/dep/.env.example"
 for c in sg openssl hostname sleep docker; do printf '#!/bin/bash\nexit 0\n' > "$T/bin/$c"; chmod +x "$T/bin/$c"; done

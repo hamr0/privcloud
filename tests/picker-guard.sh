@@ -14,7 +14,7 @@ trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/home/privcloud"
 GREEN=; RED=; YELLOW=; BLUE=; BOLD=; DIM=; NC=
 for f in ok fail info warn _shq _svc_power_body _svc_docker_fn _svc_power_all_body _svc_power _svc_power_all _svc_power_remote \
-         _svc_power_all_remote _compose_up_quiet _env_get _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _require_data_mount _unified_service_picker _picker_data_guard; do
+         _svc_power_all_remote _compose _compose_up_quiet _env_get _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _require_data_mount _unified_service_picker _picker_data_guard; do
   extract_fn "$f" "$SRC"; done > "$T/fn.sh"
 grep -E '^_DRIVE_ROOTS=' "$SRC" >> "$T/fn.sh"
 source "$T/fn.sh"
@@ -50,7 +50,7 @@ esac
 echo "$last" >> "$SSH_LOG"
 exit 0
 X
-stub_cmd sg 'echo "Container navidrome Started"; exit ${COMPOSE_RC:-0}'
+stub_cmd docker 'case "$1" in info) exit 0 ;; compose) echo "Container navidrome Started"; exit ${COMPOSE_RC:-0} ;; esac'   # never the real docker
 chmod +x "$T/bin/"*
 export PATH="$T/bin:$PATH" SSH_LOG=$T/ssh.log FAKE_HOME=$T/home
 SERVER_USER=tester SERVER_IP=192.0.2.1

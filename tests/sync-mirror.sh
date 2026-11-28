@@ -21,7 +21,7 @@ CR=$'\033[R]'; CY=$'\033[Y]'   # status() swaps these in for RED/YELLOW
   for f in _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _dest_check _require_dest_drive _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
            _mirror_scan _mirror_wipe_sized _mirror_preview _commas _tick _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mode_cell _sync_result_text _sync_last_result _sync_change_mode \
            _sync_execute_or_schedule _sync_show_status _sync_rec_write _sync_rec_load _sync_write_launcher _sync_default_name _sync_valid_name _sync_job_operands _sync_job_steps _sync_job_go _sync_job_run _sync_prepare_dest _sync_rec_set_schedule _sync_rec_mode _sync_job_import_legacy _sync_import_all_legacy _sync_tokenize _pick_server_endpoint _tcp_open _is_server _sync_edit_job _sync_list_jobs _sync_cron_split _sync_registry_load _sync_job_delete _sync_delete_job _sync_change_schedule _sync_remove_timer _confirm_delete _cron_cmd _cron_get _cron_drop _cron_set _cron_remove_line _cron_replace_line \
-           _cron_to_english _sched_text _when_short _sync_one_time_backup; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
+           _cron_to_english _sched_text _when_short _sync_one_time_backup _dirlink_target _fold_dirlink; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 source "$T/fn.sh"
 type _sync_one_time_backup >/dev/null 2>&1 || echo "FAIL  setup: mirror functions not found in $SRC (older setup.sh?)"
 
@@ -413,5 +413,21 @@ check 10k "edited download job guards the SERVER source and skips on empty" '[ "
 # ── 11  Immich backup stays append-only ───────────────────────────────────
 IMM=$(for f in step_immich_backup _immich_backup_run _immich_backup_status _immich_backup_remove step_immich_backup_menu; do extract_fn "$f" "$SRC"; done)
 check 11a "Immich backup functions exist and never touch the mirror question" '[ -n "$IMM" ] && ! grep -Eq "_mirror_|sync_mode" <<<"$IMM"'
+
+# ── 12  a symlinked source folder (one-time laptop -> laptop copy) ───────────
+# `rsync link dest/` copies the link itself; "The whole folder" must copy the real folder into <dest>/<link name>/.
+lnk() { mk; rm -f "$T/lnk"; ln -s "$T/s" "$T/lnk"; P_SRC=$T/lnk; }
+_pick_copy_mode() { copy_mode=${CM:-contents}; }
+CM=folder; lnk; run "${ONE}\n$Y" LOCALCMD
+check 12a "folder mode, symlinked source: real files land in <dest>/<link name>/, not a link" '[ ! -L "$T/d/lnk" ] && [ -f "$T/d/lnk/a" ] && [ -f "$T/d/lnk/sub/b" ] && [ ! -e "$T/d/s" ]'
+check 12b "screen: From says it is a symlink and where to, To is the real destination, one info line" '[[ "$OUT" == *"From: $T/lnk ("*") (symlink → $T/s)"* && "$OUT" == *"To:   $T/d/lnk"* && "$OUT" == *"is a symlink to $T/s - copying the real folder into $T/d/lnk/"* ]]'
+CM=contents; lnk; run "${ONE}\n$Y" LOCALCMD
+check 12c "contents mode with a symlinked source is unchanged: files land directly in <dest>, no <dest>/lnk, no symlink note" '[ -f "$T/d/a" ] && [ -f "$T/d/sub/b" ] && [ ! -e "$T/d/lnk" ] && [[ "$OUT" != *symlink* ]]'
+CM=folder; mk; run "${ONE}\n$Y" LOCALCMD
+check 12d "folder mode, a real (not symlinked) folder: unchanged, lands in <dest>/s/ and no symlink note" '[ -f "$T/d/s/a" ] && [[ "$OUT" != *symlink* ]]'
+CM=folder; lnk; mkdir -p "$T/d/lnk"; echo stale > "$T/d/lnk/stale"
+run "${ONE}delete\ny\n$Y" LOCALCMD
+check 12e "mirror, folder mode, symlinked source: compared against <dest>/<link name>/ - its stale file is deleted, the parent's extras are not" '[ ! -L "$T/d/lnk" ] && [ ! -e "$T/d/lnk/stale" ] && [ -f "$T/d/lnk/a" ] && extras_kept && [[ "$OUT" == *"⚠ 1 file would be deleted at $T/d/lnk:"* ]]'
+CM=; unset CM
 
 check_total

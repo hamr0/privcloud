@@ -6644,6 +6644,32 @@ _mirror_confirm() {
     [[ $REPLY =~ ^[Yy]$ ]] || { info "Cancelled."; return 1; }
 }
 
+# A source that is a symlink to a directory: `rsync link dest/` copies the link itself (a few
+# bytes), not the folder. _dirlink_target <local|server> <path> prints the real path and returns 0
+# for such a source, returns 1 otherwise (a server source is checked over one ssh).
+_dirlink_target() {
+    local p=${2%/}
+    if [[ "$1" == server ]]; then
+        ssh "$SERVER_USER@$SERVER_IP" "[ -L $(_shq "$p") ] && [ -d $(_shq "$p") ] && readlink -f $(_shq "$p")" 2>/dev/null
+    else
+        [[ -L "$p" && -d "$p" ]] && readlink -f "$p"
+    fi
+}
+
+# One-time copies, right after _pick_copy_mode: copy mode "folder" with a symlinked source becomes
+# a contents copy of the real folder into <dst_path>/<link name>/, so the user gets the real files
+# under the name they picked. Sets (the caller's variables, as _pick_copy_mode sets copy_mode)
+# copy_mode, dst_path and link_note (the "From:" suffix). Args: src_loc src_path
+_fold_dirlink() {
+    local t
+    [[ "$copy_mode" == folder ]] || return 0
+    t=$(_dirlink_target "$1" "$2") || return 0
+    copy_mode=contents
+    dst_path="${dst_path%/}/$(basename "${2%/}")"
+    link_note=" (symlink → $t)"
+    info "ℹ ${2%/} is a symlink to $t - copying the real folder into $dst_path/"
+}
+
 # Source size for the "From:" line. A symlink to a folder is measured as the
 # folder (trailing slash); plain `du -sh link` measures the link itself: 0.
 _src_size() {
@@ -6730,9 +6756,11 @@ _sync_valid_name() {  # name
 #   sees it (the folder's own name is added in copy mode "folder"),
 #   _sj_cmd  the append-form command line (what the mirror preview dry-runs).
 _sync_job_operands() {
-    local s=${J_src%/} d=${J_dest%/} rs
-    _sj_shown=$d; [[ "$J_copy_mode" == folder ]] && _sj_shown=$d/${s##*/}
-    rs=$s/; [[ "$J_copy_mode" == folder ]] && rs=$s
+    local s=${J_src%/} d=${J_dest%/} rs cm=$J_copy_mode
+    # a symlinked source folder: copy the real folder's contents into <dest>/<link name>/
+    if [[ "$cm" == folder ]] && _dirlink_target "$J_src_loc" "$s" >/dev/null; then cm=contents; d=$d/${s##*/}; fi
+    _sj_shown=$d; [[ "$cm" == folder ]] && _sj_shown=$d/${s##*/}
+    rs=$s/; [[ "$cm" == folder ]] && rs=$s
     if [[ "$J_direction" == upload ]]; then
         _sj_src=$rs; _sj_dst="$SERVER_USER@$SERVER_IP:$d/"
     else
@@ -8139,6 +8167,7 @@ _sync_one_time_backup() {
             local is_dir="false"
             [[ -d "$src_path" ]] && is_dir="true"
             _pick_copy_mode "$src_path" "$is_dir" "$dst_path" "local" || return
+            local link_note=""; _fold_dirlink local "$src_path"
             local rsync_src="$src_path/"
             local dest_display="$dst_path"
             if [[ "$copy_mode" == "folder" ]]; then
@@ -8151,7 +8180,7 @@ _sync_one_time_backup() {
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↑ One-time upload: laptop → server${NC}"
-            echo -e "  From: $src_path ($src_size)"
+            echo -e "  From: $src_path ($src_size)$link_note"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
             _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -8175,6 +8204,7 @@ _sync_one_time_backup() {
             local is_dir="false"
             ssh "$SERVER_USER@$SERVER_IP" "test -d $(_shq "$src_path")" 2>/dev/null && is_dir="true"
             _pick_copy_mode "$src_path" "$is_dir" "$dst_path" "server" || return
+            local link_note=""; _fold_dirlink server "$src_path"
             local rsync_src="$src_path/"
             local dest_display="$dst_path"
             if [[ "$copy_mode" == "folder" ]]; then
@@ -8208,7 +8238,7 @@ _sync_one_time_backup() {
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↓ One-time download: server → laptop${NC}"
-            echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
+            echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path$link_note"
             echo -e "  To:   $dest_display"
             _mirror_banner
             $needs_priv     && echo -e "  ${DIM}Source is root-owned — federver reads it under sudo.${NC}"
@@ -8348,6 +8378,7 @@ _sync_one_time_backup() {
             local is_dir="false"
             [[ -d "$src_path" ]] && is_dir="true"
             _pick_copy_mode "$src_path" "$is_dir" "$dst_path" "local" || return
+            local link_note=""; _fold_dirlink local "$src_path"
             local rsync_src="$src_path/"
             local dest_display="$dst_path"
             if [[ "$copy_mode" == "folder" ]]; then
@@ -8360,7 +8391,7 @@ _sync_one_time_backup() {
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}↪ One-time local copy: laptop → laptop${NC}"
-            echo -e "  From: $src_path ($src_size)"
+            echo -e "  From: $src_path ($src_size)$link_note"
             echo -e "  To:   $dest_display"
             _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -8386,6 +8417,7 @@ _sync_one_time_backup() {
             local is_dir="false"
             ssh "$SERVER_USER@$SERVER_IP" "test -d $(_shq "$src_path")" 2>/dev/null && is_dir="true"
             _pick_copy_mode "$src_path" "$is_dir" "$dst_path" "server" || return
+            local link_note=""; _fold_dirlink server "$src_path"
             local rsync_src="$src_path/"
             local dest_display="$dst_path"
             if [[ "$copy_mode" == "folder" ]]; then
@@ -8409,7 +8441,7 @@ _sync_one_time_backup() {
             echo ""
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "  ${BOLD}⇄ One-time server copy: federver → federver${NC}"
-            echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path"
+            echo -e "  From: $SERVER_USER@$SERVER_IP:$src_path$link_note"
             echo -e "  To:   $SERVER_USER@$SERVER_IP:$dest_display"
             _mirror_banner
             echo -e "  ${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"

@@ -123,6 +123,31 @@ Each module runs the same loop: ~15 min POC → build with tests that fail first
     skip a service already in the wanted state (Tailscale already connected) or not installed
     (Syncthing: shown `not installed`, never a false `failed`); whatever truly needs sudo asks once
     per side.
+11. **One question per All, and a line per service** (seen live 2026-11-27: Stop All asked `Stop ALL?`,
+    then Tailscale's `Disconnect?`, then Syncthing's `Stop?` although it was not installed, and
+    stopped the containers without a word). All asks one confirmation that lists what it will act
+    on; not-installed services are skipped before it; each container prints one result line.
+    Tailscale leaves `federver -> 7` entirely (it carries remote access and AdGuard DNS, so it is
+    network access, not a service); it is managed only in `federver -> 8`. Manage Immich Status
+    lists only Immich's four services. One-time cleanups say what they do before a sudo prompt; the
+    menu hop's `ssh -t` runs quiet (no `Connection … closed.`).
+12. **`federver -> 8 -> 4` Restart both proves it:** server first (detached, so its own ssh session
+    survives the drop), then laptop; success means tailscaled's start time changed and the state reads
+    Running on that side, never just systemctl's exit code.
+13. **Immich Config says Enter keeps** (seen live 2026-11-27): it shows the current photo and database
+    paths; Enter keeps both and changes nothing (no `DB_DATA_LOCATION` rewrite to `<parent>/postgres`,
+    which would silently point Immich at an empty database); an existing database path is never moved.
+14. **One prompt rule across Manage Immich** (2026-11-27): path/text prompts show the current value or
+    default, say `(Enter keeps it)` and take `q` = back; a new path is checked and echoed; anything that
+    writes or takes long shows one summary and one confirm (`[Y/n]` safe, `[y/N]` destructive); nothing
+    is created before the confirm. Install, Fix Google, Scheduled Set up and Run now gain a summary +
+    confirm; Set up shows the current schedule and Enter keeps it; Upload remembers the API key in
+    `${XDG_CONFIG_HOME:-~/.config}/federver/immich-api-key` (600), re-validated each run.
+15. **Sync destinations must be on a mounted drive** (found live 2026-11-27: `federver -> 16 -> 5`
+    offered the hardcoded preset `/mnt/data (USB drive)`, which does not exist on the server, and would
+    have written to the system disk). The server path picker lists the server's real mounted drives
+    and `.env` data paths; one-time sync, New/Edit job and every scheduled run check
+    `_dest_drive_verdict` first (a scheduled run skips and logs `SKIPPED … destination drive not mounted`).
 
 ## Non-goals
 

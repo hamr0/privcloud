@@ -4648,7 +4648,7 @@ step_immich_backup_once() {
     if $do_photos; then
         local excl="" e
         for e in "${_IMMICH_EXCLUDES[@]}"; do excl+=" --exclude=$(_shq "$e")"; done
-        _mirror_gate localsudo "$upload_loc" "$backup_dir/photos" "rsync -a$excl $(_shq "$upload_loc/") $(_shq "$backup_dir/photos/")" || return
+        _mirror_gate localsudo "$upload_loc" "$backup_dir/photos" "rsync -a$excl $(_shq "$upload_loc/") $(_shq "$backup_dir/photos/")" local "$backup_dir/photos" || return
         if [[ "$sync_mode" == mirror ]]; then
             echo ""
             _mirror_banner
@@ -6466,36 +6466,82 @@ _mirror_banner() {
 }
 
 # Dry-run command for an append-form copy command ("rsync <any flags> ...").
-# --out-format=%o|%n prints "del.|<name>" for every deletion.
-_mirror_dry_cmd() { _rsync_with "$1" "-n --delete --out-format='%o|%n'"; }
+# --out-format=%o|%l|%n prints "del.|0|<name>" for every deletion and "send|<bytes>|<name>"
+# for every transfer (the name stays last: it may contain "|").
+_mirror_dry_cmd() { _rsync_with "$1" "-n --delete --out-format='%o|%l|%n'"; }
 
 # Same command with a flag after "rsync" (--delete, or the literal $DELFLAG).
 _rsync_with() { printf 'rsync %s %s' "$2" "${1#rsync }"; }
 
-# What a dry-run list (rsync --out-format='%o|%n') would delete, counted. Files are
+# What a dry-run list (rsync --out-format='%o|%l|%n') would delete, counted. Files are
 # listed by name; a directory counts only when no deleted file sits under it (those go
 # with their files) = an empty folder. One awk pass: totals, then one G line per
 # top-level folder (count, files, empty folders, whole-folder flag, name). A folder is
 # "whole" when its own "name/" entry is in the list (rsync prints it when the
 # directory goes entirely). Sets _mirror_nf (files), _mirror_nd (empty folders),
-# _mirror_nwhole (whole top-level folders) and _mirror_groups (the G lines).
+# _mirror_nwhole (whole top-level folders) and _mirror_groups (the G lines), plus what
+# would be copied: _mirror_ncopy (files sent) and _mirror_copybytes (their size).
 # The interactive preview and the unattended wipe cap both count with this.
 _mirror_scan() {  # list_file
     local sum
     sum=$(awk 'function top(x,   j) { j = index(x, "/"); return j ? substr(x, 1, j) : "(top level)" }
-        /^del\.\|/ { p = substr($0, 6)
+        /^(send|recv)\|/ { p = $0; sub(/^[^|]*\|/, "", p); sz = p; sub(/\|.*/, "", sz); sub(/^[^|]*\|/, "", p)
+            if (p !~ /\/$/) { nc++; cb += sz }; next }
+        /^del\.\|/ { p = $0; sub(/^[^|]*\|[^|]*\|/, "", p)
             if (p ~ /\/$/) { d[++nd] = p; next }
             nf++; t = top(p); cnt[t]++; seen[t] = 1
             while ((i = match(p, /\/[^\/]*$/)) > 0) { p = substr(p, 1, i - 1); if ((p "/") in has) break; has[p "/"] = 1 } }
         END { for (i = 1; i <= nd; i++) { t = top(d[i]); seen[t] = 1
                 if (!(d[i] in has)) { ne++; em[t]++ }
                 if ((d[i] in has) && index(d[i], "/") == length(d[i])) whole[t] = 1 }
-              print "T", nf + 0, ne + 0
+              printf "T %d %d %d %.0f\n", nf, ne, nc, cb
               for (t in seen) { if (t in whole) nw++; printf "G %d %d %d %d %s\n", cnt[t] + em[t], cnt[t] + 0, em[t] + 0, (t in whole), t }
               print "W", nw + 0 }' "$1")
-    read -r _ _mirror_nf _mirror_nd <<<"$(grep '^T ' <<<"$sum")"
+    read -r _ _mirror_nf _mirror_nd _mirror_ncopy _mirror_copybytes <<<"$(grep '^T ' <<<"$sum")"
     read -r _ _mirror_nwhole <<<"$(grep '^W ' <<<"$sum")"
     _mirror_groups=$(grep '^G ' <<<"$sum") || _mirror_groups=""
+}
+
+# Longest the "how much would this free" measurement may run before it is given up (s).
+MIRROR_MEASURE_MAX=300
+
+# rsync reports no size for deletions, so measure the files a dry-run list would delete
+# where they live: ONE `du -lb --files0-from=-` (local, or one ssh to the server; no
+# sudo, no TTY) fed the NUL-separated absolute paths on stdin - never a process per file.
+# _mirror_measure <list> <local|server> <dest-root>. rc 0 sets _mirror_free (bytes) and
+# _mirror_gbytes (one "bytes<TAB>top-level folder" line per folder); rc 1 = could not
+# measure (du failed, timed out, Ctrl-C): both stay empty and the preview goes on.
+_mirror_measure() {
+    local list=$1 loc=$2 root=${3%/} out pid rc=0 i=0 intr=0 oldtrap msg="Measuring what the mirror would free…"
+    _mirror_free=""; _mirror_gbytes=""
+    out=$(mktemp "${TMPDIR:-/tmp}/mirror-size.XXXXXX") || return 1
+    if [[ -t 1 ]]; then _tick "  $msg"; else echo "  $msg"; fi
+    {
+        awk '/^del\.\|/ { p = $0; sub(/^[^|]*\|[^|]*\|/, "", p); if (p !~ /\/$/) print p }' "$list" |
+            awk -v r="$root" '{ print r "/" $0 }' | tr '\n' '\0' |
+            if [[ "$loc" == server ]]; then ssh "$SERVER_USER@$SERVER_IP" "du -lb --files0-from=-"; else du -lb --files0-from=-; fi
+    } > "$out" 2>/dev/null &
+    pid=$!
+    oldtrap=$(trap -p INT)
+    trap 'intr=1; pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null' INT
+    while kill -0 "$pid" 2>/dev/null; do
+        sleep 0.2; i=$((i + 1))
+        (( i % 5 == 0 )) && [[ -t 1 ]] && _tick "  $msg $((i / 5))s"
+        if (( i / 5 >= MIRROR_MEASURE_MAX )); then pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null; rc=1; break; fi
+    done
+    wait "$pid" 2>/dev/null || { (( rc )) || rc=$?; }
+    if [[ -n "$oldtrap" ]]; then eval "$oldtrap"; else trap - INT; fi
+    [[ -t 1 ]] && printf '\r\033[K'
+    if (( rc != 0 || intr )); then rm -f "$out"; return 1; fi
+    local sum
+    sum=$(awk -F'\t' -v r="$root/" 'function top(x,   j) { j = index(x, "/"); return j ? substr(x, 1, j) : "(top level)" }
+        { n = $1; p = substr($0, length(n) + 2); if (index(p, r) == 1) p = substr(p, length(r) + 1)
+          tot += n; b[top(p)] += n }
+        END { printf "T %.0f\n", tot; for (t in b) printf "G %.0f\t%s\n", b[t], t }' "$out")
+    rm -f "$out"
+    read -r _ _mirror_free <<<"$(grep '^T ' <<<"$sum")"
+    _mirror_gbytes=$(grep '^G ' <<<"$sum" | cut -c3-) || _mirror_gbytes=""
+    [[ "$_mirror_free" =~ ^[0-9]+$ ]]
 }
 
 # After _mirror_scan: is the deletion wipe-sized (a whole top-level folder, or more
@@ -6505,14 +6551,16 @@ _mirror_wipe_sized() {
     (( _mirror_nf + _mirror_nd > 0 && (_mirror_nwhole > 0 || _mirror_nf > MIRROR_WIPE_MIN) ))
 }
 
-# Guard + dry run + typed y/N. _mirror_preview <loc> <src> <dest-label> <dry-cmd> <copy|save>
+# Guard + dry run + typed y/N. _mirror_preview <loc> <src> <dest-label> <dry-cmd> <copy|save> [<local|server> <dest-root>]
+#   dest-root = the folder rsync's destination operand names (the list's names are relative to it),
+#   on the local machine or the server: with it the summary also says how much the deletions free.
 #   copy: prints the summary only; the caller asks later with _mirror_confirm
 #   save: scheduled job, asks "Save this job as mirror?" itself
 # rc 0 = go ahead (_mirror_n = files + empty folders that will be deleted, plus
 # _mirror_what / _mirror_want for the question); 1 = refused, failed or cancelled
 # - the caller copies / saves nothing.
 _mirror_preview() {
-    local loc=$1 src=$2 dest=$3 dry=$4 ask=$5 rc=0 nf nd what="" sdir list
+    local loc=$1 src=$2 dest=$3 dry=$4 ask=$5 dloc=${6:-} droot=${7:-} rc=0 nf nd what="" sdir list
     _mirror_n=0; _mirror_want=""; _mirror_what=""
     if ! _mirror_guard "$loc" "$src"; then _mirror_refuse "$src"; return 1; fi
     # The dry run reads both trees and can take minutes, so say what is going on
@@ -6568,6 +6616,9 @@ _mirror_preview() {
         fail "Could not preview the deletions (rsync exit $rc) - nothing changed."
         return 1
     fi
+    # The ticker line is gone now; on a terminal leave one line saying the check ran
+    # (a fast check would otherwise leave no trace at all).
+    [[ -t 1 ]] && echo "  Checked mirror in ${t}s."
     _mirror_scan "$list"
     nf=$_mirror_nf; nd=$_mirror_nd
     _mirror_n=$((nf + nd))
@@ -6575,6 +6626,11 @@ _mirror_preview() {
         local old=()   # keep only the newest 5 lists
         mapfile -t old < <(ls -1 "$sdir"/mirror-preview-*.txt 2>/dev/null | sort -r | tail -n +6)
         (( ${#old[@]} )) && rm -f -- "${old[@]}"
+    fi
+    local cp_line
+    cp_line="  To copy:    $(_commas "$_mirror_ncopy") file$([[ $_mirror_ncopy == 1 ]] || echo s), $(_size_h "$_mirror_copybytes")"
+    if (( nf > 0 )) && [[ -n "$dloc" && -n "$droot" ]]; then
+        _mirror_measure "$list" "$dloc" "$droot" || true
     fi
     [[ "$ask" == save ]] && echo -e "  ${YELLOW}⚠ Every scheduled run will delete destination files that are gone from the source.${NC}"
     if (( nf > 0 )); then
@@ -6586,9 +6642,15 @@ _mirror_preview() {
         echo -e "  ${YELLOW}⚠ ${what} would be removed at ${dest}:${NC}"
     else
         ok "Nothing to delete - destination has no extra files."
+        echo "$cp_line"
         [[ "$ask" == copy ]] && return 0
     fi
     if (( _mirror_n > 0 )); then
+        echo "$cp_line"
+        if (( nf == 0 )); then echo "  To delete:  $what"
+        elif [[ -n "$_mirror_free" ]]; then echo "  To delete:  $what, frees $(_size_h "$_mirror_free")"
+        elif [[ -n "$dloc" && -n "$droot" ]]; then echo "  To delete:  $what, frees ? (could not measure)"
+        else echo "  To delete:  $what"; fi
         # Top 5 top-level folders by count; the rest are summed up.
         local _c _f _e _w _name ng=0 line
         while read -r _ _c _f _e _w _name; do
@@ -6596,6 +6658,9 @@ _mirror_preview() {
             line="$(_commas "$_f") file$([[ $_f == 1 ]] || echo s)"
             (( _f == 0 )) && line="$(_commas "$_e") empty folder$([[ $_e == 1 ]] || echo s)"
             (( _f > 0 && _e > 0 )) && line+=" (+ $(_commas "$_e") empty folder$([[ $_e == 1 ]] || echo s))"
+            if [[ -n "$_mirror_gbytes" && $_f -gt 0 ]]; then
+                line+=", $(_size_h "$(awk -F'\t' -v n="$_name" '$2 == n { print $1; exit }' <<<"$_mirror_gbytes")")"
+            fi
             (( _w )) && line+="  ← whole folder deleted"
             printf '    %s  %s\n' "$(sed 's/[[:cntrl:]]//g' <<<"$_name")" "$line"
         done < <(sort -k2,2nr -k6 <<<"$_mirror_groups")
@@ -6690,11 +6755,11 @@ _src_size() {
 # One-time copies: ask the mode and, for a mirror, guard + preview + confirm.
 # rc 0 = go on (sync_mode set; also fills the caller's mirror_flag array with
 # --delete for a mirror), 2 = refused / cancelled (nothing changed).
-_mirror_gate() {  # src_loc src_path dest_label append_cmd
+_mirror_gate() {  # src_loc src_path dest_label append_cmd dest_loc dest_root
     mirror_flag=()
     _mirror_ask
     [[ "$sync_mode" == mirror ]] || return 0
-    _mirror_preview "$1" "$2" "$3" "$(_mirror_dry_cmd "$4")" copy || return 2
+    _mirror_preview "$1" "$2" "$3" "$(_mirror_dry_cmd "$4")" copy "$5" "$6" || return 2
     mirror_flag=(--delete)
     return 0
 }
@@ -6761,14 +6826,14 @@ _sync_valid_name() {  # name
 }
 
 # The rsync operands of the loaded record (J_*), for the address in SERVER_IP:
-#   _sj_src / _sj_dst  what rsync gets,   _sj_shown  the destination folder as the user
+#   _sj_src / _sj_dst  what rsync gets,   _sj_root  the folder _sj_dst names,   _sj_shown  the destination folder as the user
 #   sees it (the folder's own name is added in copy mode "folder"),
 #   _sj_cmd  the append-form command line (what the mirror preview dry-runs).
 _sync_job_operands() {
     local s=${J_src%/} d=${J_dest%/} rs cm=$J_copy_mode
     # a symlinked source folder: copy the real folder's contents into <dest>/<link name>/
     if [[ "$cm" == folder ]] && _dirlink_target "$J_src_loc" "$s" >/dev/null; then cm=contents; d=$d/${s##*/}; fi
-    _sj_shown=$d; [[ "$cm" == folder ]] && _sj_shown=$d/${s##*/}
+    _sj_root=$d; _sj_shown=$d; [[ "$cm" == folder ]] && _sj_shown=$d/${s##*/}
     rs=$s/; [[ "$cm" == folder ]] && rs=$s
     if [[ "$J_direction" == upload ]]; then
         _sj_src=$rs; _sj_dst="$SERVER_USER@$SERVER_IP:$d/"
@@ -7089,7 +7154,7 @@ _sync_change_mode() {  # job_name
     _mirror_ask
     if [[ "$sync_mode" == mirror ]]; then
         _sync_job_operands
-        _mirror_preview "$J_src_loc" "$J_src" "$_sj_shown" "$(_mirror_dry_cmd "$_sj_cmd")" save || return 2
+        _mirror_preview "$J_src_loc" "$J_src" "$_sj_shown" "$(_mirror_dry_cmd "$_sj_cmd")" save "$J_dest_loc" "$_sj_root" || return 2
     fi
     J_mode=$sync_mode
     _sync_rec_write || return 1
@@ -7129,7 +7194,7 @@ _sync_execute_or_schedule() {
         0) return 2 ;;
         1)
             if [[ "$mode" == mirror ]]; then
-                _mirror_preview "$J_src_loc" "$src" "$_sj_shown" "$dry_cmd" copy || return 2
+                _mirror_preview "$J_src_loc" "$src" "$_sj_shown" "$dry_cmd" copy "$J_dest_loc" "$_sj_root" || return 2
                 # Run now has no summary box: the deletion question is the one question.
                 (( _mirror_n > 0 )) && { _mirror_delete_q copy || return 2; }
             fi
@@ -7164,7 +7229,7 @@ _sync_execute_or_schedule() {
             done
 
             if [[ "$mode" == mirror ]]; then
-                _mirror_preview "$J_src_loc" "$src" "$_sj_shown" "$dry_cmd" save || return 2
+                _mirror_preview "$J_src_loc" "$src" "$_sj_shown" "$dry_cmd" save "$J_dest_loc" "$_sj_root" || return 2
             fi
 
             local script_path="$HOME/.local/bin/sync-${job_name}.sh"
@@ -8183,7 +8248,7 @@ _sync_one_time_backup() {
                 rsync_src="$src_path"
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
-            _mirror_gate local "$src_path" "$dest_display" "rsync $_RSYNC_FLAGS $(_shq "$rsync_src") $(_shq "$SERVER_USER@$SERVER_IP:$dst_path/")" || return
+            _mirror_gate local "$src_path" "$dest_display" "rsync $_RSYNC_FLAGS $(_shq "$rsync_src") $(_shq "$SERVER_USER@$SERVER_IP:$dst_path/")" server "$dst_path" || return
 
             local src_size=$(_src_size "$src_path")
             echo ""
@@ -8241,7 +8306,7 @@ _sync_one_time_backup() {
                 sync_mode=append
                 info "ℹ Needs sudo (tar copy) — append only; mirror isn't possible for this copy."
             else
-                _mirror_gate server "$src_path" "$dest_display" "rsync $_RSYNC_FLAGS $(_shq "$SERVER_USER@$SERVER_IP:$rsync_src") $(_shq "$dst_path/")" || return
+                _mirror_gate server "$src_path" "$dest_display" "rsync $_RSYNC_FLAGS $(_shq "$SERVER_USER@$SERVER_IP:$rsync_src") $(_shq "$dst_path/")" local "$dst_path" || return
             fi
 
             echo ""
@@ -8394,7 +8459,7 @@ _sync_one_time_backup() {
                 rsync_src="$src_path"
                 dest_display="$dst_path/$(basename "$src_path")"
             fi
-            _mirror_gate local "$src_path" "$dest_display" "rsync $_RSYNC_FLAGS $(_shq "$rsync_src") $(_shq "$dst_path/")" || return
+            _mirror_gate local "$src_path" "$dest_display" "rsync $_RSYNC_FLAGS $(_shq "$rsync_src") $(_shq "$dst_path/")" local "$dst_path" || return
 
             local src_size=$(_src_size "$src_path")
             echo ""
@@ -8444,7 +8509,7 @@ _sync_one_time_backup() {
                 _server_sudo_pw_prompt || pw_rc=$?
                 if (( pw_rc == 2 )); then fail "Server unreachable - nothing changed."; return 1; fi
                 if (( pw_rc != 0 )); then fail "Wrong sudo password - nothing changed."; return 1; fi
-                _mirror_preview sudo "$src_path" "$dest_display" "$(_mirror_dry_cmd "$append_cmd")" copy || { unset _SRV_PW; return 2; }
+                _mirror_preview sudo "$src_path" "$dest_display" "$(_mirror_dry_cmd "$append_cmd")" copy server "$dst_path" || { unset _SRV_PW; return 2; }
             fi
 
             echo ""

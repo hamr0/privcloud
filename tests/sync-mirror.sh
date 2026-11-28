@@ -17,9 +17,9 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 CR=$'\033[R]'; CY=$'\033[Y]'   # status() swaps these in for RED/YELLOW
 
 { for f in ok fail info warn ssh _shq; do extract_fn "$f" "$SRC"; done   # ssh may be missing in an old copy: skipped
-  grep -E "^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_RSYNC_FLAGS=|^_SSH_OPTS=|^export RSYNC_RSH=|^_SYNC_REC_KEYS=" "$SRC"
+  grep -E "^MIRROR_WIPE_MIN=|^MIRROR_MEASURE_MAX=|^_DRIVE_ROOTS=|^_RSYNC_FLAGS=|^_SSH_OPTS=|^export RSYNC_RSH=|^_SYNC_REC_KEYS=" "$SRC"
   for f in _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _dest_check _require_dest_drive _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
-           _mirror_scan _mirror_wipe_sized _mirror_preview _commas _tick _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mode_cell _sync_result_text _sync_last_result _sync_change_mode \
+           _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_measure _size_h _commas _tick _mirror_delete_q _mirror_confirm _src_size _mirror_gate _sync_mode_cell _sync_result_text _sync_last_result _sync_change_mode \
            _sync_execute_or_schedule _sync_show_status _sync_rec_write _sync_rec_load _sync_write_launcher _sync_default_name _sync_valid_name _sync_job_operands _sync_job_steps _sync_job_go _sync_job_run _sync_prepare_dest _sync_rec_set_schedule _sync_rec_mode _sync_job_import_legacy _sync_import_all_legacy _sync_tokenize _pick_server_endpoint _tcp_open _is_server _sync_edit_job _sync_list_jobs _sync_cron_split _sync_registry_load _sync_job_delete _sync_delete_job _sync_change_schedule _sync_remove_timer _confirm_delete _cron_cmd _cron_get _cron_drop _cron_set _cron_remove_line _cron_replace_line \
            _cron_to_english _sched_text _when_short _sync_one_time_backup _dirlink_target _fold_dirlink; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 source "$T/fn.sh"
@@ -108,7 +108,7 @@ run "${ONE}delete\ny\n$Y" LOCALCMD
 check 2f "10 deletions: one (top level) group, counted not listed" '[[ "$OUT" == *"⚠ 10 files would be deleted"* && "$OUT" == *"(top level)  9 files"* ]]'
 
 mk; run "" bash -c 'source "$T/fn.sh"; c=$(_mirror_dry_cmd "rsync -az $(_shq "$P_SRC/") $(_shq "$P_DST/")"); bash -c "$c"'
-check 2g "dry-run command works for an rsync line without the standard flag prefix" '[ "$RC" = 0 ] && [[ "$OUT" == *"del.|gone"* ]] && extras_kept'
+check 2g "dry-run command works for an rsync line without the standard flag prefix" '[ "$RC" = 0 ] && [[ "$OUT" == *"del.|0|gone"* ]] && extras_kept'
 
 # ── 3  delete + Enter -> nothing changed ──────────────────────────────────
 mk; run "${ONE}delete\n\n$Y" LOCALCMD
@@ -429,5 +429,20 @@ CM=folder; lnk; mkdir -p "$T/d/lnk"; echo stale > "$T/d/lnk/stale"
 run "${ONE}delete\ny\n$Y" LOCALCMD
 check 12e "mirror, folder mode, symlinked source: compared against <dest>/<link name>/ - its stale file is deleted, the parent's extras are not" '[ ! -L "$T/d/lnk" ] && [ ! -e "$T/d/lnk/stale" ] && [ -f "$T/d/lnk/a" ] && extras_kept && [[ "$OUT" == *"⚠ 1 file would be deleted at $T/d/lnk:"* ]]'
 CM=; unset CM
+
+# ── 13  totals: To copy / To delete + frees (real rsync, real files of known size) ──
+mk13() { mk; head -c 10000 /dev/zero > "$T/s/a"; head -c 2048 /dev/zero > "$T/s/sub/b"
+         head -c 5000 /dev/zero > "$T/d/gone"; head -c 3000 /dev/zero > "$T/d/sub/old"; head -c 1000 /dev/zero > "$T/d/we ird"; }
+mk13; run "${ONE}delete\ny\n$Y" LOCALCMD
+check 13a "one-time local mirror: summary shows To copy (2 files, 11 KB) and To delete (3 files, frees 8 KB)" '[[ "$OUT" == *"  To copy:    2 files, 11 KB"* && "$OUT" == *"  To delete:  3 files, frees 8 KB"* && "$OUT" == *"Measuring what the mirror would free"* ]]'
+check 13b "per-folder lines carry their size; header, question and result unchanged" '[[ "$OUT" == *"(top level)  2 files, 5 KB"* && "$OUT" == *"sub/  1 file, 2 KB"* && "$OUT" == *"⚠ 3 files would be deleted at $T/d:"* && "$OUT" == *"Delete these 3 files and copy? [y/N]: "* ]] && copied && extras_gone'
+mk13
+OUT=$(echo n | _mirror_preview local "$T/s" "$T/d" "$(_mirror_dry_cmd "rsync -a $(_shq "$T/s/") $(_shq "$T/d/")")" copy server "$T/d" 2>&1)
+check 13c "server destination (fake ssh): same freed size, measured over the ssh wrapper" '[[ "$OUT" == *"To delete:  3 files, frees 8 KB"* && "$OUT" == *"sub/  1 file, 2 KB"* ]]'
+OUT=$(echo n | SSH_DOWN=1 _mirror_preview local "$T/s" "$T/d" "$(_mirror_dry_cmd "rsync -a $(_shq "$T/s/") $(_shq "$T/d/")")" copy server "$T/d" 2>&1); RC=$?
+check 13d "server unreachable while measuring: 'frees ? (could not measure)', preview still completes, nothing deleted" '[ $RC = 0 ] && [[ "$OUT" == *"To delete:  3 files, frees ? (could not measure)"* && "$OUT" == *"⚠ 3 files would be deleted"* ]] && extras_kept'
+J_src_loc=local; J_direction=upload; J_src=$T/s; J_dest=$T/d; J_copy_mode=folder; J_dest_loc=server
+_sync_job_operands
+check 13e "sync job: _sj_root is the folder rsync's destination names (not the shown folder)" '[ "$_sj_root" = "$T/d" ] && [ "$_sj_shown" = "$T/d/s" ]'
 
 check_total

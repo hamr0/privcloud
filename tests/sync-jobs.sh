@@ -18,7 +18,7 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 { for f in ok fail info warn ssh _shq _tcp_open _is_server _pick_server_endpoint _resolve_server_endpoint \
            _cron_cmd _cron_get _cron_drop _cron_set _cron_add_sync _cron_remove_line _cron_replace_line _cron_to_english _sched_text _when_short \
            _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _dest_check _require_dest_drive _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
-           _mirror_scan _mirror_wipe_sized _mirror_preview _commas _tick _mirror_delete_q _mirror_confirm _mirror_gate _src_size _confirm_delete \
+           _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_measure _size_h _commas _tick _mirror_delete_q _mirror_confirm _mirror_gate _src_size _confirm_delete \
            _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode _sync_mode_cell _sync_result_text _sync_last_result \
            _sync_result_text _sync_change_mode _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _sync_delete_job _sync_job_delete _sync_cron_split _sync_registry_load _sync_change_schedule _sync_install_timer _sync_remove_timer \
@@ -227,14 +227,14 @@ check 5j "mirror preview (dry run) and the copy both use those ssh options" '[ "
 
 # ── 6  the deletion count shared by the preview and the unattended cap ────
 scan() { printf '%s\n' "$@" > "$T/list"; _mirror_scan "$T/list"; }
-scan "del.|a" "del.|sub/b" "del.|e/"
+scan "del.|0|a" "del.|0|sub/b" "del.|0|e/"
 check 6a "scan counts files and empty folders (not folders that hold deleted files)" '[ "$_mirror_nf" = 2 ] && [ "$_mirror_nd" = 1 ] && [ "$_mirror_nwhole" = 0 ] && ! _mirror_wipe_sized'
-scan "del.|d/x" "del.|d/y" "del.|d/"
+scan "del.|0|d/x" "del.|0|d/y" "del.|0|d/"
 check 6b "a whole top-level folder is wipe-sized" '[ "$_mirror_nwhole" = 1 ] && _mirror_wipe_sized'
 MIRROR_WIPE_MIN=3
-scan "del.|a" "del.|b" "del.|c" "del.|d"
+scan "del.|0|a" "del.|0|b" "del.|0|c" "del.|0|d"
 check 6c "more than MIRROR_WIPE_MIN files is wipe-sized" '_mirror_wipe_sized'
-scan "del.|a" "del.|b" "del.|c"
+scan "del.|0|a" "del.|0|b" "del.|0|c"
 check 6d "exactly MIRROR_WIPE_MIN files is not" '! _mirror_wipe_sized'
 scan
 check 6e "an empty list counts nothing" '[ "$_mirror_nf" = 0 ] && [ "$_mirror_nd" = 0 ] && ! _mirror_wipe_sized'

@@ -22,7 +22,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T
 rw() { sed -e "s|/usr/local/bin/immich-backup.sh|$BIN|g" -e "s|/var/log/immich-backup.log|$LOG|g" \
            -e "s|/etc/systemd/system/|$UNITS/|g" -e "s|/etc/immich-backup.conf|$CONF|g"; }
 fns() { local f; for f in "$@"; do extract_fn "$f" "$SRC" | rw; done; }
-FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _sched_text _when_short _immich_backup_remove _immich_docker_group _compose step_immich_backup_once _immich_once_progress _immich_once_result _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
+FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _sched_text _when_short _immich_backup_remove _immich_docker_group _compose step_immich_backup_once _immich_once_wait _commas _immich_once_result _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
 mkrun() {  # rebuild run.sh from the CURRENT $SRC (functions that do not exist yet are skipped)
   {
     printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC= BLUE=\nDRY_RUN=0\nMIRROR_WIPE_MIN=1000\n_FV_SELF=%q\n' "$T/app/setup.sh"
@@ -70,7 +70,7 @@ exit 0
 X
 cat > "$T/bin/rsync" <<'X'
 #!/bin/bash
-echo "rsync $*" >> "$RS_LOG"
+echo "rsync $*" >> "$RS_LOG"; [ -n "$RS_SLEEP" ] && sleep "$RS_SLEEP"
 exec /usr/bin/rsync "$@"
 X
 cat > "$T/bin/docker" <<'X'
@@ -384,11 +384,11 @@ one_fresh; go "\n$ONE\n\n\n" step_immich_backup_once
 echo "---- sample: one-time both ----"; echo "$OUT"; echo "-------------------------------"
 check 10a "both: says why sudo, then measures, dumps, syncs - each BEFORE its result" '[ $RC = 0 ] && awk "/Needs sudo to read the photo library and dump the database/{a=NR} /Measuring photo library/{b=NR} /Dumping database/{c=NR} /Syncing photos/{d=NR} /Backup complete/{e=NR} END{exit !(a&&b&&c&&d&&e&&a<b&&b<c&&c<d&&d<e)}" <<<"$OUT"'
 check 10b "both: no raw timestamped script lines, no rsync progress/stats, no old Location/Config block" '! grep -qE "^ *[A-Z][a-z]{2} [A-Z][a-z]{2} +[0-9]+ |Number of files|to-chk|Total file size|Location:|Config: |To restore" <<<"$OUT" && [[ "$OUT" != *"DB dump ok"* && "$OUT" != *"Photos synced"* ]]'
-check 10c "both: one result block naming the dump just written, photos line, .env, and a numbered-free restore" 'dump=$(ls "$ONE"/immich/db/ | head -1); [[ "$OUT" == *"✓ Backup complete - photos + database → $ONE/immich/"* && "$OUT" == *"    db/$dump ("*" MB)"* && "$OUT" == *"    photos/: 2 new files, 0 MB"* && "$OUT" == *"    .env (config copy)"* && "$OUT" == *"federver → 9 → 3 (Install), federver → 7 → 2 (Start), then"* && "$OUT" == *"gunzip -c $ONE/immich/db/$dump | docker exec -i immich_postgres psql -U postgres"* && "$OUT" != *"  3. "* ]]'
+check 10c "both: one result block naming the dump just written, photos line, .env, and a numbered-free restore" 'dump=$(ls "$ONE"/immich/db/ | head -1); [[ "$OUT" == *"✓ Backup complete - photos + database → $ONE/immich/"* && "$OUT" == *"    db/$dump ("*" B)"* && "$OUT" == *"    photos/: 2 new files, "[0-9]*" B"* && "$OUT" == *"    .env (config copy)"* && "$OUT" == *"federver → 9 → 3 (Install), federver → 7 → 2 (Start), then"* && "$OUT" == *"gunzip -c $ONE/immich/db/$dump | docker exec -i immich_postgres psql -U postgres"* && "$OUT" != *"  3. "* ]]'
 one_fresh; go "3\n$ONE\n\n" step_immich_backup_once
 echo "---- sample: one-time database only ----"; echo "$OUT"; echo "----------------------------------------"
 check 10d "db only: summary says 'Database only' and has no Mode line; no photo measuring or sync lines" '[[ "$OUT" == *"Scope:        Database only"* && "$OUT" != *"Mode:  "* && "$OUT" != *"Measuring photo library"* && "$OUT" != *"Syncing photos"* ]]'
-check 10e "db only: result block is '✓ Backup complete - database (N MB)' + dump file, no photos line" 'dump=$(ls "$ONE"/immich/db/ | head -1); [[ "$OUT" == *"✓ Backup complete - database ("*" MB) → $ONE/immich/"* && "$OUT" == *"    db/$dump"* && "$OUT" != *"photos/:"* ]]'
+check 10e "db only: result block is '✓ Backup complete - database (N MB)' + dump file, no photos line" 'dump=$(ls "$ONE"/immich/db/ | head -1); [[ "$OUT" == *"✓ Backup complete - database ("*" B) → $ONE/immich/"* && "$OUT" == *"    db/$dump"* && "$OUT" != *"photos/:"* ]]'
 one_fresh; go "2\n$ONE\n\n\n" step_immich_backup_once
 check 10f "photos only: summary says 'Photos only' with Mode; result has the photos line and no dump" '[[ "$OUT" == *"Scope:        Photos only"* && "$OUT" == *"Mode:         append only"* && "$OUT" == *"✓ Backup complete - photos → "* && "$OUT" == *"photos/: 2 new files"* && "$OUT" != *"gunzip"* ]]'
 one_fresh; FAIL_DUMP=1 go "3\n$ONE\n\n" step_immich_backup_once
@@ -401,4 +401,22 @@ printf '%s\n' 'Sun Oct  4 03:09:45 AM CEST 2026: Backup complete → /x' > "$LOG
 go "" _immich_backup_status
 echo "---- sample: Immich Last runs ----"; echo "$OUT" | sed -n '/Last runs/,$p' | head -6; echo "----------------------------------"
 check 11a "Last runs: the log's 'Sun Oct  4 03:09:45 AM CEST 2026' shows as 2026-10-04 03:09, aligned, still read from 'Backup complete'" '[[ "$OUT" == *"immich-backup        2026-10-04 03:09     ✓ ok"* && "$OUT" != *CEST* ]]'
+
+# ── 12 live ticker while the photos copy runs; sizes under 1 MB in KB/B ──
+inrun() { ( eval "$(sed '$d' "$T/app/run.sh")"; "$@" ); }   # the sandboxed functions, called directly
+check 12a "_size_h: under 1 MB is shown in B or KB, never '0 MB'" '[ "$(inrun _size_h 0)" = "0 B" ] && [ "$(inrun _size_h 700)" = "700 B" ] && [ "$(inrun _size_h 1536)" = "1 KB" ] && [ "$(inrun _size_h 5242880)" = "5 MB" ] && [ "$(inrun _size_h 3221225472)" = "3.0 GB" ]'
+# on a terminal (script(1) gives one): the copy ticks in place while rsync is slow, then the normal result block
+one_fresh; : > "$T/tty.in"
+TTY=$(RS_SLEEP=2 script -qec "printf '2\n$ONE\n\n\n' | bash $T/app/run.sh --run step_immich_backup_once" /dev/null 2>&1 | tr -d '\r')
+echo "---- sample: ticker (raw, \\r shown as newline) ----"; echo "$TTY" | grep -a "Syncing photos" | tail -3 | cat -v | cut -c1-120; echo "---------------------------------------------------"
+check 12b "tty: photo copy shows 'Syncing photos… Nm SSs, N files so far, SIZE' and the result follows" '[[ "$TTY" == *"Syncing photos… 0m 0"*" files so far, "* && "$TTY" == *"✓ Backup complete - photos → $ONE/immich/"* ]]'
+check 12c "no-tty run (the suite): one plain 'Syncing photos…' line, no ticker control codes" 'one_fresh; go "2\n$ONE\n\n\n" step_immich_backup_once; [[ "$OUT" == *"  Syncing photos…"* && "$OUT" != *"so far"* && "$OUT" != *$'"'"'\033[K'"'"'* ]]'
+check 12d "the rsync call carries the live-count format only in --once; the scheduled run's rsync and log are untouched" 'fresh; setup_sched; runbk; ! grep -q "out-format\|--stats" "$RS_LOG" && ! grep -q "F|" "$LOG" && tail -n 1 "$LOG" | grep -q "Backup complete → $DEST\$"'
+# Ctrl-C while waiting: the script is stopped, rc 130, and the result is a cancel notice, not a success block
+: > "$T/cc.res"
+CC=$(bash -c "$(sed '$d' "$T/app/run.sh"); sleep 30 & p=\$!; ( sleep 1; kill -INT \$\$ ) & _immich_once_wait \$p $T/cc.res x; echo RC=\$?; kill -0 \$p 2>/dev/null && echo STILL_RUNNING")
+check 12e "Ctrl-C during the wait: the script is killed and the wait returns 130" '[[ "$CC" == *"RC=130"* && "$CC" != *STILL_RUNNING* ]]'
+fresh; echo 'x' > "$T/cc.res"
+OUT=$(inrun _immich_once_result 130 "$T/cc.res" "$ONE/immich" both 2>&1)
+check 12f "result for rc 130: 'Cancelled', no success block" '[[ "$OUT" == *"Cancelled - the backup was stopped"* && "$OUT" != *"Backup complete"* ]]'
 check_total

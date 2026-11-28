@@ -4686,35 +4686,60 @@ step_immich_backup_once() {
     fi
     echo ""
     # The script's own timestamped lines are kept in $res and read for the result block, not echoed.
-    "${runner[@]}" "${args[@]}" 2>&1 | _immich_once_progress "$res" "$db_size"
-    rc=${PIPESTATUS[0]}
+    "${runner[@]}" "${args[@]}" > "$res" 2>&1 &
+    _immich_once_wait $! "$res" "$db_size"
+    rc=$?
     _immich_once_result "$rc" "$res" "$backup_dir" "$scope_name"
 }
 
-# Screen side of the one-time backup: the script's lines go to the file $1 (read by
-# _immich_once_result); only what the user waits on is shown, as it starts. $2 = database size text.
-_immich_once_progress() {
-    local line
-    while IFS= read -r line; do
-        printf '%s\n' "$line" >> "$1"
-        case "$line" in
-            *"Dumping database"*)    echo "  Dumping database${2:+ ($2)}…" ;;
-            *"Syncing photos"*)      echo "  Syncing photos…" ;;
-            *"Immich is stopped"*)   echo "  Immich is stopped - copying the database files directly" ;;
-        esac
+# Screen side of the one-time backup: waits for the script (pid $1, output in file $2, read by
+# _immich_once_result) and shows only what the user waits on, as it starts. $3 = database size
+# text. On a terminal the photo copy ticks in place (the same \r ticker as the mirror preview):
+# elapsed time, files and bytes copied so far, counted from the F|bytes|name lines rsync writes.
+# Ctrl-C stops the script and returns 130.
+_immich_once_wait() {
+    local pid=$1 res=$2 shown_db=0 shown_ph=0 shown_cold=0 t0 el nf nb intr=0 oldtrap rc=0
+    oldtrap=$(trap -p INT)
+    trap 'intr=1; kill "$pid" 2>/dev/null' INT
+    while :; do
+        (( shown_db )) || { grep -q "Dumping database" "$res" 2>/dev/null && { echo "  Dumping database${3:+ ($3)}…"; shown_db=1; }; }
+        (( shown_cold )) || { grep -q "Immich is stopped" "$res" 2>/dev/null && { echo "  Immich is stopped - copying the database files directly"; shown_cold=1; }; }
+        if (( ! shown_ph )) && grep -q "Syncing photos" "$res" 2>/dev/null; then
+            shown_ph=1; t0=$SECONDS
+            [[ -t 1 ]] || echo "  Syncing photos…"
+        fi
+        kill -0 "$pid" 2>/dev/null || break
+        if [[ -t 1 ]] && (( shown_ph )); then
+            el=$((SECONDS - t0))
+            read -r nf nb < <(awk -F'|' '$1 == "F" && $3 !~ /\/$/ { n++; b += $2 } END { print n + 0, b + 0 }' "$res")
+            printf '\r\033[K  Syncing photos… %dm %02ds, %s files so far, %s' $((el / 60)) $((el % 60)) "$(_commas "$nf")" "$(_size_h "$nb")"
+        fi
+        sleep 0.5
     done
+    [[ -t 1 ]] && (( shown_ph )) && printf '\r\033[K  Syncing photos… done\n'
+    wait "$pid" || rc=$?
+    if [[ -n "$oldtrap" ]]; then eval "$oldtrap"; else trap - INT; fi
+    (( intr )) && return 130
+    return $rc
 }
 
+# 3412 -> 3,412
+_commas() { sed -E ':a;s/([0-9])([0-9]{3})($|,)/\1,\2\3/;ta' <<<"$1"; }
+
 # bytes -> "145 MB" / "1.4 GB" (1024-based, like du)
-_size_h() { awk -v b="${1:-0}" 'BEGIN{ if (b >= 1073741824) printf "%.1f GB", b/1073741824; else printf "%d MB", b/1048576 }'; }
+_size_h() { awk -v b="${1:-0}" 'BEGIN{ if (b >= 1073741824) printf "%.1f GB", b/1073741824; else if (b >= 1048576) printf "%d MB", b/1048576; else if (b >= 1024) printf "%d KB", b/1024; else printf "%d B", b }'; }
 
 # The one result block of a one-time backup. $1 rc, $2 file with the script's output, $3 backup dir
 # (<dest>/immich), $4 scope (photos|db|both).
 _immich_once_result() {
     local rc=$1 res=$2 bdir=$3 scope=$4 line
     echo ""
+    if (( rc == 130 )); then
+        fail "Cancelled - the backup was stopped; a partial copy may be at $bdir/. Run it again to finish."
+        return 1
+    fi
     if (( rc != 0 )); then
-        while IFS= read -r line; do echo "    $line"; done < "$res"
+        while IFS= read -r line; do [[ "$line" == F\|* ]] || echo "    $line"; done < "$res"
         fail "Backup failed (see above)."
         return 1
     fi
@@ -5320,7 +5345,7 @@ if [ "$scope" != db ]; then
             [ "$once" = 0 ] || echo "$(date): Syncing photos…"
             args=(-a)
             for e in "${EXCLUDES[@]}"; do args+=(--exclude="$e"); done
-            [ "$once" = 0 ] || args+=(--stats)   # the screen reads the totals from it
+            [ "$once" = 0 ] || args+=(--stats --out-format='F|%l|%n')   # the screen reads the totals and the live count from it
             [ "$mirror" = 0 ] || args+=(--delete)
             if rsync "${args[@]}" "$UPLOAD_LOCATION/" "$PHOTOS_DIR/"; then
                 echo "$(date): Photos synced → $PHOTOS_DIR/"
@@ -6505,8 +6530,8 @@ _mirror_preview() {
                 END { print d + 0, c + 0 }' "$list")
             live=""
             if (( nd + nc > 0 )); then
-                live=" · $(sed -E ':a;s/([0-9])([0-9]{3})($|,)/\1,\2\3/;ta' <<<"$nd") to delete"
-                live+=" · $(sed -E ':a;s/([0-9])([0-9]{3})($|,)/\1,\2\3/;ta' <<<"$nc") to copy so far"
+                live=" · $(_commas "$nd") to delete"
+                live+=" · $(_commas "$nc") to copy so far"
             fi
             printf '\r\033[K  %s... %ds%s' "$msg" "$t" "$live"
         done

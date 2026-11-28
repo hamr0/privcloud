@@ -79,7 +79,7 @@ privcloud eliminates all of it. One command runs a full photo server on your own
 | `Config` | Change where photos are stored |
 | `Upload photos` | Bulk upload photos via Immich CLI with API key validation |
 | `Fix Google Photos metadata` | Fix Google Photos Takeout metadata (dates + GPS) |
-| `Backup - One-time` / `Backup - Scheduled - Set up / Status / Run now / Remove` | Back up photos + database, with no downtime |
+| `Backup - One-time → Back up now` / `Backup - Scheduled → Set up / Status / Run now / Remove` | Back up photos + database, with no downtime |
 
 Every item runs on the server (federver connects over SSH for you), on a cleared screen; press Enter when it's done and you're back at a fresh main menu. For scripts: `./setup.sh --run step_immich_status` (also `_start`, `_stop`, `_update`, `_install`, `_config`, `_upload`, `_fix_gp`, `_backup_once`) on the server.
 
@@ -467,14 +467,16 @@ Expect ~20-30% overhead on top of your original library for thumbnails and previ
 federver → 9   (the Backup items)
 ```
 
-The Manage Immich menu lists the one-time backup and the four scheduled actions at the same level:
+The Manage Immich menu groups the one-time backup and the four scheduled actions under their own subheaders:
 
 ```
-  1) Backup - One-time             ← copy to a drive now, no schedule
-  2) Backup - Scheduled - Set up   ← weekly systemd timer, no downtime
-  3) Backup - Scheduled - Status   ← schedule, next/last run, recent runs
-  4) Backup - Scheduled - Run now  ← start a backup in the background
-  5) Backup - Scheduled - Remove   ← delete the schedule (keeps files)
+  ── Backup - One-time ──
+  7)  Back up now                 ← copy photos + database to a drive now
+  ── Backup - Scheduled ──
+  8)  Set up                      ← weekly systemd timer, no downtime
+  9)  Status                      ← schedule, next/last run, recent runs
+  10) Run now                     ← start a backup in the background
+  11) Remove                      ← delete the schedule (keeps files)
 ```
 
 **Neither stops the server** — your photos stay online the whole time. Photos are copied live, and the database is dumped while it runs (a consistent snapshot).
@@ -483,13 +485,13 @@ The Manage Immich menu lists the one-time backup and the four scheduled actions 
 
 **One backup, one script.** One-time and scheduled run the *same* script (`/usr/local/bin/immich-backup.sh`; `--once --dest <dir> --scope photos|db|both [--mirror]` is the one-time form), so they write the same layout and skip the same regenerable folders. Under the destination, both put everything in `<dest>/immich/`: `photos/` (originals), `db/` (`immich-db-*.sql.gz`, owner-only; `db/postgres/` when Immich was stopped and the data directory was copied), and for one-time also `immich/.env` (so a restore knows the database password). Older one-time backups were written to `<dest>/privcloud-backup/`; when the destination still has that folder, the one-time backup tells you it is the old layout — it is never deleted for you, remove it by hand once you have checked the new `immich/` folder. A destination under `/mnt`, `/media` or `/run/media` must be on a mounted drive (the folder it sits in is checked, so a not-yet-created subfolder of a mounted drive is fine): with the drive unplugged, both the scheduled and the one-time backup refuse with `Backup SKIPPED - destination <dir> is not on a mounted drive`, write nothing, and Status shows that reason — they never fill the system disk.
 
-**Scheduled - Set up** creates an automatic backup (daily at 3am, keep 7 days; or weekly, keep 3 weeks) that runs the *same* schedule as `federver` → 16 → 6 (one source of truth, no double-runs), backs up database + photos every run, catches up if the server was off, and retries on failure. It defaults the destination to the destination already configured in the installed schedule (so pressing Enter when re-running Set up keeps it and never repoints the job at a fresh, empty folder), and only on a first setup to an external/USB drive; it warns if you point it at the same drive as your photos (a single disk failure would lose both). Right after setup it offers to **run the first backup now** so you can confirm it works instead of waiting for the next scheduled time. Set up generates the script fresh every time (nothing is patched in place, so any destination path works) and writes the settings the script needs to `/etc/immich-backup.conf` (destination, retention, repo path — readable by everyone, no secrets). The photo location is read from your `.env` at every run, so moving the photos (`federver` → 9 → Config) needs no re-Set-up. If **Status** says `outdated - run Set up again`, the installed script is from before this layout: it keeps running as it was, and Set up (Enter keeps the destination) upgrades it. **Status** shows *your Immich backup* — schedule, next run, and a recent-runs history — in the **same table layout** as `federver` → 16 → 1 (and points you there for everything else scheduled on the server), whether the backup runs as a systemd timer or a root cron job. **Remove** first lists exactly what it will delete (the timer and its cadence, the service, the script, and any legacy cron line) — there's only one Immich backup schedule, so this is a confirmation, not a chooser — then deletes the schedule while keeping your backup files.
+**Backup - Scheduled → Set up** creates an automatic backup (daily at 3am, keep 7 days; or weekly, keep 3 weeks) that runs the *same* schedule as `federver` → 16 → 6 (one source of truth, no double-runs), backs up database + photos every run, catches up if the server was off, and retries on failure. It defaults the destination to the destination already configured in the installed schedule (so pressing Enter when re-running Set up keeps it and never repoints the job at a fresh, empty folder), and only on a first setup to an external/USB drive; it warns if you point it at the same drive as your photos (a single disk failure would lose both). Right after setup it offers to **run the first backup now** so you can confirm it works instead of waiting for the next scheduled time. Set up generates the script fresh every time (nothing is patched in place, so any destination path works) and writes the settings the script needs to `/etc/immich-backup.conf` (destination, retention, repo path — readable by everyone, no secrets). The photo location is read from your `.env` at every run, so moving the photos (`federver` → 9 → Config) needs no re-Set-up. If **Status** says `outdated - run Set up again`, the installed script is from before this layout: it keeps running as it was, and Set up (Enter keeps the destination) upgrades it. **Status** shows *your Immich backup* — schedule, next run, and a recent-runs history — in the **same table layout** as `federver` → 16 → 1 (and points you there for everything else scheduled on the server), whether the backup runs as a systemd timer or a root cron job. **Remove** first lists exactly what it will delete (the timer and its cadence, the service, the script, and any legacy cron line) — there's only one Immich backup schedule, so this is a confirmation, not a chooser — then deletes the schedule while keeping your backup files.
 
 > **Tip:** an external/USB drive is the point — a backup on the same disk as your photos dies with that disk.
 
 ### How often
 
-- Set up **Scheduled - Set up** once and forget it (daily or weekly)
+- Set up **Backup - Scheduled → Set up** once and forget it (daily or weekly)
 - Run **One-time** before big imports and before OS upgrades
 
 ---
@@ -1275,7 +1277,7 @@ pass show privcloud/ssh/private_key        # SSH key
 ### Daily (automated)
 
 - **Every 5 min** — Disk space heartbeat to Uptime Kuma (alerts if `/` or a data drive exceeds 85%, or a configured data drive is not mounted)
-- **3:00am daily or weekly** — Immich backup (DB + photos, systemd timer, set up via `federver` → 9 → Backup - Scheduled - Set up, or `federver` → 16 → 6)
+- **3:00am daily or weekly** — Immich backup (DB + photos, systemd timer, set up via `federver` → 9 → Backup - Scheduled → Set up, or `federver` → 16 → 6)
 - **4:00am** — Watchtower checks for container updates
 
 ### Monitoring
@@ -1307,7 +1309,7 @@ Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 
 **Where to look.** Every run overwrites a one-line state file, `/var/log/disk-check.last` (`<date> ok` or `<date> ALERT <msg>`, world-readable so the menu reads it without sudo); alerts and failed pushes are also appended to `/var/log/disk-check.log`. A failed Kuma push (wrong token, Kuma unreachable) is recorded as `ALERT Kuma push failed (curl exit N)`. `federver` → 16 → 1 (Status) shows the disk-check row with its real schedule, last run (`✓ ok`, `⚠ <alert>`, `⚠ stale`) and `not scheduled` if the script exists without a cron line. Uptime Kuma then alerts you via Telegram/email if configured.
 
-**Immich backup (scheduled):** `federver` → 16 → 6 (a set up/change · status · run now · remove submenu) — or `federver` → 9, whose flat menu lists the same actions (`Backup - Scheduled - Set up` / `Status` / `Run now` / `Remove`) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention — this also prunes older one-time dumps kept in the same `db/` folder; a failed dump fails the run and is logged as `DB dump FAILED`) **plus** a live `rsync` of your photos. Everything lands under `<dest>/immich/` — DB dumps in `<dest>/immich/db/`, photos in `<dest>/immich/photos/` (append-only — it never deletes from the backup). The photo copy backs up your **originals and metadata only**: it skips Immich's own DB-dump folder (`backups/`, already covered by the DB dump above) and the regenerable caches (`thumbs/`, `encoded-video/`) that Immich rebuilds after a restore — so the backup stays lean instead of mirroring tens of GB of throwaway data. `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to the one already configured (re-running Set up and pressing Enter keeps it), else to an external/USB drive, and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. To restore, see [Restore Immich](#restore-immich).
+**Immich backup (scheduled):** `federver` → 16 → 6 (a set up/change · status · run now · remove submenu) — or `federver` → 9, whose flat menu lists the same actions (`Backup - Scheduled → Set up` / `Status` / `Run now` / `Remove`) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention — this also prunes older one-time dumps kept in the same `db/` folder; a failed dump fails the run and is logged as `DB dump FAILED`) **plus** a live `rsync` of your photos. Everything lands under `<dest>/immich/` — DB dumps in `<dest>/immich/db/`, photos in `<dest>/immich/photos/` (append-only — it never deletes from the backup). The photo copy backs up your **originals and metadata only**: it skips Immich's own DB-dump folder (`backups/`, already covered by the DB dump above) and the regenerable caches (`thumbs/`, `encoded-video/`) that Immich rebuilds after a restore — so the backup stays lean instead of mirroring tens of GB of throwaway data. `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to the one already configured (re-running Set up and pressing Enter keeps it), else to an external/USB drive, and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. To restore, see [Restore Immich](#restore-immich).
 
 ### Periodic (manual)
 

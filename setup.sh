@@ -4686,9 +4686,11 @@ step_immich_backup_once() {
     fi
     echo ""
     # The script's own timestamped lines are kept in $res and read for the result block, not echoed.
+    local t0=$SECONDS ph_size=""
+    if $do_photos && [[ "$photos_size" != unknown ]]; then ph_size=$photos_size; fi
     "${runner[@]}" "${args[@]}" > "$res" 2>&1 &
     _immich_once_wait $! "$res" "$db_size" || rc=$?
-    _immich_once_result "$rc" "$res" "$backup_dir" "$scope_name"
+    _immich_once_result "$rc" "$res" "$backup_dir" "$scope_name" "$ph_size" "$((SECONDS - t0))"
 }
 
 # Screen side of the one-time backup: waits for the script (pid $1, output in file $2, read by
@@ -4737,10 +4739,19 @@ _commas() { sed -E ':a;s/([0-9])([0-9]{3})($|,)/\1,\2\3/;ta' <<<"$1"; }
 # bytes -> "145 MB" / "1.4 GB" (1024-based, like du)
 _size_h() { awk -v b="${1:-0}" 'BEGIN{ if (b >= 1073741824) printf "%.1f GB", b/1073741824; else if (b >= 1048576) printf "%d MB", b/1048576; else if (b >= 1024) printf "%d KB", b/1024; else printf "%d B", b }'; }
 
-# The one result block of a one-time backup. $1 rc, $2 file with the script's output, $3 backup dir
-# (<dest>/immich), $4 scope (photos|db|both).
+# 48 -> "48s", 125 -> "2m 05s", 3720 -> "1h 02m"
+_dur_h() {
+    local s=${1:-0}
+    if (( s >= 3600 )); then printf '%dh %02dm' $((s / 3600)) $((s % 3600 / 60))
+    elif (( s >= 60 )); then printf '%dm %02ds' $((s / 60)) $((s % 60))
+    else printf '%ds' "$s"; fi
+}
+
+# The one result block of a backup run. $1 rc, $2 file with the script's output (or one run's lines
+# of the backup log), $3 backup dir (<dest>/immich), $4 scope (photos|db|both), $5 size of the photo
+# library as text (omitted when unknown), $6 seconds the run took (omitted when unknown).
 _immich_once_result() {
-    local rc=$1 res=$2 bdir=$3 scope=$4 line
+    local rc=$1 res=$2 bdir=$3 scope=$4 phsize=${5:-} took=${6:-} line
     echo ""
     if (( rc == 130 )); then
         fail "Cancelled - the backup was stopped; a partial copy may be at $bdir/. Run it again to finish."
@@ -4751,35 +4762,37 @@ _immich_once_result() {
         fail "Backup failed (see above)."
         return 1
     fi
-    local dump cold n bytes what=() lines=()
-    dump=$(sed -n 's/.*DB dump ok → //p' "$res" | tail -1)           # immich/db/immich-db-<stamp>.sql.gz
-    cold=$(grep -c "Database copied" "$res" || true)
-    if [[ -n "$dump" ]]; then
-        bytes=$(stat -c %s "$bdir/db/${dump##*/}" 2>/dev/null || true)
-        if [[ "$scope" == db ]]; then what+=("database${bytes:+ ($(_size_h "$bytes"))}"); lines+=("db/${dump##*/}")
-        else what+=("database"); lines+=("db/${dump##*/}${bytes:+ ($(_size_h "$bytes"))}"); fi
-    elif (( cold )); then
-        what+=("database"); lines+=("db/postgres/ (data dir copy)")
-    fi
+    local dump cold n bytes del what
+    ok "Backup complete - $(date +%H:%M)${took:+, took $(_dur_h "$took")}"
+    echo ""
+    echo "    Saved to  $bdir/"
     if [[ "$scope" != db ]]; then
         n=$(sed -n 's/^Number of \(regular \)\{0,1\}files transferred: *//p' "$res" | tail -1)
         bytes=$(sed -n 's/^Total transferred file size: *\([0-9,]*\) bytes.*/\1/p' "$res" | tail -1)
-        what=("photos" "${what[@]}")
-        if [[ -n "$n" ]]; then lines=("photos/: $n new file$([[ "$n" == 1 ]] || echo s), $(_size_h "${bytes//,/}")" "${lines[@]}")
-        else lines=("photos/: synced" "${lines[@]}"); fi
+        del=$(sed -n 's/^Number of deleted files: *\([0-9,]*\).*/\1/p' "$res" | tail -1)
+        n=${n//,/}; del=${del//,/}
+        if [[ -z "$n" ]]; then what="copied"
+        elif (( n == 0 )); then what="already up to date (nothing new since the last backup)"
+        else what="$(_commas "$n") new photo$([[ "$n" == 1 ]] || echo s) added ($(_size_h "${bytes//,/}"))"; fi
+        if [[ -n "$del" ]] && (( del > 0 )); then
+            [[ "$n" == 0 ]] && what="nothing new"
+            what+=", $(_commas "$del") removed (gone from the library)"
+        fi
+        echo "    Photos    ${phsize:+$phsize, }$what"
     fi
-    local joined="${what[0]}"; [[ ${#what[@]} -gt 1 ]] && joined="${what[0]} + ${what[1]}"
-    ok "Backup complete - $joined → $bdir/"
-    for line in "${lines[@]}"; do echo "    $line"; done
-    [[ -f "$bdir/.env" ]] && echo "    .env (config copy)"
-    if [[ -n "$dump" ]]; then
-        echo "  Restore: federver → 9 → 3 (Install), federver → 7 → 2 (Start), then"
-        echo "    gunzip -c $bdir/db/${dump##*/} | docker exec -i immich_postgres psql -U postgres"
-    elif (( cold )); then
-        echo "  Restore: federver → 9 → 3 (Install), copy db/postgres/ and .env back, then federver → 7 → 2 (Start)"
-    else
-        echo "  Restore: federver → 9 → 3 (Install), then copy photos/ back to the photo library"
+    if [[ "$scope" != photos ]]; then
+        dump=$(sed -n 's/.*DB dump ok → //p' "$res" | tail -1)           # immich/db/immich-db-<stamp>.sql.gz
+        cold=$(grep -c "Database copied" "$res" || true)
+        if [[ -n "$dump" ]]; then
+            bytes=$(stat -c %s "$bdir/db/${dump##*/}" 2>/dev/null || true)
+            echo "    Database  ${bytes:+$(_size_h "$bytes"), }saved as ${dump##*/}"
+        elif (( cold )); then
+            echo "    Database  copied the data folder (Immich was stopped)"
+        fi
     fi
+    [[ -f "$bdir/.env" ]] && echo "    Settings  .env copied"
+    echo ""
+    echo "    How to restore: customer guide → \"Restore Immich\""
     return 0
 }
 

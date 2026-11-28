@@ -26,7 +26,7 @@ Your server. Your data. No cloud required.
 - [Video playback issues](#video-playback-issues)
 - [Storage and architecture](#storage-and-architecture)
 - [Backup and restore](#backup-and-restore)
-- [Moving to a new machine](#moving-to-a-new-machine)
+- [Restore Immich](#restore-immich)
 - [Day-to-day usage](#day-to-day-usage-immich)
 - [Troubleshooting (Immich)](#troubleshooting-immich)
 - [Privacy and security](#privacy-and-security)
@@ -494,28 +494,25 @@ The Manage Immich menu lists the one-time backup and the four scheduled actions 
 
 ---
 
-## Moving to a new machine
+## Restore Immich
 
-Restore depends on how the database was backed up:
+Use this to bring Immich back from a backup: after a disk failure, or to move to a new machine. A finished backup screen points here. Everything comes back — faces, albums, search, sharing.
 
-**If your backup has a `db/postgres/` folder** (database files, from a one-time backup made while Immich was stopped; older backups have `postgres/` at the top):
+What you need: the `immich/` folder from your backup drive (`photos/`, `db/` and, for one-time backups, `.env`).
 
-1. Stop Immich on the old machine (`federver` → 7 → 3 (Stop))
-2. Copy the `photos` and `postgres` directories (`immich/photos`, `immich/db/postgres`) to the new machine
-3. Clone privcloud, run `federver` → 9 → Install
-4. Point config at the copied directories, make sure `DB_PASSWORD` matches
-5. Start Immich (`federver` → 7 → 2 (Start))
+1. Install Immich on the machine: `federver` → 9 → 3 (Install). Point its config at where the photos should live and make sure `DB_PASSWORD` matches the `.env` saved in the backup.
+2. Copy the photos back: everything in the backup's `photos/` goes into the photo library folder (the `UPLOAD_LOCATION` in the config).
+3. Start Immich: `federver` → 7 → 2 (Start).
+4. Load the database. It depends on what your backup holds in `db/`:
 
-**If your backup has `immich-db-*.sql.gz`** (a database dump — what no-downtime and scheduled backups produce; one-time and scheduled backups both put them under `immich/db/` and photos under `immich/photos/`):
-
-1. Clone privcloud, run `federver` → 9 → Install, point config at the copied photos
-2. Start Immich (`federver` → 7 → 2 (Start))
-3. Load the newest dump:
+   **A dump (`immich-db-<date>.sql.gz` — what scheduled backups and a one-time backup with Immich running produce):** load the newest one, replacing the file name below with yours:
    ```bash
-   gunzip -c immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres
+   gunzip -c immich-db-<date>.sql.gz | docker exec -i immich_postgres psql -U postgres
    ```
 
-Either way, everything comes back — faces, albums, search, sharing.
+   **A `db/postgres/` folder (a one-time backup made while Immich was stopped; older backups have `postgres/` at the top):** stop Immich (`federver` → 7 → 3 (Stop)), copy `db/postgres/` over the database folder (`DB_DATA_LOCATION` in the config), then start Immich again (`federver` → 7 → 2 (Start)). No dump to load.
+
+When moving to a new machine, stop Immich on the old one first (`federver` → 7 → 3 (Stop)) so the copy is complete.
 
 ---
 
@@ -1310,7 +1307,7 @@ Use the server's local IP, not `localhost` (Uptime Kuma runs in Docker).
 
 **Where to look.** Every run overwrites a one-line state file, `/var/log/disk-check.last` (`<date> ok` or `<date> ALERT <msg>`, world-readable so the menu reads it without sudo); alerts and failed pushes are also appended to `/var/log/disk-check.log`. A failed Kuma push (wrong token, Kuma unreachable) is recorded as `ALERT Kuma push failed (curl exit N)`. `federver` → 16 → 1 (Status) shows the disk-check row with its real schedule, last run (`✓ ok`, `⚠ <alert>`, `⚠ stale`) and `not scheduled` if the script exists without a cron line. Uptime Kuma then alerts you via Telegram/email if configured.
 
-**Immich backup (scheduled):** `federver` → 16 → 6 (a set up/change · status · run now · remove submenu) — or `federver` → 9, whose flat menu lists the same actions (`Backup - Scheduled - Set up` / `Status` / `Run now` / `Remove`) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention — this also prunes older one-time dumps kept in the same `db/` folder; a failed dump fails the run and is logged as `DB dump FAILED`) **plus** a live `rsync` of your photos. Everything lands under `<dest>/immich/` — DB dumps in `<dest>/immich/db/`, photos in `<dest>/immich/photos/` (append-only — it never deletes from the backup). The photo copy backs up your **originals and metadata only**: it skips Immich's own DB-dump folder (`backups/`, already covered by the DB dump above) and the regenerable caches (`thumbs/`, `encoded-video/`) that Immich rebuilds after a restore — so the backup stays lean instead of mirroring tens of GB of throwaway data. `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to the one already configured (re-running Set up and pressing Enter keeps it), else to an external/USB drive, and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. Restore the DB from a dump with `gunzip -c <dest>/immich/db/immich-db-*.sql.gz | docker exec -i immich_postgres psql -U postgres`.
+**Immich backup (scheduled):** `federver` → 16 → 6 (a set up/change · status · run now · remove submenu) — or `federver` → 9, whose flat menu lists the same actions (`Backup - Scheduled - Set up` / `Status` / `Run now` / `Remove`) driving the *same* timer — sets up a systemd timer (not cron) that runs a **full, no-downtime** backup daily at 3am (keeps 7 days) or weekly (keeps 3 weeks). Each run: an online `pg_dumpall | gzip` of the database (rotated by retention — this also prunes older one-time dumps kept in the same `db/` folder; a failed dump fails the run and is logged as `DB dump FAILED`) **plus** a live `rsync` of your photos. Everything lands under `<dest>/immich/` — DB dumps in `<dest>/immich/db/`, photos in `<dest>/immich/photos/` (append-only — it never deletes from the backup). The photo copy backs up your **originals and metadata only**: it skips Immich's own DB-dump folder (`backups/`, already covered by the DB dump above) and the regenerable caches (`thumbs/`, `encoded-video/`) that Immich rebuilds after a restore — so the backup stays lean instead of mirroring tens of GB of throwaway data. `Persistent=true` catches up a missed run after server-off; `Restart=on-failure` retries 3× 30 min apart. It defaults the destination to the one already configured (re-running Set up and pressing Enter keeps it), else to an external/USB drive, and warns if you choose the same drive as your photos. Manual run: `sudo systemctl start immich-backup.service`. Status: `systemctl status immich-backup.timer`. To restore, see [Restore Immich](#restore-immich).
 
 ### Periodic (manual)
 

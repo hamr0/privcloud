@@ -1111,7 +1111,7 @@ _ts_start_both() {
 
 # tailscaled's last (re)start, monotonic microseconds: changes on every restart, so
 # "before != after" proves the restart happened. Shipped to the server with declare -f.
-_ts_started_at() { systemctl show -p ActiveEnterTimestampMonotonic --value tailscaled 2>/dev/null; }
+_ts_started_at() { systemctl show -p ActiveEnterTimestampMonotonic --value tailscaled 2>/dev/null || true; }
 _ts_server_stamp() { _server_probe "$(declare -f _ts_started_at); _ts_started_at"; }
 
 # Poll up to 30s until tailscaled's start stamp differs from $2 AND the state reads
@@ -1128,7 +1128,7 @@ _ts_prove_restart() {
             _ts_running "$rec" && { ok "$side: restarted, connected"; return 0; }
         elif [[ "$now" == unreachable && "$side" == Server ]]; then
             # the link rode on the tailnet that is restarting: pick the address again
-            _ts_connected_via_ts && _resolve_server_endpoint >/dev/null 2>&1
+            { _ts_connected_via_ts && _resolve_server_endpoint >/dev/null 2>&1; } || true
         fi
         sleep 1
     done
@@ -4687,8 +4687,7 @@ step_immich_backup_once() {
     echo ""
     # The script's own timestamped lines are kept in $res and read for the result block, not echoed.
     "${runner[@]}" "${args[@]}" > "$res" 2>&1 &
-    _immich_once_wait $! "$res" "$db_size"
-    rc=$?
+    _immich_once_wait $! "$res" "$db_size" || rc=$?
     _immich_once_result "$rc" "$res" "$backup_dir" "$scope_name"
 }
 
@@ -4708,7 +4707,7 @@ _immich_once_wait() {
             shown_ph=1; t0=$SECONDS
             [[ -t 1 ]] || echo "  Syncing photos…"
         fi
-        kill -0 "$pid" 2>/dev/null || break
+        [[ " $(jobs -rp) " == *" $pid "* ]] || break   # our own running child, whatever its uid (kill -0 gets EPERM on a sudo/root child)
         if [[ -t 1 ]] && (( shown_ph )); then
             el=$((SECONDS - t0))
             read -r nf nb < <(awk -F'|' '$1 == "F" && $3 !~ /\/$/ { n++; b += $2 } END { print n + 0, b + 0 }' "$res")
@@ -4745,9 +4744,9 @@ _immich_once_result() {
     fi
     local dump cold n bytes what=() lines=()
     dump=$(sed -n 's/.*DB dump ok → //p' "$res" | tail -1)           # immich/db/immich-db-<stamp>.sql.gz
-    cold=$(grep -c 'Database copied' "$res")
+    cold=$(grep -c "Database copied" "$res" || true)
     if [[ -n "$dump" ]]; then
-        bytes=$(stat -c %s "$bdir/db/${dump##*/}" 2>/dev/null)
+        bytes=$(stat -c %s "$bdir/db/${dump##*/}" 2>/dev/null || true)
         if [[ "$scope" == db ]]; then what+=("database${bytes:+ ($(_size_h "$bytes"))}"); lines+=("db/${dump##*/}")
         else what+=("database"); lines+=("db/${dump##*/}${bytes:+ ($(_size_h "$bytes"))}"); fi
     elif (( cold )); then
@@ -7165,7 +7164,7 @@ _sched_text() {  # spec
     local -a f; read -ra f <<<"$spec"
     if (( ${#f[@]} == 5 )); then
         if [[ "${f[0]}" =~ ^[0-9]+$ && "${f[1]}" =~ ^[0-9]+$ && "${f[2]}${f[3]}" == "**" ]]; then
-            t=$(printf '%02d:%02d' "${f[1]}" "${f[0]}")
+            t=$(printf '%02d:%02d' "$((10#${f[1]}))" "$((10#${f[0]}))")   # 10#: a cron field like 08 is not octal
             case "${f[4]}" in
                 \*) echo "daily $t"; return ;;
                 [0-7]) d=(Sun Mon Tue Wed Thu Fri Sat Sun); echo "weekly ${d[${f[4]}]} $t"; return ;;

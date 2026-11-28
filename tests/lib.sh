@@ -21,6 +21,14 @@
 #                        --target-ish calls get TARGET, others SOURCE. TARGET and
 #                        SOURCE are double-quoted in the stub, so '$VAR' is expanded
 #                        when the stub runs.
+#   errexit_here FN [ARGS...]  same, for functions already loaded in the test shell: FN runs in
+#                        a `( set -e; ... )` subshell at top level; sets OUT and RC.
+#   run_errexit FN [ARGS...]   runs FN the way `setup.sh --run FN` does on the server:
+#                        in a fresh `bash -c 'set -e; ...'` that loads the suite's
+#                        extracted functions ($T/app/run.sh minus its dispatcher line)
+#                        and calls FN at top level, so errexit applies INSIDE FN (a
+#                        plain call from a test has no set -e, which hid aborts). stdin
+#                        is the caller's; sets OUT (stdout+stderr) and RC.
 LIB_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PASS=0; FAILN=0
 CHECK_DIAG=${CHECK_DIAG:-}
@@ -65,4 +73,11 @@ stub_findmnt() {
     body+="  $1) [ \$col = T ] && echo \"$2\" || echo \"$3\" ;;"$'\n'; shift 3
   done
   stub_cmd findmnt "$body"$'esac'
+}
+
+run_errexit() { # fn [args...]
+  OUT=$(bash -c 'set -e; eval "$(sed "\$d" "$1")"; shift; "$@"; exit $?' _ "$T/app/run.sh" "$@" 2>&1); RC=$?
+}
+errexit_here() { # fn [args...]
+  OUT=$( set -e; "$@" 2>&1 ); RC=$?
 }

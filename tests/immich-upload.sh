@@ -111,4 +111,19 @@ go "bad\nnoperm\ndown\n" step_immich_upload
 check 8a "401 / 403 / no answer: three different messages, nothing saved, gives up" '[ $RC = 1 ] && [[ "$OUT" == *"This key is not on this Immich server (deleted, mistyped or from another server) - create one: Account Settings → API Keys → New API Key, with All permissions (the secret is shown only once)"* && "$OUT" == *"This key lacks permissions - create one with \"All\" permissions (upload needs asset.upload)"* && "$OUT" == *"Could not check the key (HTTP 000)"* && ! -e "$KEYF" ]]'
 go "goodkey\n/no/such/dir\n" step_immich_upload
 check 8b "after Enter: masked 'Key received: ****dkey (7 characters)' (last 4 only), never the key itself" '[[ "$OUT" == *"Key received: ****dkey (7 characters)"* && "$OUT" != *goodkey* ]]'
+
+# 9 the same paths under `set -e` (how `setup.sh --run step_immich_upload` runs on the server)
+goe() { local input="$1"; shift; : > "$RUN_LOG"; run_errexit "$@" < <(printf '%b' "$input"); }
+rm -rf "$XDG_CONFIG_HOME"
+goe "bad\nnoperm\ndown\n" step_immich_upload
+check 9a "errexit: 401 / 403 / no answer: all three messages shown, then 'Giving up', rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"not on this Immich server"* && "$OUT" == *"lacks permissions"* && "$OUT" == *"Could not check the key (HTTP 000)"* && "$OUT" == *"Giving up"* ]]'
+goe "goodkey\n$T/photos\n2\ny\n" step_immich_upload
+check 9b "errexit: valid key typed, upload runs: rc 0, key saved" '[ $RC = 0 ] && grep -qx "ENVKEY: goodkey" "$RUN_LOG" && [ "$(cat "$KEYF")" = goodkey ]'
+goe "\n$T/photos\n2\ny\n" step_immich_upload
+check 9c "errexit: saved key kept with Enter: rc 0, upload runs" '[ $RC = 0 ] && [[ "$OUT" == *"API key: saved"* ]] && grep -qx "ENVKEY: goodkey" "$RUN_LOG"'
+echo staleKey > "$KEYF"
+goe "goodkey\n$T/photos\n2\ny\n" step_immich_upload
+check 9d "errexit: saved key rejected, new one asked: rc 0, new key saved" '[ $RC = 0 ] && [[ "$OUT" == *"saved API key was rejected"* ]] && [ "$(cat "$KEYF")" = goodkey ]'
+goe "\n$T/photos\n1\nn\n" step_immich_upload
+check 9e "errexit: Cancel at the final question: rc 0, nothing uploaded" '[ $RC = 0 ] && [ ! -s "$RUN_LOG" ]'
 check_total

@@ -605,8 +605,26 @@ run "$BARE/typed\n" bash -c "$PK"
 check 11r "a typed path still works" '[[ "$OUT" == *"SP=$BARE/typed" ]]'
 run "7\n7\n7\n" bash -c "$PK"
 check 11s "a number with no preset is refused, never taken as a path" '[[ "$OUT" == *"No preset 7"* && "$OUT" != *"SP=7"* ]]'
+PKE='source "$T/fn.sh"; _DRIVE_ROOTS=$T/mnt; rc=0; _pick_server_path false || rc=$?; echo "rc=$rc SP=$server_path"'
+run "2\n" bash -ec "$PKE"
+check 11u "errexit (bash -e): the presets picker lists the drive and .env paths and a choice still works" '[[ "$OUT" == *"1) $BARE  (USB drive /dev/sdb1, Files)"* && "$OUT" == *"rc=0 SP=$BARE/media" ]]'
+SSH_DOWN=1 run "q\n" bash -ec "$PKE"
+check 11v "errexit (bash -e): presets with the server unreachable: the hint, then the picker goes on" '[[ "$OUT" == *"Could not read the server'"'"'s drives - type a path."* && "$OUT" == *"rc=2 "* ]]'
 mv "$T/bin/findmnt.real" "$T/bin/findmnt"
 SSH_DOWN=1 run "q\n" bash -c "$PK"
 check 11t "server unreachable: no presets, a hint to type a path" '[[ "$OUT" == *"Could not read the server'"'"'s drives - type a path."* && "$OUT" != *"1)"* ]]'
 
+# 12 the destination guard and the server presets under `set -e` (how `setup.sh --run <step>` runs on the server)
+CHECK_DIAG="rc=\$RC out='\$OUT'"
+mk; export FM_MODE=bare
+errexit_here _require_dest_drive local "$T/mnt/none/x"
+check 12a "errexit: unmounted local destination: refused with the message, rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"not mounted - plug in the drive"* ]]'
+errexit_here _require_dest_drive server "$BARE/x"
+check 12b "errexit: unmounted server destination: refused with the message, rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"Checking the server'"'"'s drives..."* && "$OUT" == *"not mounted - plug in the drive"* ]]'
+SSH_DOWN=1 errexit_here _require_dest_drive server "$BARE/x"
+check 12c "errexit: server unreachable: 'Could not check', rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"Could not check the drive of"* ]]'
+export FM_MODE=ok
+errexit_here _require_dest_drive server "$BARE/x"; r1=$RC
+errexit_here _require_dest_drive local "$BARE/x"
+check 12d "errexit: mounted destination, server and local: rc 0" '[ $r1 = 0 ] && [ $RC = 0 ]'
 check_total

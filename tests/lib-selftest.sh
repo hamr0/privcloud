@@ -89,4 +89,13 @@ X
 stub_firewall_cmd 'echo "fw:$*"'
 check 5b "stub_docker (stdin body) and stub_firewall_cmd (arg body): executable, run" '[ "$("$T/bin/docker" ps)" = "docker:ps" ] && [ "$("$T/bin/firewall-cmd" --list-all)" = "fw:--list-all" ] && [ -x "$T/bin/docker" ]'
 
+canary() { false; echo reached; }
+errexit_here canary
+check 6a "errexit_here: errexit is live inside the function (a failing command aborts it before the next line)" '[ $RC = 1 ] && [[ "$OUT" != *reached* ]]'
+errexit_here echo hi
+check 6b "errexit_here: a clean command passes its output and rc 0" '[ $RC = 0 ] && [ "$OUT" = hi ]'
+mkdir -p "$T/app"; printf 'canary() { false; echo reached; }\n[ "$1" = --run ] && { "$2"; exit $?; }\n' > "$T/app/run.sh"
+run_errexit canary
+check 6c "run_errexit: loads run.sh minus the dispatcher and aborts like --run under set -e" '[ $RC = 1 ] && [[ "$OUT" != *reached* ]]'
+
 check_total

@@ -248,4 +248,24 @@ check 10d "restarted but state not Running: says it did not reconnect (not 'not 
 rr; export SSH_DOWN=1; OUT=$(_ts_restart_both 2>&1)
 check 10e "server unreachable: skipped with the existing warning, the laptop is still restarted and proven" '[[ "$OUT" == *"Tailscale (Server): cannot reach it - skipped"* && "$OUT" == *"OK Laptop: restarted, connected"* ]] && ! grep -q systemd-run "$ORDER"'
 
+# 11 the same paths under `set -e`, as `setup.sh --run <step>` runs them on the server (the checks
+# above call them without errexit; a command that returns 1 in normal operation would abort silently)
+CHECK_DIAG="rc=\$RC out='\$OUT'"
+all_start_fn() { _ts_start_both; _syncthing_start_both; _svc_power_all_remote start; }
+all_stop_fn()  { _ts_stop_both <<<y; _syncthing_stop_both <<<y; _svc_power_all_remote stop; }
+rr; mk adguard false no; errexit_here all_start_fn
+check 11a "errexit: Start All (Tailscale, Syncthing, server containers): rc 0, container started" '[ $RC = 0 ] && [ "$(st adguard)" = "true unless-stopped" ]'
+rr; mk adguard true unless-stopped; errexit_here all_stop_fn
+check 11b "errexit: Stop All: rc 0, container stopped with autostart off" '[ $RC = 0 ] && [ "$(st adguard)" = "false no" ]'
+rr; errexit_here _ts_restart_both
+check 11c "errexit: Restart both with the restart proof: rc 0, both sides proven" '[ $RC = 0 ] && [[ "$OUT" == *"OK Server: restarted, connected"* && "$OUT" == *"OK Laptop: restarted, connected"* ]]'
+rr; export AFTER_STATE=Stopped; errexit_here _ts_restart_both
+check 11d "errexit: Restart both, not reconnected: the failure is reported (rc 1, message), not a silent abort" '[ $RC = 1 ] && [[ "$OUT" == *"did not reconnect"* ]]'
+unset AFTER_STATE
+# the link rides the restarting tailnet: the proof re-picks the address; that helper failing must not abort the proof
+rr; unreach() { echo unreachable; }; _ts_connected_via_ts() { return 0; }; _resolve_server_endpoint() { return 1; }
+errexit_here _ts_prove_restart Server 1000 unreach _ts_server_state
+_ts_connected_via_ts() { return 1; }; _resolve_server_endpoint() { :; }
+check 11e "errexit: server unreachable during the proof and re-picking the address fails: still polls out and reports 'NOT restarted' (rc 1)" '[ $RC = 1 ] && [[ "$OUT" == *"FAIL Server: Tailscale was NOT restarted"* ]]'
+
 check_total

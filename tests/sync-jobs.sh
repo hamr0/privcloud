@@ -23,7 +23,7 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
            _sync_result_text _sync_change_mode _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _sync_delete_job _sync_job_delete _sync_cron_split _sync_registry_load _sync_change_schedule _sync_install_timer _sync_remove_timer \
            _sync_rec_load _sync_rec_write _sync_valid_name _sync_default_name _sync_write_launcher _sync_job_run _sync_job_go \
-           _sync_job_operands _sync_job_steps _sync_job_import_legacy _sync_prepare_dest _sync_rec_set_schedule _sync_rec_mode _sync_job_go _sync_import_all_legacy _sync_tokenize _sync_one_time_backup _env_get _server_path_presets _pick_server_path step_sync _sync_pick_schedule_unused; do
+           _sync_job_operands _dirlink_target _fold_dirlink _sync_job_steps _sync_job_import_legacy _sync_prepare_dest _sync_rec_set_schedule _sync_rec_mode _sync_job_go _sync_import_all_legacy _sync_tokenize _sync_one_time_backup _env_get _server_path_presets _pick_server_path step_sync _sync_pick_schedule_unused; do
     extract_fn "$f" "$SRC"; done
   grep -E '^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_SYNC_REC_KEYS=|^_SSH_OPTS=|^export RSYNC_RSH=|^_RSYNC_FLAGS=' "$SRC"; echo 'SSH_OPTS_OK=1'; } > "$T/fn.sh"
 source "$T/fn.sh"
@@ -288,6 +288,19 @@ check 7n "download run (source on the server)" '[ $RC = 0 ] && [ -e "$T/d/a" ] &
 mk; rec fo1 upload append folder
 run "" _sync_job_run fo1
 check 7o "copy mode 'folder' lands in <dest>/<folder name>" '[ $RC = 0 ] && [ -e "$T/d/s/a" ] && [ -e "$T/d/s/sub/b" ]'
+# a symlinked source folder: rsync of the bare link copies the link; the real files must arrive under the link's name
+mk; rm -f "$T/lnk"; ln -s "$T/s" "$T/lnk"; rec ln1 upload append folder; J_src=$T/lnk; _sync_rec_write
+run "" _sync_job_run ln1
+check 7oa "folder mode, source is a symlink to a directory: the real files land in <dest>/<link name>/ (not a link)" '[ $RC = 0 ] && [ ! -L "$T/d/lnk" ] && [ -f "$T/d/lnk/a" ] && [ -f "$T/d/lnk/sub/b" ] && [ ! -e "$T/d/s" ]'
+mk; rm -f "$T/lnk"; ln -s "$T/s" "$T/lnk"; rec ln2 upload append contents; J_src=$T/lnk; _sync_rec_write
+run "" _sync_job_run ln2
+check 7ob "contents mode with a symlinked source is unchanged: files land directly in <dest>" '[ $RC = 0 ] && [ -f "$T/d/a" ] && [ -f "$T/d/sub/b" ] && [ ! -e "$T/d/lnk" ]'
+mk; rm -f "$T/lnk"; ln -s "$T/s" "$T/lnk"; rec ln3 download append folder; J_src=$T/lnk; _sync_rec_write
+run "" _sync_job_run ln3
+check 7oc "download, symlinked server source, folder mode: real files in <dest>/<link name>/" '[ $RC = 0 ] && [ ! -L "$T/d/lnk" ] && [ -f "$T/d/lnk/a" ] && [ -f "$T/d/lnk/sub/b" ]'
+mk; rm -f "$T/lnk"; ln -s "$T/s" "$T/lnk"; rec ln4 upload mirror folder; J_src=$T/lnk; _sync_rec_write
+echo keep > "$T/d/sub/keep"; mkdir -p "$T/d/lnk"; echo stale > "$T/d/lnk/stale"; run "" _sync_job_run ln4
+check 7od "mirror, folder mode, symlinked source: compares against <dest>/<link name>/ - its stale file goes, nothing outside it is deleted" '[ ! -e "$T/d/lnk/stale" ] && [ -f "$T/d/lnk/a" ] && [ -e "$T/d/gone" ] && [ -e "$T/d/sub/keep" ]'
 mk; mkdir -p "$T/s/sp ace"; echo q > "$T/s/sp ace/we ird.txt"; rec sp1 upload append
 run "" _sync_job_run sp1
 check 7p "names with spaces survive the transport (-s)" '[ $RC = 0 ] && [ -e "$T/d/sp ace/we ird.txt" ]'
@@ -300,7 +313,7 @@ cp "$T/bin/sudo" "$T/sudo-base"; printf '#!/bin/bash\necho sudo >> "$T/sudo.log"
 mk; rec ns1 upload mirror; run "" _sync_job_run ns1; mk; rec ns2 download append; J_dest=$T/nw/x; _sync_rec_write; run "" _sync_job_run ns2
 check 7r "no sudo is called by an upload (mirror) or download run" '[ ! -s "$T/sudo.log" ] && [ -e "$T/nw/x/a" ]'
 cp "$T/sudo-base" "$T/bin/sudo"
-UNATT=$(for f in _sync_job_run _sync_job_go _sync_job_steps _sync_job_operands _sync_rec_load _pick_server_endpoint _mirror_scan _mirror_wipe_sized; do extract_fn "$f" "$T/fn.sh"; done)
+UNATT=$(for f in _sync_job_run _sync_job_go _sync_job_steps _sync_job_operands _dirlink_target _fold_dirlink _sync_rec_load _pick_server_endpoint _mirror_scan _mirror_wipe_sized; do extract_fn "$f" "$T/fn.sh"; done)
 check 7s "the unattended path never mentions sudo or a terminal prompt " '[ -n "$UNATT" ] && ! grep -Eq "sudo|ssh -t|read -p|read -n|/dev/tty" <<<"$UNATT"'
 
 # exit codes (stub rsync): logged as rsync's own, 24 is success

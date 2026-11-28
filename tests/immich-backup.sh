@@ -22,7 +22,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T
 rw() { sed -e "s|/usr/local/bin/immich-backup.sh|$BIN|g" -e "s|/var/log/immich-backup.log|$LOG|g" \
            -e "s|/etc/systemd/system/|$UNITS/|g" -e "s|/etc/immich-backup.conf|$CONF|g"; }
 fns() { local f; for f in "$@"; do extract_fn "$f" "$SRC" | rw; done; }
-FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _sched_text _when_short _immich_backup_remove _immich_docker_group _compose step_immich_backup_once _immich_once_wait _commas _immich_once_result _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
+FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _sched_text _when_short _immich_backup_remove _immich_docker_group _compose step_immich_backup_once _immich_once_wait _commas _tick _immich_once_result _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
 mkrun() {  # rebuild run.sh from the CURRENT $SRC (functions that do not exist yet are skipped)
   {
     printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC= BLUE=\nDRY_RUN=0\nMIRROR_WIPE_MIN=1000\n_FV_SELF=%q\n' "$T/app/setup.sh"
@@ -410,13 +410,48 @@ one_fresh; : > "$T/tty.in"
 TTY=$(RS_SLEEP=2 script -qec "printf '2\n$ONE\n\n\n' | bash $T/app/run.sh --run step_immich_backup_once" /dev/null 2>&1 | tr -d '\r')
 echo "---- sample: ticker (raw, \\r shown as newline) ----"; echo "$TTY" | grep -a "Syncing photos" | tail -3 | cat -v | cut -c1-120; echo "---------------------------------------------------"
 check 12b "tty: photo copy shows 'Syncing photos… Nm SSs, N files so far, SIZE' and the result follows" '[[ "$TTY" == *"Syncing photos… 0m 0"*" files so far, "* && "$TTY" == *"✓ Backup complete - photos → $ONE/immich/"* ]]'
+one_fresh
+TTYN=$(COLUMNS=30 RS_SLEEP=2 script -qec "printf '2\n$ONE\n\n\n' | bash $T/app/run.sh --run step_immich_backup_once" /dev/null 2>&1)
+MAXN=$(tr '\r' '\n' <<<"$TTYN" | sed 's/\x1b\[K//g' | grep -a 'Syncing photos… [0-9]' | awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }')
+check 12g "tty, COLUMNS=30: the photo-copy ticker frames are at most 29 characters (and there are frames)" '[ "$MAXN" -gt 0 ] && [ "$MAXN" -le 29 ]'
 check 12c "no-tty run (the suite): one plain 'Syncing photos…' line, no ticker control codes" 'one_fresh; go "2\n$ONE\n\n\n" step_immich_backup_once; [[ "$OUT" == *"  Syncing photos…"* && "$OUT" != *"so far"* && "$OUT" != *$'"'"'\033[K'"'"'* ]]'
 check 12d "the rsync call carries the live-count format only in --once; the scheduled run's rsync and log are untouched" 'fresh; setup_sched; runbk; ! grep -q "out-format\|--stats" "$RS_LOG" && ! grep -q "F|" "$LOG" && tail -n 1 "$LOG" | grep -q "Backup complete → $DEST\$"'
 # Ctrl-C while waiting: the script is stopped, rc 130, and the result is a cancel notice, not a success block
 : > "$T/cc.res"
-CC=$(bash -c "$(sed '$d' "$T/app/run.sh"); sleep 30 & p=\$!; ( sleep 1; kill -INT \$\$ ) & _immich_once_wait \$p $T/cc.res x; echo RC=\$?; kill -0 \$p 2>/dev/null && echo STILL_RUNNING")
+CC=$(bash -c "$(sed '$d' "$T/app/run.sh"); sleep 30 & p=\$!; ( sleep 1; kill -INT \$\$ ) & _immich_once_wait \$p $T/cc.res x; echo RC=\$?; sleep 0.3; [ -d /proc/\$p ] && echo STILL_RUNNING")
 check 12e "Ctrl-C during the wait: the script is killed and the wait returns 130" '[[ "$CC" == *"RC=130"* && "$CC" != *STILL_RUNNING* ]]'
 fresh; echo 'x' > "$T/cc.res"
 OUT=$(inrun _immich_once_result 130 "$T/cc.res" "$ONE/immich" both 2>&1)
 check 12f "result for rc 130: 'Cancelled', no success block" '[[ "$OUT" == *"Cancelled - the backup was stopped"* && "$OUT" != *"Backup complete"* ]]'
+
+# ── 13 errexit: on the server a step runs as `setup.sh --run <step>` under `set -e` ──
+# The checks above call functions without errexit, which is how a grep -c that returns 1 on
+# no match (and a kill -0 on a root child) passed them and failed live.
+CHECK_DIAG="rc=\$RC out='\$OUT' lv='\$LV'"
+one_fresh; run_errexit step_immich_backup_once < <(printf '\n%s\n\n\n' "$ONE")
+check 13a "errexit, both/append: result block printed, rc 0 (dump written, no 'Database copied' line)" '[ $RC = 0 ] && [[ "$OUT" == *"Dumping database"* && "$OUT" == *"✓ Backup complete - photos + database"* && "$OUT" == *"gunzip -c"* ]]'
+one_fresh; run_errexit step_immich_backup_once < <(printf '3\n%s\n\n' "$ONE")
+check 13b "errexit, database only: result block printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"✓ Backup complete - database ("* ]]'
+one_fresh; run_errexit step_immich_backup_once < <(printf '2\n%s\n\n\n' "$ONE")
+check 13c "errexit, photos only: result block printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"✓ Backup complete - photos → "* && "$OUT" == *"photos/: 2 new files"* ]]'
+one_fresh; rm -f "$PG_UP"; run_errexit step_immich_backup_once < <(printf '3\n%s\n\n' "$ONE")
+check 13d "errexit, cold database copy: result block printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"data dir copy"* ]]'
+one_fresh; FAIL_DUMP=1 run_errexit step_immich_backup_once < <(printf '3\n%s\n\n' "$ONE")
+check 13e "errexit, failed dump: the failure block is printed, rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"Backup failed"* ]]'
+# The backup child is root (sudo): kill -0 from the user gets EPERM. Simulate it: kill -0 always fails.
+: > "$T/lv.res"
+cat > "$T/lv.sh" <<'X'
+kill() { [[ $1 == -0 ]] && return 1; builtin kill "$@"; }
+( sleep 1; echo 'Dumping database' >> "$1"; sleep 1.5 ) & p=$!; s=$SECONDS
+_immich_once_wait $p "$1" "12 MB"; echo "RC=$? WAITED=$((SECONDS - s))"
+X
+LV=$(bash -c "$(sed '$d' "$T/app/run.sh"); . $T/lv.sh" _ "$T/lv.res" 2>&1)
+check 13f "child that kill -0 cannot signal: the wait still announces the dump and does not return early" '[[ "$LV" == *"Dumping database (12 MB)"* && "$LV" == *"RC=0"* ]] && w=${LV##*WAITED=} && [ "$w" -ge 2 ]'
+# more normal-operation non-zero returns inside the screen helpers
+printf '%s\n' "x DB dump ok → immich/db/gone.sql.gz" > "$T/rs.res"
+run_errexit _immich_once_result 0 "$T/rs.res" "$ONE/immich" both
+check 13g "errexit: result block when the dump file named in the output is gone (stat fails): block still printed, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Backup complete"* && "$OUT" == *"db/gone.sql.gz"* ]]'
+run_errexit _sched_text "30 09 * * *"; r1=$OUT; rc1=$RC
+run_errexit _sched_text "05 08 * * 1"
+check 13h "_sched_text: a cron hour/minute written 08 or 09 is read as decimal (not octal: printf gave 00:00 and rc 1)" '[ $rc1 = 0 ] && [ "$r1" = "daily 09:30" ] && [ $RC = 0 ] && [ "$OUT" = "weekly Mon 08:05" ]'
 check_total

@@ -18,7 +18,7 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 { for f in ok fail info warn ssh _shq _tcp_open _is_server _pick_server_endpoint _resolve_server_endpoint \
            _cron_cmd _cron_get _cron_drop _cron_set _cron_add_sync _cron_remove_line _cron_replace_line _cron_to_english _sched_text _when_short \
            _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _dest_check _require_dest_drive _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
-           _mirror_scan _mirror_wipe_sized _mirror_preview _commas _mirror_delete_q _mirror_confirm _mirror_gate _src_size _confirm_delete \
+           _mirror_scan _mirror_wipe_sized _mirror_preview _commas _tick _mirror_delete_q _mirror_confirm _mirror_gate _src_size _confirm_delete \
            _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode _sync_mode_cell _sync_result_text _sync_last_result \
            _sync_result_text _sync_change_mode _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _sync_delete_job _sync_job_delete _sync_cron_split _sync_registry_load _sync_change_schedule _sync_install_timer _sync_remove_timer \
@@ -605,8 +605,26 @@ run "$BARE/typed\n" bash -c "$PK"
 check 11r "a typed path still works" '[[ "$OUT" == *"SP=$BARE/typed" ]]'
 run "7\n7\n7\n" bash -c "$PK"
 check 11s "a number with no preset is refused, never taken as a path" '[[ "$OUT" == *"No preset 7"* && "$OUT" != *"SP=7"* ]]'
+PKE='source "$T/fn.sh"; _DRIVE_ROOTS=$T/mnt; rc=0; _pick_server_path false || rc=$?; echo "rc=$rc SP=$server_path"'
+run "2\n" bash -ec "$PKE"
+check 11u "errexit (bash -e): the presets picker lists the drive and .env paths and a choice still works" '[[ "$OUT" == *"1) $BARE  (USB drive /dev/sdb1, Files)"* && "$OUT" == *"rc=0 SP=$BARE/media" ]]'
+SSH_DOWN=1 run "q\n" bash -ec "$PKE"
+check 11v "errexit (bash -e): presets with the server unreachable: the hint, then the picker goes on" '[[ "$OUT" == *"Could not read the server'"'"'s drives - type a path."* && "$OUT" == *"rc=2 "* ]]'
 mv "$T/bin/findmnt.real" "$T/bin/findmnt"
 SSH_DOWN=1 run "q\n" bash -c "$PK"
 check 11t "server unreachable: no presets, a hint to type a path" '[[ "$OUT" == *"Could not read the server'"'"'s drives - type a path."* && "$OUT" != *"1)"* ]]'
 
+# 12 the destination guard and the server presets under `set -e` (how `setup.sh --run <step>` runs on the server)
+CHECK_DIAG="rc=\$RC out='\$OUT'"
+mk; export FM_MODE=bare
+errexit_here _require_dest_drive local "$T/mnt/none/x"
+check 12a "errexit: unmounted local destination: refused with the message, rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"not mounted - plug in the drive"* ]]'
+errexit_here _require_dest_drive server "$BARE/x"
+check 12b "errexit: unmounted server destination: refused with the message, rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"Checking the server'"'"'s drives..."* && "$OUT" == *"not mounted - plug in the drive"* ]]'
+SSH_DOWN=1 errexit_here _require_dest_drive server "$BARE/x"
+check 12c "errexit: server unreachable: 'Could not check', rc 1" '[ $RC = 1 ] && [[ "$OUT" == *"Could not check the drive of"* ]]'
+export FM_MODE=ok
+errexit_here _require_dest_drive server "$BARE/x"; r1=$RC
+errexit_here _require_dest_drive local "$BARE/x"
+check 12d "errexit: mounted destination, server and local: rc 0" '[ $r1 = 0 ] && [ $RC = 0 ]'
 check_total

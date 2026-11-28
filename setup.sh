@@ -1111,7 +1111,7 @@ _ts_start_both() {
 
 # tailscaled's last (re)start, monotonic microseconds: changes on every restart, so
 # "before != after" proves the restart happened. Shipped to the server with declare -f.
-_ts_started_at() { systemctl show -p ActiveEnterTimestampMonotonic --value tailscaled 2>/dev/null; }
+_ts_started_at() { systemctl show -p ActiveEnterTimestampMonotonic --value tailscaled 2>/dev/null || true; }
 _ts_server_stamp() { _server_probe "$(declare -f _ts_started_at); _ts_started_at"; }
 
 # Poll up to 30s until tailscaled's start stamp differs from $2 AND the state reads
@@ -1128,7 +1128,7 @@ _ts_prove_restart() {
             _ts_running "$rec" && { ok "$side: restarted, connected"; return 0; }
         elif [[ "$now" == unreachable && "$side" == Server ]]; then
             # the link rode on the tailnet that is restarting: pick the address again
-            _ts_connected_via_ts && _resolve_server_endpoint >/dev/null 2>&1
+            { _ts_connected_via_ts && _resolve_server_endpoint >/dev/null 2>&1; } || true
         fi
         sleep 1
     done
@@ -4687,8 +4687,7 @@ step_immich_backup_once() {
     echo ""
     # The script's own timestamped lines are kept in $res and read for the result block, not echoed.
     "${runner[@]}" "${args[@]}" > "$res" 2>&1 &
-    _immich_once_wait $! "$res" "$db_size"
-    rc=$?
+    _immich_once_wait $! "$res" "$db_size" || rc=$?
     _immich_once_result "$rc" "$res" "$backup_dir" "$scope_name"
 }
 
@@ -4708,11 +4707,11 @@ _immich_once_wait() {
             shown_ph=1; t0=$SECONDS
             [[ -t 1 ]] || echo "  Syncing photos…"
         fi
-        kill -0 "$pid" 2>/dev/null || break
+        [[ " $(jobs -rp) " == *" $pid "* ]] || break   # our own running child, whatever its uid (kill -0 gets EPERM on a sudo/root child)
         if [[ -t 1 ]] && (( shown_ph )); then
             el=$((SECONDS - t0))
             read -r nf nb < <(awk -F'|' '$1 == "F" && $3 !~ /\/$/ { n++; b += $2 } END { print n + 0, b + 0 }' "$res")
-            printf '\r\033[K  Syncing photos… %dm %02ds, %s files so far, %s' $((el / 60)) $((el % 60)) "$(_commas "$nf")" "$(_size_h "$nb")"
+            _tick "$(printf '  Syncing photos… %dm %02ds, %s files so far, %s' $((el / 60)) $((el % 60)) "$(_commas "$nf")" "$(_size_h "$nb")")"
         fi
         sleep 0.5
     done
@@ -4721,6 +4720,15 @@ _immich_once_wait() {
     if [[ -n "$oldtrap" ]]; then eval "$oldtrap"; else trap - INT; fi
     (( intr )) && return 130
     return $rc
+}
+
+# One in-place ticker frame: $1 cut to the terminal width minus 1 (COLUMNS, else tput cols, else 80),
+# because a line that wraps cannot be rewound with \r and the screen fills with repeats.
+_tick() {
+    local w=${COLUMNS:-}
+    [[ "$w" =~ ^[0-9]+$ ]] || w=$(tput cols 2>/dev/null) || w=80
+    [[ "$w" =~ ^[0-9]+$ ]] && (( w > 1 )) || w=80
+    printf '\r\033[K%s' "${1:0:$((w - 1))}"
 }
 
 # 3412 -> 3,412
@@ -4745,9 +4753,9 @@ _immich_once_result() {
     fi
     local dump cold n bytes what=() lines=()
     dump=$(sed -n 's/.*DB dump ok → //p' "$res" | tail -1)           # immich/db/immich-db-<stamp>.sql.gz
-    cold=$(grep -c 'Database copied' "$res")
+    cold=$(grep -c "Database copied" "$res" || true)
     if [[ -n "$dump" ]]; then
-        bytes=$(stat -c %s "$bdir/db/${dump##*/}" 2>/dev/null)
+        bytes=$(stat -c %s "$bdir/db/${dump##*/}" 2>/dev/null || true)
         if [[ "$scope" == db ]]; then what+=("database${bytes:+ ($(_size_h "$bytes"))}"); lines+=("db/${dump##*/}")
         else what+=("database"); lines+=("db/${dump##*/}${bytes:+ ($(_size_h "$bytes"))}"); fi
     elif (( cold )); then
@@ -6508,7 +6516,7 @@ _mirror_preview() {
         fail "Could not create the preview list file in $sdir - nothing changed."; return 1
     fi
     local pid t=0 nd nc live msg="Checking what a mirror would delete (nothing is copied)"
-    if [[ -t 1 ]]; then printf '  %s...' "$msg"; else echo "  $msg..."; fi
+    if [[ -t 1 ]]; then _tick "  Checking mirror…"; else echo "  $msg..."; fi
     if [[ "$loc" == sudo ]]; then
         _server_sudo_run "exec 2>&1; $dry" > "$list" &
     elif [[ "$loc" == localsudo ]]; then
@@ -6526,14 +6534,15 @@ _mirror_preview() {
         while kill -0 "$pid" 2>/dev/null; do
             sleep 1; t=$((t + 1))
             # what rsync has found so far, read from the list file (one awk pass)
-            read -r nd nc < <(awk '/^del\.\|/ { d++; next } /^(send|recv)\|/ { c++ }
+            # "to delete" counts files only, exactly what the summary counts (folders are listed there apart)
+            read -r nd nc < <(awk '/^del\.\|/ { if ($0 !~ /\/$/) d++; next } /^(send|recv)\|/ { c++ }
                 END { print d + 0, c + 0 }' "$list")
             live=""
             if (( nd + nc > 0 )); then
                 live=" · $(_commas "$nd") to delete"
-                live+=" · $(_commas "$nc") to copy so far"
+                live+=" · $(_commas "$nc") to copy"
             fi
-            printf '\r\033[K  %s... %ds%s' "$msg" "$t" "$live"
+            _tick "  Checking mirror… ${t}s${live}"
         done
     fi
     wait "$pid" || rc=$?
@@ -6560,11 +6569,11 @@ _mirror_preview() {
     fi
     [[ "$ask" == save ]] && echo -e "  ${YELLOW}⚠ Every scheduled run will delete destination files that are gone from the source.${NC}"
     if (( nf > 0 )); then
-        what="${nf} file$([[ $nf == 1 ]] || echo s)"
-        (( nd > 0 )) && what+=" (+ ${nd} empty folder$([[ $nd == 1 ]] || echo s))"
+        what="$(_commas "$nf") file$([[ $nf == 1 ]] || echo s)"
+        (( nd > 0 )) && what+=" (+ $(_commas "$nd") empty folder$([[ $nd == 1 ]] || echo s))"
         echo -e "  ${YELLOW}⚠ ${what} would be deleted at ${dest}:${NC}"
     elif (( nd > 0 )); then
-        what="${nd} empty folder$([[ $nd == 1 ]] || echo s)"
+        what="$(_commas "$nd") empty folder$([[ $nd == 1 ]] || echo s)"
         echo -e "  ${YELLOW}⚠ ${what} would be removed at ${dest}:${NC}"
     else
         ok "Nothing to delete - destination has no extra files."
@@ -6575,9 +6584,9 @@ _mirror_preview() {
         local _c _f _e _w _name ng=0 line
         while read -r _ _c _f _e _w _name; do
             ng=$((ng + 1)); (( ng > 5 )) && continue
-            line="$_f file$([[ $_f == 1 ]] || echo s)"
-            (( _f == 0 )) && line="$_e empty folder$([[ $_e == 1 ]] || echo s)"
-            (( _f > 0 && _e > 0 )) && line+=" (+ $_e empty folder$([[ $_e == 1 ]] || echo s))"
+            line="$(_commas "$_f") file$([[ $_f == 1 ]] || echo s)"
+            (( _f == 0 )) && line="$(_commas "$_e") empty folder$([[ $_e == 1 ]] || echo s)"
+            (( _f > 0 && _e > 0 )) && line+=" (+ $(_commas "$_e") empty folder$([[ $_e == 1 ]] || echo s))"
             (( _w )) && line+="  ← whole folder deleted"
             printf '    %s  %s\n' "$(sed 's/[[:cntrl:]]//g' <<<"$_name")" "$line"
         done < <(sort -k2,2nr -k6 <<<"$_mirror_groups")
@@ -6603,12 +6612,12 @@ _mirror_delete_q() {  # copy|save
     _mirror_flush   # keys typed during the dry run / before the box must not answer it
     if [[ -n "$_mirror_want" ]]; then
         if [[ "$1" == save ]]; then
-            echo -en "  ${RED}Type ${_mirror_want} to save this job as mirror, Enter = cancel:${NC} "
+            echo -en "  ${RED}Type $(_commas "$_mirror_want") to save this job as mirror, Enter = cancel:${NC} "
         else
-            echo -en "  ${RED}Type ${_mirror_want} to delete and copy, Enter = cancel:${NC} "
+            echo -en "  ${RED}Type $(_commas "$_mirror_want") to delete and copy, Enter = cancel:${NC} "
         fi
         read -r reply || reply=""
-        if [[ "$reply" == "$_mirror_want" ]]; then return 0; fi
+        if [[ "${reply//,/}" == "$_mirror_want" ]]; then return 0; fi
         info "Cancelled - nothing changed."
         return 1
     fi
@@ -7165,7 +7174,7 @@ _sched_text() {  # spec
     local -a f; read -ra f <<<"$spec"
     if (( ${#f[@]} == 5 )); then
         if [[ "${f[0]}" =~ ^[0-9]+$ && "${f[1]}" =~ ^[0-9]+$ && "${f[2]}${f[3]}" == "**" ]]; then
-            t=$(printf '%02d:%02d' "${f[1]}" "${f[0]}")
+            t=$(printf '%02d:%02d' "$((10#${f[1]}))" "$((10#${f[0]}))")   # 10#: a cron field like 08 is not octal
             case "${f[4]}" in
                 \*) echo "daily $t"; return ;;
                 [0-7]) d=(Sun Mon Tue Wed Thu Fri Sat Sun); echo "weekly ${d[${f[4]}]} $t"; return ;;

@@ -186,7 +186,7 @@ _SSH_OPTS="-o ConnectTimeout=8 -o ServerAliveInterval=15 -o ServerAliveCountMax=
 export RSYNC_RSH="ssh $_SSH_OPTS"
 _RSYNC_FLAGS="-avh --progress -s"
 ssh() {
-    command ssh $_SSH_OPTS "$@"
+    command ssh -o LogLevel=ERROR $_SSH_OPTS "$@"   # ERROR: no "Connection to <ip> closed." after ssh -t; real errors stay
 }
 
 # True if a TCP connection to host:port completes within 2s. Used to pick a
@@ -274,6 +274,9 @@ _svc_power_all()        { # action             (on the server itself)
     bash -c "$(_svc_power_all_body "$1")"
 }
 _svc_power_remote()     { ssh "$SERVER_USER@$SERVER_IP" "$(_svc_power_body "$1" "$(_shq "$2")")"; }  # action container
+# `compose up -d` creates what is missing; its raw "Container X Started" lines would double our own
+# result lines, so run it quietly and show its output only when it fails.
+_compose_up_quiet() { local out; out=$(sg docker -c "docker compose up -d" 2>&1) || { echo "$out" >&2; return 1; }; }
 _svc_power_all_remote() { ssh "$SERVER_USER@$SERVER_IP" "$(_svc_power_all_body "$1")"; }              # action
 
 # Print "name|status" like `docker ps -a --format '{{.Names}}|{{.Status}}'`, but
@@ -466,7 +469,7 @@ _on_server() {
         echo ""
         local dry=""
         [[ "$DRY_RUN" == "1" ]] && dry="--dry-run "
-        ssh -o LogLevel=ERROR -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && GIT_TERMINAL_PROMPT=0 git pull --ff-only -q 2>/dev/null; ./setup.sh ${dry}--run $step"
+        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && GIT_TERMINAL_PROMPT=0 git pull --ff-only -q 2>/dev/null; ./setup.sh ${dry}--run $step"
     fi
 }
 
@@ -2109,7 +2112,7 @@ _services_action() {
                 # compose up -d creates anything missing but never re-applies a
                 # restart policy to an existing container, so the per-container
                 # rule runs after it (covers adguard/syncthing too).
-                sg docker -c "docker compose up -d"; rc=$?
+                _compose_up_quiet || { fail "docker compose up failed"; rc=1; }
                 _svc_power_all start || rc=1
                 ;;
             stop)    _svc_power_all stop    || rc=1 ;;
@@ -2373,7 +2376,8 @@ _unified_service_picker() {
         if [[ "$action" == start ]]; then
             # compose up -d creates what is missing but never re-applies a
             # restart policy; the per-container rule after it does.
-            ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && sg docker -c 'docker compose up -d'" || all_rc=1
+            ssh "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && $(declare -f _compose_up_quiet); _compose_up_quiet" \
+                || { fail "docker compose up failed"; all_rc=1; }
         fi
         _svc_power_all_remote "$action" || all_rc=1
         if (( all_rc != 0 )); then

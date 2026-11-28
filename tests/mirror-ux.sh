@@ -10,8 +10,8 @@ SRC=${SETUP_SH:-$H/../setup.sh}
 T=$(mktemp -d) || exit 1
 trap 'rm -rf "$T"' EXIT
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
-{ grep -E '^MIRROR_WIPE_MIN=' "$SRC"
-  for f in ok fail info warn _mirror_flush _mirror_ask _mirror_scan _mirror_wipe_sized _mirror_preview _commas _tick _mirror_delete_q; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
+{ grep -E "^MIRROR_WIPE_MIN=|^MIRROR_MEASURE_MAX=" "$SRC"
+  for f in ok fail info warn _mirror_flush _mirror_ask _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_measure _size_h _commas _tick _mirror_delete_q; do extract_fn "$f" "$SRC"; done; } > "$T/fn.sh"
 # mp = what a one-time copy does: the preview, then (after the box) the one question.
 cat >> "$T/fn.sh" <<'X'
 mp() { _mirror_preview "$@"; local r=$?
@@ -37,7 +37,7 @@ m1=$(ask delete); m2=$(ask " delete"); m3=$(ask ""); m4=$(ask Delete)
 check 1e "exact word 'delete' = mirror; padded, capitalised or empty = append" '[ "$m1" = mirror ] && [ "$m2" = append ] && [ "$m3" = append ] && [ "$m4" = append ]'
 
 # 2 preview: explanation line, unchanged rc + parsing, no temp file left
-LIST="printf 'del.|a\\ndel.|sub/b\\n'"
+LIST="printf 'del.|0|a\\ndel.|0|sub/b\\n'"
 for loc in local sudo; do
   OUT=$(echo n | mp $loc /s /d "$LIST" copy 2>&1); RC=$?
   check 2a-$loc "$loc: explains what is happening before the dry run" '[[ "$OUT" == *"Checking what a mirror would delete"* ]]'
@@ -60,7 +60,7 @@ source "$T/fn.sh"
 _mirror_guard() { return 0; }
 _mirror_refuse() { :; }
 mkdir -p "$T/tmp"; export TMPDIR="$T/tmp"
-echo n | mp local /s /d "sleep 2; printf 'del.|a\\\\n'" copy
+echo n | mp local /s /d "sleep 2; printf 'del.|0|a\\\\n'" copy
 echo "RC=\$?"
 X
 RAW=$(script -qec "bash $T/tty.sh" /dev/null 2>&1; true)
@@ -74,31 +74,31 @@ rm -rf "$T/state"
 OUT=$(echo n | mp local /s /d "$LIST" copy 2>&1); RC=$?
 LF=$(ls "$T/state/federver"/mirror-preview-*.txt 2>/dev/null | head -1)
 check 4a "'Full list: <path>' is printed and the file exists" '[ -n "$LF" ] && [[ "$OUT" == *"Full list: $LF"* ]]'
-check 4b "list file holds the dry-run output, mode 600, dir 700" '[ -n "$LF" ] && grep -qx "del.|sub/b" "$LF" && [ "$(stat -c %a "$LF")" = 600 ] && [ "$(stat -c %a "$T/state/federver")" = 700 ]'
+check 4b "list file holds the dry-run output, mode 600, dir 700" '[ -n "$LF" ] && grep -qx "del.|0|sub/b" "$LF" && [ "$(stat -c %a "$LF")" = 600 ] && [ "$(stat -c %a "$T/state/federver")" = 700 ]'
 for i in 1 2 3 4 5 6 7 8; do : > "$T/state/federver/mirror-preview-2020010$i-000000.txt"; done
 OUT=$(echo n | mp local /s /d "$LIST" copy 2>&1)
 check 4c "only the newest 5 list files are kept" '[ "$(ls "$T/state/federver" | wc -l)" = 5 ] && [ ! -e "$T/state/federver/mirror-preview-20200101-000000.txt" ] && [ -e "$T/state/federver/mirror-preview-20200108-000000.txt" ]'
 sleep 1.1  # list names are per second
 OUT=$(mp local /s /d "echo oops; exit 23" copy 2>&1)
 check 4d "failed preview leaves no new list file" '[ "$(ls "$T/state/federver" | wc -l)" = 5 ]'
-BIG="awk 'BEGIN{for(i=1;i<=200000;i++) print \"del.|d\" (i%7) \"/f\" i}'"
+BIG="awk 'BEGIN{for(i=1;i<=200000;i++) print \"del.|0|d\" (i%7) \"/f\" i}'"
 S0=$(date +%s.%N); OUT=$(echo n | mp local /s /d "$BIG" copy 2>&1); RC=$?; S1=$(date +%s.%N)
 check 4e "200k-line deletion list is counted from the file" '[ $RC = 1 ] && [[ "$(plain "$OUT")" == *"⚠ 200,000 files would be deleted at /d:"* ]]'
 check 4f "the preview never holds the whole output in a variable" '! declare -f _mirror_preview | grep -Eq "out=|\$\(cat"'
 echo "      (200k preview took $(awk -v a="$S0" -v b="$S1" 'BEGIN{printf "%.1f", b-a}')s)"
 
 # 5 screen summary by top-level folder; whole folders flagged
-SUM="awk 'BEGIN{for(f=1;f<=7;f++){for(i=1;i<=8-f;i++) print \"del.|f\" f \"/x\" i}; print \"del.|f3/\"; print \"del.|top.txt\"; print \"del.|emp/\"}'"
+SUM="awk 'BEGIN{for(f=1;f<=7;f++){for(i=1;i<=8-f;i++) print \"del.|0|f\" f \"/x\" i}; print \"del.|0|f3/\"; print \"del.|0|top.txt\"; print \"del.|0|emp/\"}'"
 OUT=$(plain "$(echo n | mp local /s /d "$SUM" copy 2>&1)")
 check 5a "top 5 folders by count, biggest first, with counts" '[[ "$OUT" == *"    f1/  7 files"*"    f2/  6 files"* && "$OUT" == *"    f5/  3 files"* ]]'
 check 5b "only 5 groups shown; the rest summed" '[[ "$OUT" == *"... and 4 more folders"* && "$OUT" != *"    f6/"* ]]'
 check 5c "whole-folder deletion is marked, others are not" '[[ "$OUT" == *"    f3/  5 files  ← whole folder deleted"* && "$OUT" != *"f1/  7 files  ←"* ]]'
 check 5d "total line unchanged and the file names are not dumped" '[[ "$OUT" == *"⚠ 29 files (+ 1 empty folder) would be deleted at /d:"* && "$OUT" != *"x1"* ]]'
-OUT=$(plain "$(echo n | mp local /s /d "printf 'del.|a\\ndel.|b\\n'" copy 2>&1)")
+OUT=$(plain "$(echo n | mp local /s /d "printf 'del.|0|a\\ndel.|0|b\\n'" copy 2>&1)")
 check 5e "files directly at the top level are grouped as (top level)" '[[ "$OUT" == *"    (top level)  2 files"* ]]'
 
 # 6 wipe guard: whole top-level folder or > MIRROR_WIPE_MIN files = type the exact count
-gen() { echo "awk 'BEGIN{for(i=1;i<=$1;i++) print \"del.|f\" i}'"; }   # n top-level files
+gen() { echo "awk 'BEGIN{for(i=1;i<=$1;i++) print \"del.|0|f\" i}'"; }   # n top-level files
 chk() { OUT=$(printf '%s\n' "$1" | mp local /s /d "$2" "${3:-copy}" 2>&1); RC=$?; OUT=$(plain "$OUT"); }
 chk "" "$(gen 1500)"
 check 6a "1500 files: typed-count prompt, no y/N" '[ $RC = 1 ] && [[ "$OUT" == *"Type 1,500 to delete and copy, Enter = cancel: "* && "$OUT" != *"[y/N]"* ]]'
@@ -111,13 +111,13 @@ chk 1001 "$(gen 1001)"; check 6f "one over the limit: typed count" '[ $RC = 0 ] 
 chk 1,001 "$(gen 1001)"; check 6f2 "typed count with the comma accepted" '[ $RC = 0 ]'
 chk 1500 "$(gen 1500)"; check 6f3 "summary and header numbers carry thousands separators" '[[ "$OUT" == *"⚠ 1,500 files would be deleted at /d:"* && "$OUT" == *"(top level)  1,500 files"* ]]'
 chk 1,50 "$(gen 1500)"; check 6f4 "a wrong number with a comma still cancels" '[ $RC = 1 ]'
-WH="printf 'del.|keep/a\\ndel.|gone/x\\ndel.|gone/y\\ndel.|gone/\\n'"
+WH="printf 'del.|0|keep/a\\ndel.|0|gone/x\\ndel.|0|gone/y\\ndel.|0|gone/\\n'"
 chk 3 "$WH"; check 6g "3 files but a whole folder goes: typed count 3 accepted" '[ $RC = 0 ] && [[ "$OUT" == *"gone/  2 files  ← whole folder deleted"* && "$OUT" == *"Type 3 to delete and copy"* ]]'
 chk y "$WH"; check 6h "whole folder + y -> cancelled" '[ $RC = 1 ]'
 chk 1500 "$(gen 1500)" save; check 6i "save mode: typed count to save the job" '[ $RC = 0 ] && [[ "$OUT" == *"Type 1,500 to save this job as mirror, Enter = cancel: "* ]]'
 chk y "$(gen 1500)" save; check 6j "save mode + y -> cancelled" '[ $RC = 1 ]'
-chk y "printf 'del.|a\\n'" save; check 6k "small save: y/N as before" '[ $RC = 0 ] && [[ "$OUT" == *"Save this job as mirror? [y/N]: "* ]]'
-chk y "printf 'del.|e1/\\\\ndel.|a\\\\n'"; check 6m "an empty top-level folder alone is not a wipe: y/N" '[ $RC = 0 ] && [[ "$OUT" != *"Type "* ]]'
+chk y "printf 'del.|0|a\\n'" save; check 6k "small save: y/N as before" '[ $RC = 0 ] && [[ "$OUT" == *"Save this job as mirror? [y/N]: "* ]]'
+chk y "printf 'del.|0|e1/\\\\ndel.|0|a\\\\n'"; check 6m "an empty top-level folder alone is not a wipe: y/N" '[ $RC = 0 ] && [[ "$OUT" != *"Type "* ]]'
 check 6l "the limit is one named constant" '[ "$MIRROR_WIPE_MIN" = 1000 ] && [ "$(grep -c "1000" <<<"$(declare -f _mirror_preview)")" = 0 ]'
 
 # 7 keys typed ahead are dropped on a terminal, pipes are left alone
@@ -128,7 +128,7 @@ _mirror_refuse() { :; }
 export XDG_STATE_HOME="$T/state"
 sleep 1                       # the keys below are already buffered when we ask
 if [ "\$1" = ask ]; then _mirror_ask >/dev/null; echo "MODE=\$sync_mode"
-else mp local /s /d "printf 'del.|a\\\\n'" copy >/dev/null; echo "RC=\$?"; fi
+else mp local /s /d "printf 'del.|0|a\\\\n'" copy >/dev/null; echo "RC=\$?"; fi
 X
 RAW=$({ printf 'delete\n'; sleep 3; } | timeout 10 script -qec "bash $T/ahead.sh ask" /dev/null 2>&1; true)
 check 7a "tty: 'delete' typed ahead does not answer the copy-mode question" '[[ "$RAW" == *"MODE=append"* ]]'
@@ -143,7 +143,7 @@ _mirror_guard() { return 0; }
 _mirror_refuse() { :; }
 export XDG_STATE_HOME="$T/state"
 trap 'echo OLDTRAP' INT
-mp local /s /d "echo 'del.|a'; sleep 31.7" copy
+mp local /s /d "echo 'del.|0|a'; sleep 31.7" copy
 echo "RC=\$?"
 trap -p INT
 X
@@ -169,7 +169,7 @@ source "$T/fn.sh"
 _mirror_guard() { return 0; }
 _mirror_refuse() { :; }
 export XDG_STATE_HOME="$T/state"
-echo n | mp local /s /d "sleep 2.5; echo 'del.|a'" copy
+echo n | mp local /s /d "sleep 2.5; echo 'del.|0|a'" copy
 X
 RAW2=$(timeout 20 script -qec "bash $T/live2.sh" /dev/null 2>&1; true)
 check 9c "tty: seconds only until rsync prints its first line" '[[ "$RAW2" == *"Checking mirror… 1s"$'"'"'\r'"'"'* && "$RAW2" == *"Checking mirror… 2s"$'"'"'\r'"'"'* ]]'
@@ -194,18 +194,82 @@ source "$T/fn.sh"
 _mirror_guard() { return 0; }
 _mirror_refuse() { :; }
 export XDG_STATE_HOME="$T/state"
-echo n | mp local /s /d "sleep 0.3; echo 'del.|f1'; echo 'del.|f2'; echo 'del.|f3'; echo 'del.|e1/'; echo 'del.|e2/'; sleep 2.2" copy
+echo n | mp local /s /d "sleep 0.3; echo 'del.|0|f1'; echo 'del.|0|f2'; echo 'del.|0|f3'; echo 'del.|0|e1/'; echo 'del.|0|e2/'; sleep 2.2" copy
 X
 RAW5=$(timeout 20 script -qec "bash $T/same.sh" /dev/null 2>&1; true)
 check 9g "ticker 'to delete' = the summary's file count (3), folders not added; summary says 3 files (+ 2 empty folders)" '[[ "$RAW5" == *" 3 to delete"* && "$RAW5" != *" 5 to delete"* && "$RAW5" == *"3 files (+ 2 empty folders) would be deleted"* ]]'
 OUT=$(echo n | mp local /s /d "$LIST" copy 2>&1)
 check 9d "no terminal: no ticker, no live counts" '[[ "$OUT" != *" to copy so far"* ]]'
 cat > "$T/tick.sh" <<X
-awk 'BEGIN{for(i=1;i<=200000;i++){print "del.|d" (i%7) "/f" i; print "send|s" i}}' > "$T/big.txt"
+awk 'BEGIN{for(i=1;i<=200000;i++){print "del.|0|d" (i%7) "/f" i; print "send|1|s" i}}' > "$T/big.txt"
 S=\$(date +%s%N)
 awk '/^del\\.\\|/ { d++; next } /^(send|recv)\\|/ { c++ } END { print d + 0, c + 0 }' "$T/big.txt"
 echo "TICK_MS=\$(( (\$(date +%s%N) - S) / 1000000 ))"
 X
 bash "$T/tick.sh" | sed 's/^/      (400k-line tick: /; s/$/)/' | tail -1
+
+# 10 totals: what a mirror would copy and what its deletions free (rsync gives no size for deletions)
+D=$T/dest10; mkdir -p "$D/big/sub" "$D/small" "$D/keep"
+head -c 3000 /dev/zero > "$D/big/one"; head -c 5000 /dev/zero > "$D/big/sub/two"; head -c 700 /dev/zero > "$D/small/x"
+head -c 100 /dev/zero > "$D/top1"
+L10="printf 'del.|0|big/one\\ndel.|0|big/sub/two\\ndel.|0|big/sub/\\ndel.|0|big/\\ndel.|0|small/x\\ndel.|0|top1\\ndel.|0|emptyd/\\nsend|2097152|new1\\nsend|1048576|dir/f\\nsend|60|dir/\\n'"
+OUT=$(plain "$(echo n | mp local /s "$D" "$L10" copy local "$D" 2>&1)")
+check 10a "local dest: 'To copy' counts files sent (dirs not) with their size" '[[ "$OUT" == *"  To copy:    2 files, 3 MB"* ]]'
+check 10b "local dest: 'To delete' says the files + empty folder and the real freed size (8,800 B = 8 KB)" '[[ "$OUT" == *"  To delete:  4 files (+ 1 empty folder), frees 8 KB"* ]]'
+check 10c "local dest: per-folder lines carry their size; the header and counts are unchanged" '[[ "$OUT" == *"    big/  2 files, 7 KB  ← whole folder deleted"* && "$OUT" == *"    small/  1 file, 700 B"* && "$OUT" == *"⚠ 4 files (+ 1 empty folder) would be deleted at"* ]]'
+check 10d "'Measuring what the mirror would free…' is printed" '[[ "$OUT" == *"Measuring what the mirror would free…"* ]]'
+SERVER_USER=u; SERVER_IP=h
+ssh() { shift; bash -c "$*"; }   # the server is this machine; one call, stdin = the NUL list
+OUT=$(plain "$(echo n | mp local /s "$D" "$L10" copy server "$D" 2>&1)")
+check 10e "server dest: freed size measured through the ssh wrapper" '[[ "$OUT" == *"frees 8 KB"* && "$OUT" == *"    big/  2 files, 7 KB"* ]]'
+SSHN=$T/sshcalls; : > "$SSHN"
+ssh() { echo x >> "$SSHN"; shift; bash -c "$*"; }
+echo n | mp local /s "$D" "$L10" copy server "$D" >/dev/null 2>&1
+check 10f "server dest: exactly one ssh call for the whole list" '[ "$(wc -l < "$SSHN")" = 1 ]'
+ssh() { return 255; }
+OUT=$(plain "$(echo n | mp local /s "$D" "$L10" copy server "$D" 2>&1)"); RC=$?
+check 10g "measurement fails: 'frees ? (could not measure)', preview still completes with the same counts" '[ $RC = 0 ] && [[ "$OUT" == *"To delete:  4 files (+ 1 empty folder), frees ? (could not measure)"* && "$OUT" == *"⚠ 4 files (+ 1 empty folder) would be deleted"* && "$OUT" == *"To copy:    2 files, 3 MB"* && "$OUT" != *"big/  2 files, "*"KB"* ]]'
+OUT=$(plain "$(echo y | mp local /s "$D" "$L10" copy local "$T/no-such-dest" 2>&1)"); RC=$?
+check 10h "local measure of a missing destination: frees ?, rc 0 on y" '[ $RC = 0 ] && [[ "$OUT" == *"frees ? (could not measure)"* ]]'
+OUT=$(plain "$(echo n | mp local /s "$D" "$L10" copy 2>&1)")
+check 10i "no destination given: no measuring, no 'frees' text" '[[ "$OUT" != *"Measuring"* && "$OUT" != *"frees"* && "$OUT" == *"To delete:  4 files (+ 1 empty folder)"* ]]'
+OUT=$(plain "$(mp local /s "$D" "printf 'send|10|a\\n'" copy local "$D" 2>&1)"); RC=$?
+check 10j "nothing to delete: still rc 0, still shows To copy" '[ $RC = 0 ] && [[ "$OUT" == *"Nothing to delete"* && "$OUT" == *"To copy:    1 file, 10 B"* ]]'
+OUT=$(plain "$(echo n | mp local /s "$D" "printf 'del.|0|big/one\\ndel.|0|big/\\n'" copy local "$D" 2>&1)")
+check 10l "whole-folder deletion still needs the typed count" '[[ "$OUT" == *"Type 1 to delete and copy"* ]]'
+unset -f ssh
+
+# 11 timing: measuring 200k real files with one du process
+BD=$T/big11; mkdir -p "$BD"
+( cd "$BD" && mkdir $(seq -f 'd%g' 0 199) && awk 'BEGIN{for(i=0;i<200000;i++) print "d" (i%200) "/f" i}' | xargs touch )
+awk 'BEGIN{for(i=0;i<200000;i++) print "del.|0|d" (i%200) "/f" i}' > "$T/big11.txt"
+M0=$(date +%s.%N)
+_mirror_measure "$T/big11.txt" local "$BD" >/dev/null; MR=$?
+M1=$(date +%s.%N)
+check 11a "200k-file measurement works (rc 0, 0 bytes: empty files)" '[ $MR = 0 ] && [ "$_mirror_free" = 0 ]'
+echo "      (200k-file measurement took $(awk -v a="$M0" -v b="$M1" 'BEGIN{printf "%.1f", b-a}')s)"
+
+# 12 terminal: the cleared ticker leaves one persistent line, even for a fast check
+cat > "$T/tty12.sh" <<X
+source "$T/fn.sh"
+_mirror_guard() { return 0; }
+_mirror_refuse() { :; }
+_server_sudo_run() { bash -c "\$1"; }
+mkdir -p "$T/tmp"; export TMPDIR="$T/tmp"
+for l in local sudo; do echo n | mp \$l /s /d "printf 'del.|0|a\\\\n'" copy; done
+X
+RAW=$(script -qec "bash $T/tty12.sh" /dev/null 2>&1; true)
+check 12a "tty: 'Checked mirror in Ns.' stays after the ticker is cleared (local and sudo/server hop both)" '[ "$(grep -c "Checked mirror in [0-9]*s\." <<<"$RAW")" = 2 ]'
+OUT=$(echo n | mp local /s /d "$LIST" copy 2>&1)
+check 12b "no terminal: no 'Checked mirror in' line" '[[ "$OUT" != *"Checked mirror in"* ]]'
+
+
+# 13 under errexit (the way the server runs steps): totals, failed measurement and the no-destination case all complete
+ssh() { return 255; }
+for case in "local $D" "server $D" "server $T/none" ""; do
+  errexit_here mp local /s "$D" "$L10" copy $case < <(echo n)
+  check "13-${case%% *}" "errexit ($case): preview reaches the question and the answer n cancels (rc 1), totals printed" '[ $RC = 1 ] && [[ "$OUT" == *"To delete:  4 files"* && "$OUT" == *"To copy:"* && "$OUT" == *"Cancelled"* ]]'
+done
+unset -f ssh
 
 check_total

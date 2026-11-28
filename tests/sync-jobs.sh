@@ -17,13 +17,13 @@ BOLD=; DIM=; RED=; GREEN=; YELLOW=; BLUE=; NC=
 # Every function the sync-job code may be made of (a name missing from this copy is skipped).
 { for f in ok fail info warn ssh _shq _tcp_open _is_server _pick_server_endpoint _resolve_server_endpoint \
            _cron_cmd _cron_get _cron_drop _cron_set _cron_add_sync _cron_remove_line _cron_replace_line _cron_to_english \
-           _drive_verdict _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
+           _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point _dest_check _require_dest_drive _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with \
            _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _src_size _confirm_delete \
            _sync_mirror_block _sync_job_mode _sync_job_field _sync_job_set_mode _sync_mode_cell _sync_result_text _sync_last_result \
            _sync_result_text _sync_change_mode _sync_execute_or_schedule _sync_show_status _sync_edit_job _sync_list_jobs \
            _sync_delete_job _sync_job_delete _sync_cron_split _sync_registry_load _sync_change_schedule _sync_install_timer _sync_remove_timer \
            _sync_rec_load _sync_rec_write _sync_valid_name _sync_default_name _sync_write_launcher _sync_job_run _sync_job_go \
-           _sync_job_operands _sync_job_steps _sync_job_import_legacy _sync_prepare_dest _sync_rec_set_schedule _sync_rec_mode _sync_job_go _sync_import_all_legacy _sync_tokenize _sync_one_time_backup _sync_pick_schedule_unused; do
+           _sync_job_operands _sync_job_steps _sync_job_import_legacy _sync_prepare_dest _sync_rec_set_schedule _sync_rec_mode _sync_job_go _sync_import_all_legacy _sync_tokenize _sync_one_time_backup _env_get _server_path_presets _pick_server_path step_sync _sync_pick_schedule_unused; do
     extract_fn "$f" "$SRC"; done
   grep -E '^MIRROR_WIPE_MIN=|^_DRIVE_ROOTS=|^_SYNC_REC_KEYS=|^_SSH_OPTS=|^export RSYNC_RSH=|^_RSYNC_FLAGS=' "$SRC"; echo 'SSH_OPTS_OK=1'; } > "$T/fn.sh"
 source "$T/fn.sh"
@@ -74,7 +74,7 @@ _FV_SELF=$(readlink -f "$SRC"); FEDERVER_CONFIG=$T/federver-config   # launchers
 export T RSYNC_LOG="$T/rsync.log" SSH_LOG="$T/ssh.log"
 export PATH="$T/bin:$PATH" HOME="$T/home" CRON_FILE="$T/crontab" SERVER_USER=u SERVER_IP=h SERVER_HOST_TS=
 export FM_ROOT="$T/mnt/usb"
-stub_findmnt ok '$FM_ROOT' /dev/sdb1  stub '$FM_ROOT' systemd-1
+stub_findmnt ok '$FM_ROOT' /dev/sdb1  stub '$FM_ROOT' systemd-1  bare / /dev/nvme0n1p2
 export FM_MODE=ok
 _DRIVE_ROOTS="$T/mnt"
 _sync_pick_schedule() { echo "${SCHED:-cron 0 * * * *}"; }
@@ -531,5 +531,82 @@ check 9x "tokenizer: a path printf %q wrote comes back whole (or is refused, nev
 tok "rsync \$(touch $T/PWN3) a b"; R1=$TRC; tok 'rsync a; rm -rf b'; R2=$TRC; tok 'rsync "a $b" c'; R3=$TRC; tok "rsync 'unclosed"; R4=$TRC
 check 9y "tokenizer: \$( ), ; and \$ inside double quotes and an unclosed quote are refused" '[ $R1 != 0 ] && [ $R2 != 0 ] && [ $R3 != 0 ] && [ $R4 != 0 ] && [ ! -e "$T/PWN3" ]'
 fi
+
+# ── 11  the destination must be on a mounted drive (found live: /mnt/data was not there) ─────
+# FM_MODE=bare = the drive is not mounted (findmnt resolves everything to /); ok = it is.
+BARE=$T/mnt/usb
+dgrun() { # name direction dest: a record whose destination is $3, run the way cron does
+  mk; rec "$1" "$2" append; J_dest=$3; _sync_rec_write
+  mkdir -p "$T/stub"; cp "$T/rsync-stub" "$T/stub/rsync"; : > "$RSYNC_LOG"
+  OUT=$(PATH="$T/stub:$PATH" _sync_job_run "$1" 2>&1); RC=$?
+}
+export FM_MODE=bare; _DRIVE_ROOTS=$T/mnt
+dgrun dg1 upload "$BARE/backup"
+check 11a "run, upload to an unmounted drive: SKIPPED with the mount point, nothing written, exit 0 like the other skips" '[ $RC = 0 ] && [[ "$OUT" == *": SKIPPED dg1 - destination drive not mounted ($BARE), nothing written"* && "$OUT" != *"Sync finished"* ]]'
+check 11b "...no rsync, no mkdir on the server" '[ ! -s "$RSYNC_LOG" ] && [ ! -e "$BARE/backup" ]'
+printf '%s\n' "$OUT" > "$(LOGF dg1)"
+check 11c "Status shows it as skipped with the reason" 'R=$(_sync_result_text dg1); [[ "$R" == *"last: skipped (destination drive not mounted ($BARE))"* ]]'
+dgrun dg2 download "$BARE/pulled"
+check 11d "run, download to an unmounted laptop drive: SKIPPED, nothing created, no rsync" '[ $RC = 0 ] && [[ "$OUT" == *"SKIPPED dg2 - destination drive not mounted ($BARE), nothing written"* ]] && [ ! -s "$RSYNC_LOG" ] && [ ! -e "$BARE/pulled" ]'
+dgrun dg3 upload "$T/d"
+check 11e "run, destination outside the drive roots (a /home path): not guarded, rsync runs" '[ $RC = 0 ] && [[ "$OUT" == *"Sync finished: dg3 (exit 0)" ]] && [ -s "$RSYNC_LOG" ]'
+export FM_MODE=ok
+dgrun dg4 upload "$BARE/backup"
+check 11f "run, same path with the drive mounted: runs, destination made" '[ $RC = 0 ] && [[ "$OUT" == *"Sync finished: dg4 (exit 0)" ]] && [ -s "$RSYNC_LOG" ] && [ -d "$BARE/backup" ]'
+mk; export FM_MODE=bare
+_dest_check local "$T/mnt/none/x"; R1=$?; V1=$_dest_v
+check 11g "a path under a root with no mount below it (/mnt/<x> that is not there): refused, verdict unmounted" '[ $R1 = 1 ] && [ "$V1" = unmounted ]'
+SSH_DOWN=1 _dest_check server "$BARE/x"; R2=$?
+check 11h "no answer from the server: refused as unreachable, never ok" '[ $R2 = 1 ] && [ "$_dest_v" = unreachable ]'
+
+# the one-time flows: refused right after the destination is picked, before any preview
+refuse() { # input-for-menu pick-script: run step_sync / _sync_one_time_backup with the stubs set
+  mk; export FM_MODE=bare; : > "$RSYNC_LOG"; _ps=
+  _pick_local_path()  { local_path=$T/s; }
+  _pick_server_path() { if [ -z "$_ps" ]; then _ps=1; server_path=$T/s; else server_path=$BARE/up; fi; }
+  _pick_copy_mode()   { copy_mode=contents; }
+  run "$1" "$2"
+}
+WHY="$BARE/up is on $BARE, which is not mounted - plug in the drive or pick another path."
+refuse "1\ndelete\n" _sync_one_time_backup; _pick_server_path() { server_path=$BARE/up; }
+run "1\ndelete\n" _sync_one_time_backup
+check 11i "one-time upload (16 -> 5) to an unmounted /mnt/<x>: refused before the preview, nothing created" '[ $RC = 1 ] && [[ "$OUT" == *"$WHY"* && "$OUT" != *"Proceed"* && "$OUT" != *"Nothing to delete"* ]] && [ ! -e "$BARE/up" ] && [ ! -s "$RSYNC_LOG" ]'
+check 11j "...and says first that it is checking the server's drives" '[[ "$OUT" == *"Checking the server'"'"'s drives..."* ]]'
+refuse "4\n" _sync_one_time_backup
+check 11k "one-time server -> server (4): destination refused the same way, before the sudo prompt" '[ $RC = 1 ] && [[ "$OUT" == *"$WHY"* && "$OUT" != *"sudo"* ]] && [ ! -e "$BARE/up" ]'
+mk; export FM_MODE=bare; _pick_server_path() { server_path=$BARE/up; }; run "1\n" step_sync
+check 11l "Sync menu (new job / run now) upload: refused before the schedule question" '[ $RC = 1 ] && [[ "$OUT" == *"$WHY"* && "$OUT" != *"Run now"* ]] && [ ! -e "$BARE/up" ]'
+mk; export FM_MODE=bare; _pick_server_path() { server_path=$T/s; }; _pick_local_path() { local_path=$BARE/dl; }
+run "2\n" step_sync
+check 11m "Sync menu download to an unmounted laptop drive: refused locally" '[ $RC = 1 ] && [[ "$OUT" == *"$BARE/dl is on $BARE, which is not mounted"* ]] && [ ! -e "$BARE/dl" ]'
+export FM_MODE=ok
+
+# presets of the server path picker come from the server's real state
+mk; mkdir -p "$BARE/media" "$T/home/privcloud"
+printf 'FILES_LOCATION=%s\nMEDIA_LOCATION=%s\nMUSIC_LOCATION=%s\n' "$BARE" "$BARE/media" "$BARE/gone" > "$T/home/privcloud/.env"
+mv "$T/bin/findmnt" "$T/bin/findmnt.real"
+cat > "$T/bin/findmnt" <<'X'
+#!/bin/bash
+case "$*" in
+  *"-rn -o SOURCE,TARGET"*) printf '/dev/nvme0n1p2 /\n/dev/sdb1 %s\nsystemd-1 %s/auto\n/dev/sdc1 /boot\n' "$FM_ROOT" "$(dirname "$FM_ROOT")" ;;
+  *TARGET*) echo "$FM_ROOT" ;;
+  *) echo /dev/sdb1 ;;
+esac
+X
+chmod +x "$T/bin/findmnt"
+PK='source "$T/fn.sh"; _DRIVE_ROOTS=$T/mnt; _pick_server_path false; echo "rc=$? SP=$server_path"'
+run "q\n" bash -c "$PK"
+check 11n "picker offers the mounted drive and the .env paths that exist, labelled" '[[ "$OUT" == *"1) $BARE  (USB drive /dev/sdb1, Files)"* && "$OUT" == *"2) $BARE/media  (Media)"* ]]'
+check 11o "...never a path that is not there (MUSIC_LOCATION gone, /mnt/data, ~/data), nor an autofs stub or a non-drive mount" '[[ "$OUT" != *"$BARE/gone"* && "$OUT" != *"/mnt/data"* && "$OUT" != *"/data  "* && "$OUT" != *"/auto"* && "$OUT" != *"/boot"* ]] && [[ "$OUT" != *"3)"* ]]'
+check 11p "...it says it is checking the server's drives before the list" '[[ "$OUT" == *"Checking the server'"'"'s drives..."*"Server paths:"* ]]'
+run "2\n" bash -c "$PK"
+check 11q "choosing preset 2 gives that path" '[[ "$OUT" == *"SP=$BARE/media" ]]'
+run "$BARE/typed\n" bash -c "$PK"
+check 11r "a typed path still works" '[[ "$OUT" == *"SP=$BARE/typed" ]]'
+run "7\n7\n7\n" bash -c "$PK"
+check 11s "a number with no preset is refused, never taken as a path" '[[ "$OUT" == *"No preset 7"* && "$OUT" != *"SP=7"* ]]'
+mv "$T/bin/findmnt.real" "$T/bin/findmnt"
+SSH_DOWN=1 run "q\n" bash -c "$PK"
+check 11t "server unreachable: no presets, a hint to type a path" '[[ "$OUT" == *"Could not read the server'"'"'s drives - type a path."* && "$OUT" != *"1)"* ]]'
 
 check_total

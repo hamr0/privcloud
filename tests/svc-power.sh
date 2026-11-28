@@ -173,6 +173,16 @@ check 7f "bulk with nothing running: ok" '[ $RC = 0 ]'
 reset; mk a true no; export SUDO_FAIL=1; run _svc_power_all stop
 check 7h "D10 bulk: sudo is never called, the stop still works" '[ $RC = 0 ] && [ "$(st a)" = "false no" ] && [ ! -s "$SUDO_LOG" ]'
 
+# 7i per-container result lines, same text local and over ssh; failures keep the body's stderr line
+reset; mk a true unless-stopped; mk b true unless-stopped
+OUT=$(_svc_power_all stop 2>&1); OUT2=$(_svc_power_all_remote stop 2>&1)
+check 7i "stop all: announces the count first, then one success line per container (autostart off), local = remote" '[ "$(sed -n 1p <<<"$OUT")" = "Stopping 2 containers on the server…" ] && grep -qx "✓ a stopped (autostart off)" <<<"$OUT" && grep -qx "✓ b stopped (autostart off)" <<<"$OUT"'
+reset; mk a false no
+OUT=$(_svc_power_all_remote start 2>&1)
+check 7j "start all over ssh prints the same kind of line: 'started'" '[[ "$OUT" == *"✓ a started"* && "$OUT" == "Starting 1 containers"* ]]'
+reset; mk a true no; mk b true no; export FAIL_ACTION=1; OUT=$(_svc_power_all restart 2>&1); RC=$?
+check 7k "a failed container prints its failure and no success line; exit code still 1" '[ $RC = 1 ] && [[ "$OUT" == *"a: docker restart failed"* && "$OUT" != *"✓"* ]]'
+
 # 8 Status marker
 reset; mk adguard false no; mk navidrome false unless-stopped; mk immich_server true always; mk fresh false no
 printf 'created\n' >/dev/null
@@ -211,5 +221,31 @@ reset; export TS_STATE=Stopped; OUT=$(printf "y" | _ts_stop_both 2>&1); unset TS
 check 9d "Stop with Tailscale already down: skipped, no sudo, no 'not connected' warning" '[ ! -s "$SUDO_LOG" ] && [[ "$OUT" == *"already down - skipped"* && "$OUT" != *"not connected"* ]]'
 reset; mk syncthing true unless-stopped; OUT=$(_syncthing_start_both 2>&1); RC=$?
 check 9e "Syncthing on the server but not the laptop: server side starts, laptop skipped, no sudo" '[ $RC = 0 ] && [[ "$OUT" == *"Syncthing (Laptop): not installed - skipped"* && "$OUT" == *"Server: started."* ]] && [ ! -s "$SUDO_LOG" ]'
+
+# 10 federver -> 8 -> 4 Restart both: server first (scheduled, detached), then laptop; proven by a changed
+# tailscaled start stamp AND state Running. One shared host plays both sides: systemctl keeps one stamp file.
+for f in _ts_running _ts_started_at _ts_server_stamp _ts_prove_restart _ts_restart_both; do eval "$(extract_fn "$f" "$SRC")"; done
+_ts_connected_via_ts() { return 1; }; _resolve_server_endpoint() { :; }
+stub_cmd sleep 'exit 0'
+stub_cmd systemctl 'case "$1" in
+  show) cat "$TS_STAMP" ;;
+  restart) echo "laptop-restart" >> "$ORDER"; [ -n "$NO_RESTART" ] || echo $(( $(cat "$TS_STAMP") + 1 )) > "$TS_STAMP"; echo "${AFTER_STATE:-Running}" > "$TS_STATEF" ;;
+esac
+exit 0'
+stub_cmd systemd-run 'echo "systemd-run $*" >> "$ORDER"; [ -n "$NO_RESTART" ] || echo $(( $(cat "$TS_STAMP") + 1 )) > "$TS_STAMP"; echo "${AFTER_STATE:-Running}" > "$TS_STATEF"; exit 0'
+stub_cmd tailscale 'case "$1" in status) printf "{\"BackendState\": \"%s\", \"Self\": {}}\n" "$(cat "$TS_STATEF")" ;; ip) echo 100.64.0.1 ;; esac; exit 0'
+export TS_STAMP=$T/stamp TS_STATEF=$T/tsstate ORDER=$T/order.log
+rr() { reset; echo 1000 > "$TS_STAMP"; echo Running > "$TS_STATEF"; : > "$ORDER"; unset NO_RESTART AFTER_STATE; }
+CHECK_DIAG="rc=\$RC out='\$OUT' order='\$(cat \$ORDER) ssh=\$(cat \$SSH_LOG)'"
+rr; OUT=$(_ts_restart_both 2>&1); RC=$?
+echo "---- sample: federver -> 8 -> 4 ----"; echo "$OUT"; echo "-------------------------------------"
+check 10a "restart both: server scheduled first, then the laptop; both proven" '[ $RC = 0 ] && [ "$(sed -n 1p "$ORDER" | cut -c1-11)" = systemd-run ] && [ "$(sed -n 2p "$ORDER")" = laptop-restart ] && [[ "$OUT" == *"OK Server: restarted, connected"* && "$OUT" == *"OK Laptop: restarted, connected"* ]]'
+check 10b "server restart is detached: systemd-run --on-active runs inside one ssh -t (the command returns before the link drops), announced first" 'grep -q -- "ssh -t tester@192.0.2.1 sudo systemd-run --quiet --on-active=2 systemctl restart tailscaled" "$SSH_LOG" && [[ "$OUT" == *"INFO Restarting Tailscale on the server…"* ]] && ! grep -q "ssh.*sudo systemctl restart" "$SSH_LOG"'
+rr; export NO_RESTART=1; OUT=$(_ts_restart_both 2>&1); RC=$?
+check 10c "unchanged start stamp: 'NOT restarted' failure for each side, rc 1, never a success line" '[ $RC = 1 ] && [[ "$OUT" == *"FAIL Server: Tailscale was NOT restarted"* && "$OUT" == *"FAIL Laptop: Tailscale was NOT restarted"* && "$OUT" != *"restarted, connected"* ]]'
+rr; export AFTER_STATE=Stopped; OUT=$(_ts_restart_both 2>&1); RC=$?
+check 10d "restarted but state not Running: says it did not reconnect (not 'not restarted')" '[ $RC = 1 ] && [[ "$OUT" == *"FAIL Server: tailscaled restarted but did not reconnect (state: Stopped)"* && "$OUT" != *"NOT restarted"* ]]'
+rr; export SSH_DOWN=1; OUT=$(_ts_restart_both 2>&1)
+check 10e "server unreachable: skipped with the existing warning, the laptop is still restarted and proven" '[[ "$OUT" == *"Tailscale (Server): cannot reach it - skipped"* && "$OUT" == *"OK Laptop: restarted, connected"* ]] && ! grep -q systemd-run "$ORDER"'
 
 check_total

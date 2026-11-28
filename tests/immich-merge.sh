@@ -79,9 +79,9 @@ check 5e "the installer no longer writes a privcloud wrapper" '! grep -q "tee /u
 
 # 6 a stale /usr/local/bin/privcloud from an older install is removed with one line
 STALE=$T/stale-privcloud; _STALE_PRIVCLOUD_CMD=$STALE
-sudo() { "$@"; }
+sudo() { echo "SUDO-RUNS"; "$@"; }
 echo old > "$STALE"; OUT=$(_remove_stale_privcloud_cmd 2>&1)
-check 6a "stale wrapper removed, exactly one line said" '[ ! -e "$STALE" ] && [ "$(wc -l <<<"$OUT")" = 1 ] && [[ "$OUT" == *"federver -> 9"* ]]'
+check 6a "stale wrapper removed; the one-time/needs-sudo line comes BEFORE sudo runs, then one short success line" '[ ! -e "$STALE" ] && [ "$(wc -l <<<"$OUT")" = 3 ] && [[ "$(sed -n 1p <<<"$OUT")" == *"one-time, needs sudo"* && "$(sed -n 2p <<<"$OUT")" == SUDO-RUNS && "$OUT" == *"federver -> 9"* ]]'
 ln -s "$T/does-not-exist" "$STALE"; OUT=$(_remove_stale_privcloud_cmd 2>&1)
 check 6b "a dangling symlink (the old standalone install) is removed too" '[ ! -L "$STALE" ] && [[ "$OUT" == *"Removed"* ]]'
 OUT=$(_remove_stale_privcloud_cmd 2>&1)
@@ -90,4 +90,37 @@ unset -f sudo
 check 6d "the installer (step 1), Immich Install and Immich Update all clean up the stale command" 'extract_fn step_ssh "$S" | grep -q "^    _remove_stale_privcloud_cmd" && extract_fn step_immich_install "$S" | grep -q "^    _remove_stale_privcloud_cmd" && extract_fn step_immich_update "$S" | grep -q "^    _remove_stale_privcloud_cmd"'
 
 CHECK_DIAG=
+# 7 Manage Immich Status (federver -> 9 -> 1) is about Immich's four compose services only
+for f in step_immich_status _immich_compose; do extract_fn "$f" "$S"; done > "$T/st.sh"
+source "$T/st.sh"
+eval "$(grep -m1 '^_IMMICH_SERVICES=' "$S")"
+_immich_docker_group() { :; }; _env_get() { :; }; _immich_up() { return 1; }
+_IMMICH_ENV=$T/x.env; _IMMICH_COMPOSE=$T/x.yml
+mkdir -p "$T/bin"; DLOG=$T/docker.log
+stub_cmd docker 'echo "docker $*" >> "$DLOG"
+case "$*" in
+  *"compose version"*|*"--version"*) echo "Docker version 1" ;;
+  *" ps --format"*) [ -n "$NO_CTR" ] || printf "NAME STATUS\nimmich_server Up 1 hour (healthy)\n" ;;
+  *" ps -aq "*) echo abc123 ;;
+  *" logs "*) echo "fatal: boom" ;;
+esac
+exit 0'
+export PATH="$T/bin:$PATH" DLOG
+: > "$DLOG"; OUT=$(step_immich_status 2>&1)
+check 7a "status lists only the four Immich services and reads only their logs (no other container named)" '[ "$(grep -c " ps --format" "$DLOG")" = 1 ] && grep " ps --format" "$DLOG" | grep -q "immich-server immich-machine-learning redis database" && [ "$(grep -c " logs " "$DLOG")" = 4 ] && ! grep -qE "docker (ps|logs) |immich_postgres" "$DLOG" && [[ "$OUT" == *"-- redis --"* ]]'
+: > "$DLOG"; OUT=$(NO_CTR=1 step_immich_status 2>&1)
+check 7b "no Immich containers: the message says Immich, not the whole stack" '[[ "$OUT" == *"No Immich containers running."* ]]'
+
+
+# 8 Install (federver -> 9 -> 3): summary, then ONE [Y/n] before anything is changed or pulled
+for f in step_immich_install _confirm_yn; do extract_fn "$f" "$S"; done > "$T/inst.sh"
+source "$T/inst.sh"
+_remove_stale_privcloud_cmd() { :; }; _immich_ensure_docker() { :; }; _immich_needs_selinux() { return 1; }
+_immich_fix_permissions() { echo FIXPERM >> "$T/inst.log"; }
+_immich_compose() { echo "compose $*" >> "$T/inst.log"; }
+printf 'UPLOAD_LOCATION=/x\n' > "$T/x.env"
+: > "$T/inst.log"; OUT=$(printf 'n\n' | step_immich_install 2>&1); RC=$?
+check 8a "Install: summary lists the config path and the four services; n = nothing pulled, no permission fix, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"Install summary"* && "$OUT" == *"Config:  $T/x.env"* && "$OUT" == *"immich-server immich-machine-learning redis database"* && "$OUT" == *"Cancelled - nothing pulled"* ]] && [ ! -s "$T/inst.log" ]'
+: > "$T/inst.log"; OUT=$(printf '\n' | step_immich_install 2>&1); RC=$?
+check 8b "Install: Enter = pull the four services, announced first ('Pulling 4 images')" '[ $RC = 0 ] && grep -qx "compose pull immich-server immich-machine-learning redis database" "$T/inst.log" && [[ "$OUT" == *"Pulling 4 images"* ]]'
 check_total

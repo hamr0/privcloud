@@ -52,4 +52,8 @@ CHECK_DIAG='out=$(cat "$T/step")'
 check 7a "run_step: cleared, banner (name, version, laptop, tagline), step name, then the body, in that order" 'awk "/CLEARED/{a=1} /federver v9.9.9.*laptop/{b=NR} /One box. Every service/{c=NR} /=== \[5\] Install Docker ===/{d=NR} /step body/{e=NR} END{exit !(a&&b&&b<c&&c<d&&d<e)}" "$T/step"'
 CHECK_DIAG=
 check 7b "run_step does not clear by itself (the banner function is the one place that clears)" '! extract_fn run_step "$S" | grep -qE "^ +clear$"'
+
+# 8 the server hop (_on_server) runs ssh through the wrapper with LogLevel=ERROR: no "Connection to <ip> closed."
+# after every step, while real connection errors (level ERROR) still print. (-q would hide those too.)
+check 8a "_on_server hop: ssh -t via the wrapper (never 'command ssh') with LogLevel=ERROR" 'extract_fn _on_server "$S" | grep -q "ssh -o LogLevel=ERROR -t \"\$SERVER_USER@\$SERVER_IP\"" && ! extract_fn _on_server "$S" | grep -q "command ssh"'
 check_total

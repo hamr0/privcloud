@@ -251,11 +251,19 @@ EOF
 _svc_power_all_body() { # action
     local list="d ps -a --format '{{.Names}}'"
     [[ "$1" == restart ]] && list="d ps --format '{{.Names}}'"
+    local verb past
+    case "$1" in
+        start)   verb=Starting;   past=started ;;
+        stop)    verb=Stopping;   past="stopped (autostart off)" ;;
+        restart) verb=Restarting; past=restarted ;;
+    esac
     printf '%s\n' \
         "$(_svc_docker_fn)" \
-        "rc=0; for n in \$($list); do (" \
+        "set -- \$($list)" \
+        "echo \"$verb \$# containers on the server…\"" \
+        "rc=0; for n in \"\$@\"; do if (" \
         "$(_svc_power_body "$1" '"$n"')" \
-        ") || rc=1; done; exit \$rc"
+        "); then echo \"✓ \$n $past\"; else rc=1; fi; done; exit \$rc"
 }
 _svc_power()            { # action container   (on the server itself)
     if [[ "${DRY_RUN:-0}" == 1 ]]; then echo "    [dry-run] container $1 $2" >&2; return 0; fi
@@ -458,7 +466,7 @@ _on_server() {
         echo ""
         local dry=""
         [[ "$DRY_RUN" == "1" ]] && dry="--dry-run "
-        ssh -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && GIT_TERMINAL_PROMPT=0 git pull --ff-only -q 2>/dev/null; ./setup.sh ${dry}--run $step"
+        ssh -o LogLevel=ERROR -t "$SERVER_USER@$SERVER_IP" "cd ~/privcloud && GIT_TERMINAL_PROMPT=0 git pull --ff-only -q 2>/dev/null; ./setup.sh ${dry}--run $step"
     fi
 }
 
@@ -1098,14 +1106,63 @@ _ts_start_both() {
     _ts_skip start Server "$rec" || { ssh -t "$SERVER_USER@$SERVER_IP" "sudo tailscale up" || warn "Server: failed."; }
 }
 
+# tailscaled's last (re)start, monotonic microseconds: changes on every restart, so
+# "before != after" proves the restart happened. Shipped to the server with declare -f.
+_ts_started_at() { systemctl show -p ActiveEnterTimestampMonotonic --value tailscaled 2>/dev/null; }
+_ts_server_stamp() { _server_probe "$(declare -f _ts_started_at); _ts_started_at"; }
+
+# Poll up to 30s until tailscaled's start stamp differs from $2 AND the state reads
+# Running. Fails saying which part did not happen: not restarted / not connected.
+# Args: side(Server|Laptop) stamp-before stamp-fn state-fn.
+_ts_prove_restart() {
+    local side=$1 before=$2 now rec="" i restarted=0
+    info "Waiting for Tailscale on the ${side,,} (up to 30s)..."
+    for ((i = 0; i < 30; i++)); do
+        now=$("$3")
+        if [[ -n "$now" && "$now" != unreachable && "$now" != "$before" ]]; then
+            restarted=1
+            rec=$("$4")
+            _ts_running "$rec" && { ok "$side: restarted, connected"; return 0; }
+        elif [[ "$now" == unreachable && "$side" == Server ]]; then
+            # the link rode on the tailnet that is restarting: pick the address again
+            _ts_connected_via_ts && _resolve_server_endpoint >/dev/null 2>&1
+        fi
+        sleep 1
+    done
+    if (( restarted )); then
+        fail "$side: tailscaled restarted but did not reconnect (state: ${rec%% *}) - check: tailscale status"
+    else
+        fail "$side: Tailscale was NOT restarted (tailscaled start time unchanged)"
+    fi
+    return 1
+}
+
+# Server first, then the laptop: restarting the laptop's tailscaled drops the very
+# path to a server reached over Tailscale. The server restart is scheduled (systemd-run,
+# 2s) so the ssh command returns before its own link drops; the proof polls afterwards.
 _ts_restart_both() {
-    info "Restarting Tailscale on both laptop and server..."
-    local rec
-    rec=$(_ts_state)
-    _ts_skip restart Laptop "$rec" || { sudo systemctl restart tailscaled 2>/dev/null && ok "Laptop: restarted." || warn "Laptop: failed."; }
+    local rec before rc=0
     rec=$(_ts_server_state)
-    _ts_skip restart Server "$rec" || { ssh -t "$SERVER_USER@$SERVER_IP" "sudo systemctl restart tailscaled 2>/dev/null" \
-        && ok "Server: restarted." || warn "Server: failed."; }
+    _ts_skip restart Server "$rec" || {
+        before=$(_ts_server_stamp)
+        info "Restarting Tailscale on the server…"
+        if ssh -t "$SERVER_USER@$SERVER_IP" "sudo systemd-run --quiet --on-active=2 systemctl restart tailscaled"; then
+            _ts_prove_restart Server "$before" _ts_server_stamp _ts_server_state || rc=1
+        else
+            fail "Server: could not schedule the restart"; rc=1
+        fi
+    }
+    rec=$(_ts_state)
+    _ts_skip restart Laptop "$rec" || {
+        before=$(_ts_started_at)
+        info "Restarting Tailscale on the laptop…"
+        if sudo systemctl restart tailscaled; then
+            _ts_prove_restart Laptop "$before" _ts_started_at _ts_state || rc=1
+        else
+            fail "Laptop: could not restart tailscaled"; rc=1
+        fi
+    }
+    return $rc
 }
 
 # The server's _ts_state record, or "Unreachable - - -" when the ssh itself fails.
@@ -2149,12 +2206,7 @@ _unified_service_picker() {
     local action="$1"
 
     # ── 1. Collect laptop service states ──
-    local ts_laptop="disconnected" st_laptop="stopped" ts_rec
-    ts_rec=$(_ts_state)
-    case "$ts_rec" in
-        Running*)    ts_laptop="connected ($(_ts_ip "$ts_rec"))" ;;
-        NeedsLogin*) ts_laptop="logged out" ;;
-    esac
+    local st_laptop="stopped"
     if systemctl --user is-active syncthing &>/dev/null; then
         st_laptop="running"
     elif ! command -v syncthing &>/dev/null; then
@@ -2168,15 +2220,6 @@ _unified_service_picker() {
         fail "Could not reach server."
         return 1
     }
-
-    # ── 3. Extract Tailscale server state ──
-    local ts_server="disconnected"
-    local ts_server_raw
-    ts_server_raw=$(ssh "$SERVER_USER@$SERVER_IP" "$(declare -f _ts_ipv4 _ts_state); _ts_state" 2>/dev/null) || true
-    case "$ts_server_raw" in
-        Running*)    ts_server="connected" ;;
-        NeedsLogin*) ts_server="logged out" ;;
-    esac
 
     # ── 4. Extract Syncthing server state from docker data ──
     local st_server="not created"
@@ -2204,13 +2247,9 @@ _unified_service_picker() {
 
     # Both-sides: fully running only if ALL sides are up. If any side is
     # down, the service shows in the Start picker (needs starting somewhere).
-    local ts_running=0 st_running=0
-    [[ "$ts_laptop" == connected* && "$ts_server" == "connected" ]] && ts_running=1
+    # Tailscale is not here: it carries remote access, so it lives only in federver -> 8.
+    local st_running=0
     [[ "$st_laptop" == "running" && "$st_server" == Up* ]] && st_running=1
-
-    # Tailscale
-    entries[$idx]="tailscale|Tailscale|B|laptop: $ts_laptop / server: $ts_server|$ts_running"
-    idx=$((idx + 1))
 
     # Syncthing (both-sides)
     entries[$idx]="syncthing|Syncthing|B|laptop: $st_laptop / server: $st_server|$st_running"
@@ -2291,25 +2330,46 @@ _unified_service_picker() {
     done
 
     echo -e "  ${BOLD}0)${NC} Back"
+    echo -e "  ${DIM}Tailscale: federver -> 8${NC}"
     echo ""
     read -p "  Choose: " pick
 
     # ── 9. Execute choice ──
     if [[ "$pick" == "a" || "$pick" == "A" ]]; then
-        # All
+        # All = what the picker already collected: the laptop Syncthing plus every
+        # server container (the server's Syncthing is one of them). Skips are
+        # listed first, then ONE question (stop only; start/restart never ask).
+        local n_ctr=0 ctr_names="" cn cs lap_act=0 past
+        case "$action" in start) past=started ;; stop) past=stopped ;; *) past=restarted ;; esac
+        while IFS='|' read -r cn cs; do
+            [[ -z "$cn" ]] && continue
+            [[ "$action" == restart && "$cs" != Up* ]] && continue
+            n_ctr=$((n_ctr + 1)); ctr_names+="${ctr_names:+, }$cn"
+        done <<< "$server_data"
+        echo ""
+        case "$st_laptop:$action" in
+            "not installed":*) info "Syncthing (laptop): not installed - skipped" ;;
+            running:start)     info "Syncthing (laptop): already running - skipped" ;;
+            stopped:stop)      info "Syncthing (laptop): already stopped - skipped" ;;
+            *)                 lap_act=1 ;;
+        esac
+        [[ -z "$st_server_line" ]] && info "Syncthing (server): not installed - skipped"
+        info "Tailscale: not touched (manage it in federver -> 8)"
+        info "${action^} all: $( ((lap_act)) && echo "Syncthing on this laptop + ")$n_ctr server containers${ctr_names:+ ($ctr_names)}"
         if [[ "$action" == "stop" ]]; then
-            echo ""
-            warn "This will stop ALL services (laptop + server)."
-            read -p "  Continue? [y/N] " -n 1 -r
+            printf '  Continue? [y/N] '; read -n 1 -r
             echo ""
             [[ ! "$REPLY" =~ ^[Yy]$ ]] && { info "Cancelled."; return; }
         fi
         [[ "$action" == start ]] && { _picker_data_guard all || return 1; }
-        # Both-sides services
-        "_ts_${action}_both"
-        "_syncthing_${action}_both"
-        # Server containers via SSH
         local all_rc=0
+        if ((lap_act)); then
+            if systemctl --user "$action" syncthing 2>/dev/null; then
+                ok "syncthing (laptop) $past"
+            else
+                fail "syncthing (laptop): $action failed"; all_rc=1
+            fi
+        fi
         if [[ "$action" == start ]]; then
             # compose up -d creates what is missing but never re-applies a
             # restart policy; the per-container rule after it does.
@@ -2355,7 +2415,6 @@ _unified_service_picker() {
     # Both-sides services
     if [[ "$section" == "B" ]]; then
         case "$cname" in
-            tailscale)  "_ts_${action}_both" ;;
             syncthing)  "_syncthing_${action}_both" ;;
         esac
         return 0
@@ -3897,8 +3956,9 @@ _IMMICH_SERVICES=(immich-server immich-machine-learning redis database)
 _STALE_PRIVCLOUD_CMD=/usr/local/bin/privcloud
 _remove_stale_privcloud_cmd() {
     [[ -e "$_STALE_PRIVCLOUD_CMD" || -L "$_STALE_PRIVCLOUD_CMD" ]] || return 0
+    info "Removing the old 'privcloud' command (one-time, needs sudo)..."
     if sudo rm -f "$_STALE_PRIVCLOUD_CMD"; then
-        info "Removed the old 'privcloud' command - Immich is now: federver -> 9 (Manage Immich)."
+        ok "Removed. Immich is now: federver -> 9"
     else
         warn "Could not remove the old 'privcloud' command ($_STALE_PRIVCLOUD_CMD) - it no longer works; remove it with sudo."
     fi
@@ -3994,6 +4054,33 @@ _immich_need_env() {
     return 1
 }
 
+# The one prompt rule of Manage Immich (federver -> 9): a path prompt names the current value
+# ("Enter keeps it") and accepts q = back; a write or a long step shows ONE summary, then ONE
+# confirm - [Y/n] when safe, [y/N] ("N" as 2nd arg) when destructive.
+# _ask_path OUTVAR LABEL [CURRENT]: sets OUTVAR (~ expanded, pasted quotes stripped); rc 2 on q.
+_ask_path() {
+    local -n _ap_out=$1
+    local _ap_ans
+    if [[ -n "${3:-}" ]]; then
+        read -rp "  $2 (Enter keeps it: $3, q = back): " _ap_ans
+        _ap_ans="${_ap_ans:-$3}"
+    else
+        read -rp "  $2 (q = back): " _ap_ans
+    fi
+    [[ "$_ap_ans" == q ]] && return 2
+    _ap_ans="${_ap_ans/#\~/$HOME}"
+    _ap_ans="${_ap_ans//\'/}"
+    _ap_out="${_ap_ans//\"/}"
+}
+_confirm_yn() { # question [N]
+    local a
+    if [[ "${2:-Y}" == N ]]; then
+        read -rp "  $1 [y/N]: " a; [[ "$a" =~ ^[Yy] ]]
+    else
+        read -rp "  $1 [Y/n]: " a; [[ ! "$a" =~ ^[Nn] ]]
+    fi
+}
+
 step_immich_install() {
     _remove_stale_privcloud_cmd
     info "Checks Docker, sets up the config and pulls the Immich images."
@@ -4021,11 +4108,20 @@ step_immich_install() {
         ok "Config: $(_env_get UPLOAD_LOCATION "$_IMMICH_ENV")"
     fi
 
+    echo ""
+    echo -e "  ${BOLD}Install summary${NC}"
+    echo "    Config:  $_IMMICH_ENV"
+    echo "    Images:  ${_IMMICH_SERVICES[*]}  (several GB the first time)"
+    if ! _confirm_yn "Pull the images now?"; then
+        warn "Cancelled - nothing pulled."
+        return 0
+    fi
+
     _immich_fix_permissions
     _immich_needs_selinux && ok "SELinux: Enforcing (the compose file's :Z labels apply)"
 
     echo ""
-    echo -e "  ${BOLD}Pulling images (first time takes a few minutes)...${NC}"
+    echo -e "  ${BOLD}Pulling ${#_IMMICH_SERVICES[@]} images (first time takes a few minutes)...${NC}"
     _immich_compose pull "${_IMMICH_SERVICES[@]}" || { fail "Pulling the images failed."; return 1; }
     echo ""
     ok "Install complete. Next: federver -> 7 -> 6 (Deploy) starts Immich"
@@ -4106,10 +4202,10 @@ step_immich_status() {
             else
                 echo -e "  ${YELLOW}  $line${NC}"
             fi
-        done < <(_immich_compose ps --format "table {{.Name}}\t{{.Status}}" 2>/dev/null)
+        done < <(_immich_compose ps --format "table {{.Name}}\t{{.Status}}" "${_IMMICH_SERVICES[@]}" 2>/dev/null)
 
         if ! $has_containers; then
-            warn "No containers running."
+            warn "No Immich containers running."
             echo ""
             info "Run: federver -> 7 -> 2 (Start Immich)"
             return 0
@@ -4131,9 +4227,9 @@ step_immich_status() {
     echo ""
     echo -e "  ${BOLD}Recent errors${NC}"
     local errors_found=false container err_lines eline
-    for container in immich_server immich_postgres immich_machine_learning immich_redis; do
-        if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
-            err_lines="$(docker logs "$container" --tail 50 2>&1 | grep -iE 'error|fatal|panic|failed|exception|denied' | tail -3)"
+    for container in "${_IMMICH_SERVICES[@]}"; do
+        if $compose_ok && [[ -n "$(_immich_compose ps -aq "$container" 2>/dev/null)" ]]; then
+            err_lines="$(_immich_compose logs --no-color --no-log-prefix --tail 50 "$container" 2>&1 | grep -iE 'error|fatal|panic|failed|exception|denied' | tail -3)"
             if [[ -n "$err_lines" ]]; then
                 errors_found=true
                 echo -e "  ${RED}-- $container --${NC}"
@@ -4148,22 +4244,39 @@ step_immich_status() {
 }
 
 step_immich_config() {
-    local current_loc default_loc upload_loc db_loc db_pass
+    local current_loc current_db default_loc upload_loc db_loc db_pass kept=0
     current_loc="$(_env_get UPLOAD_LOCATION "$_IMMICH_ENV")"
-    [[ -n "$current_loc" ]] && echo "  Current photo storage: $current_loc"
+    current_db="$(_env_get DB_DATA_LOCATION "$_IMMICH_ENV")"
+    [[ -n "$current_loc" ]] && echo "  Photos:   $current_loc"
+    [[ -n "$current_db" ]] && echo "  Database: $current_db"
 
     default_loc="${current_loc:-$HOME/privcloud/photos}"
-    read -rp "  Photo storage path [$default_loc]: " upload_loc
+    if [[ -n "$current_loc" ]]; then
+        read -rp "  Photo storage path (Enter keeps it): " upload_loc
+    else
+        read -rp "  Photo storage path (Enter = $default_loc): " upload_loc
+    fi
     upload_loc="${upload_loc:-$default_loc}"
     upload_loc="${upload_loc/#\~/$HOME}"
+    [[ -n "$current_loc" && "$upload_loc" == "$current_loc" ]] && kept=1
 
-    if ! mkdir -p "$upload_loc" 2>/dev/null; then
-        fail "Cannot create directory: $upload_loc"
-        return 1
+    if (( kept )); then
+        # Same path: touch neither directory nor DB_DATA_LOCATION.
+        db_loc="$current_db"
+    else
+        if ! mkdir -p "$upload_loc" 2>/dev/null; then
+            fail "Cannot create directory: $upload_loc"
+            return 1
+        fi
+        if [[ -n "$current_db" ]]; then
+            # Moving a live Postgres directory is out of scope: an existing one stays.
+            db_loc="$current_db"
+            info "Database path unchanged: $db_loc"
+        else
+            db_loc="$(dirname "$upload_loc")/postgres"
+            mkdir -p "$db_loc"
+        fi
     fi
-
-    db_loc="$(dirname "$upload_loc")/postgres"
-    mkdir -p "$db_loc"
 
     db_pass="$(_env_get DB_PASSWORD "$_IMMICH_ENV")"
     if [[ -z "$db_pass" || "$db_pass" == changeme_use_a_real_password ]]; then
@@ -4174,8 +4287,8 @@ step_immich_config() {
         # Existing .env: touch only what this step asks for; MEDIA/MUSIC/FILES
         # and every other key stay as they are. The password changes only when it
         # is still the .env.example placeholder (the documented flow).
-        _set_env UPLOAD_LOCATION "$upload_loc" "$_IMMICH_ENV"
-        _set_env DB_DATA_LOCATION "$db_loc" "$_IMMICH_ENV"
+        (( kept )) || { _set_env UPLOAD_LOCATION "$upload_loc" "$_IMMICH_ENV"
+                        _set_env DB_DATA_LOCATION "$db_loc" "$_IMMICH_ENV"; }
         [[ "$db_pass" == "$(_env_get DB_PASSWORD "$_IMMICH_ENV")" ]] || _set_env DB_PASSWORD "$db_pass" "$_IMMICH_ENV"
         chmod 600 "$_IMMICH_ENV" 2>/dev/null || true
     else
@@ -4193,6 +4306,10 @@ EOF
         )
     fi
 
+    if (( kept )); then
+        ok "Kept - nothing changed."
+        return 0
+    fi
     ok "Config saved."
     echo "    Photos:   $upload_loc"
     echo "    Database: $db_loc"
@@ -4245,6 +4362,10 @@ step_immich_update() {
     ok "Done."
 }
 
+# True when Immich accepts the API key. It goes in on stdin (-H @-), never on the arg list
+# (visible to other local users via `ps`).
+_immich_key_ok() { curl -sf -H @- http://localhost:2283/api/users/me <<<"x-api-key: $1" &>/dev/null; }
+
 step_immich_upload() {
     info "Bulk-uploads a photo folder on the server into Immich (Immich CLI)."
     echo ""
@@ -4270,10 +4391,26 @@ step_immich_upload() {
     ok "Immich CLI: $(docker run --rm "$cli_image" --version 2>/dev/null)"
     echo ""
 
-    # Get API key (3 attempts)
-    local api_key attempts=0
+    # API key: a saved one is checked first (/api/users/me); valid = Enter keeps it. The file is
+    # 600 under a 700 dir, the key is read silently and only ever on stdin / by env name.
+    local api_key="" saved="" attempts=0 keyf="${XDG_CONFIG_HOME:-$HOME/.config}/federver/immich-api-key"
+    [[ -r "$keyf" ]] && saved="$(<"$keyf")"
+    if [[ -n "$saved" ]]; then
+        if _immich_key_ok "$saved"; then
+            ok "API key: saved (Enter keeps it, or paste a new one)"
+        else
+            warn "The saved API key was rejected - paste a new one."
+            saved=""
+        fi
+    fi
     while (( attempts < 3 )); do
-        read -rp "  API key (from http://localhost:2283 -> Account Settings -> API Keys): " api_key
+        read -rsp "  API key${saved:+ (Enter keeps the saved one)} (from http://localhost:2283 -> Account Settings -> API Keys, q = back): " api_key
+        echo ""
+        [[ "$api_key" == q ]] && return 2
+        if [[ -z "$api_key" && -n "$saved" ]]; then
+            api_key="$saved"
+            break
+        fi
 
         if [[ -z "$api_key" ]]; then
             fail "No API key provided."
@@ -4281,9 +4418,9 @@ step_immich_upload() {
             continue
         fi
 
-        # Pass the key via stdin (-H @-) so it never appears in the process arg list
-        # (visible to other local users via `ps`).
-        if curl -sf -H @- http://localhost:2283/api/users/me <<<"x-api-key: $api_key" &>/dev/null; then
+        if _immich_key_ok "$api_key"; then
+            ( umask 077; mkdir -p "$(dirname "$keyf")"; printf '%s\n' "$api_key" > "$keyf" )
+            chmod 600 "$keyf" 2>/dev/null || true
             break
         fi
 
@@ -4300,11 +4437,7 @@ step_immich_upload() {
     echo ""
 
     local photo_path
-    read -rp "  Path to photos folder: " photo_path
-    photo_path="${photo_path/#\~/$HOME}"
-    # Strip quotes the user may have pasted
-    photo_path="${photo_path//\'/}"
-    photo_path="${photo_path//\"/}"
+    _ask_path photo_path "Path to photos folder" || return 2
 
     if [[ -z "$photo_path" || ! -d "$photo_path" ]]; then
         fail "Not a valid directory: $photo_path"
@@ -4319,7 +4452,7 @@ step_immich_upload() {
     echo "  How should the folders under this path be imported?"
     echo -e "    ${BOLD}1)${NC} Albums  ${DIM}<- one album per subfolder (keeps your folder names)${NC}"
     echo -e "    ${BOLD}2)${NC} Flat    ${DIM}<- everything into the timeline, no albums${NC}"
-    read -rp "  Choose [1/2]: " album_choice
+    read -rp "  Choose [1/2] (Enter = Flat): " album_choice
     if [[ "$album_choice" == 1 ]]; then
         album_flag="--album"
         ok "Albums: one per folder."
@@ -4327,14 +4460,13 @@ step_immich_upload() {
         ok "Flat import (no albums)."
     fi
 
-    local file_count confirm
+    local file_count
     file_count="$(find "$photo_path" -type f \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.heic' -o -iname '*.heif' -o -iname '*.gif' -o -iname '*.mp4' -o -iname '*.mov' -o -iname '*.avi' \) | wc -l)"
     echo ""
     echo -e "  ${BOLD}Ready to upload $file_count media files from:${NC}"
     echo "    $photo_path"
     echo ""
-    read -rp "  Continue? [Y/n]: " confirm
-    if [[ "$confirm" =~ ^[Nn] ]]; then
+    if ! _confirm_yn "Continue?"; then
         warn "Cancelled."
         return 0
     fi
@@ -4365,8 +4497,7 @@ step_immich_fix_gp() {
     echo ""
 
     local input_path
-    read -rp "  Path to folder with takeout zips (or a single .zip): " input_path
-    input_path="${input_path/#\~/$HOME}"
+    _ask_path input_path "Path to folder with takeout zips (or a single .zip)" || return 2
 
     if [[ -z "$input_path" ]]; then
         fail "No path provided."
@@ -4377,6 +4508,30 @@ step_immich_fix_gp() {
         fail "Not found: $input_path"
         return 1
     fi
+
+    # Same zip rule as scripts/google-takeout-fix.sh: takeout-*.zip, else any zip, in the folder.
+    local zdir zips=() z total=0 avail
+    [[ -f "$input_path" ]] && zdir="$(dirname "$(realpath "$input_path")")" || zdir="$(realpath "$input_path")"
+    shopt -s nullglob
+    zips=("$zdir"/takeout-*.zip)
+    (( ${#zips[@]} )) || zips=("$zdir"/*.zip)
+    shopt -u nullglob
+    if (( ${#zips[@]} == 0 )); then
+        fail "No zip files found in $zdir"
+        return 1
+    fi
+    for z in "${zips[@]}"; do total=$(( total + $(stat -c %s "$z" 2>/dev/null || echo 0) )); done
+    avail="$(df -B1 --output=avail "$zdir" 2>/dev/null | tail -n 1 | tr -d ' ')"
+    echo ""
+    echo -e "  ${BOLD}Takeout fix summary${NC}"
+    echo "    Zips:    ${#zips[@]} ($(numfmt --to=iec "$total"))"
+    echo "    Output:  $zdir/extracted"
+    echo "    Free:    $(numfmt --to=iec "${avail:-0}") on that disk"
+    if [[ -n "$avail" ]] && (( avail < total )); then
+        fail "Not enough free space: the zips unpack to at least their own size ($(numfmt --to=iec "$total")). Free up space or move them - nothing was started."
+        return 1
+    fi
+    _confirm_yn "Extract and fix now?" || { warn "Cancelled."; return 0; }
 
     bash "$(dirname "$_FV_SELF")/scripts/google-takeout-fix.sh" "$input_path"
 }
@@ -4469,13 +4624,6 @@ step_immich_backup_once() {
         pg_running=true
     fi
 
-    local confirm
-    read -rp "  Start backup? [Y/n]: " confirm
-    if [[ "$confirm" =~ ^[Nn] ]]; then
-        warn "Cancelled."
-        return 0
-    fi
-
     # Photo copy mode (only relevant when copying photos): append, or a mirror that
     # first passes the source guard + preview and then the deletion question.
     local sync_mode=append mirror_flag=()
@@ -4488,6 +4636,17 @@ step_immich_backup_once() {
             _mirror_banner
             _mirror_confirm || return 2
         fi
+    fi
+
+    # One summary, one question. A mirror already passed its own typed deletion question, which
+    # is the confirmation for the whole run, so it is not asked a second time.
+    if [[ "$sync_mode" != mirror ]]; then
+        echo ""
+        echo -e "  ${BOLD}Backup summary${NC}"
+        echo "    Scope:        $scope_name"
+        echo "    Destination:  $backup_dir/"
+        echo "    Mode:         append only"
+        _confirm_yn "Start backup?" || { warn "Cancelled."; return 0; }
     fi
 
     # The ONE script: the installed one when it is current, else the same generator
@@ -5170,18 +5329,23 @@ step_immich_backup() {
     [ -n "$default_dir" ] || default_dir=$(_pick_backup_default "$src_dir")
     default_dir=${default_dir:-$(realpath -m "${DB_DATA_LOCATION:-$(_data_defaults DB_DATA_LOCATION)}/../backups")}
 
-    read -rp "  Backup destination [${default_dir}, q=back]: " BACKUP_DIR   # -r: a backslash in a path is kept
+    # The current schedule, read the same way Status does (systemctl cat, not show -p OnCalendar).
+    local cur_oncal cur_dest
+    cur_oncal=$(systemctl cat immich-backup.timer 2>/dev/null | sed -n 's/^OnCalendar=//p' | head -1)
+    cur_dest=$(_configured_backup_dir)
+    [[ -n "$cur_oncal" ]] && echo "  Current schedule: $cur_oncal${cur_dest:+ -> $cur_dest}"
+    local keep_hint="Enter = "; [[ -n "$cur_dest" ]] && keep_hint="Enter keeps it: "
+    read -rp "  Backup destination (${keep_hint}${default_dir}, q = back): " BACKUP_DIR   # -r: a backslash in a path is kept
     [[ "$BACKUP_DIR" == "q" ]] && return 2
     BACKUP_DIR="${BACKUP_DIR:-$default_dir}"
     BACKUP_DIR=$(realpath -m "$BACKUP_DIR")
     [[ "$BACKUP_DIR" != *$'\n'* ]] || { fail "A destination cannot contain a line break."; return 1; }
-    sudo mkdir -p "$BACKUP_DIR"
 
     # A backup on the same disk as the photos dies with that disk. Warn loudly.
     if [ -n "$src_dir" ] && [ -e "$src_dir" ]; then
         local src_fs dst_fs
         src_fs=$(df -P "$src_dir" 2>/dev/null | awk 'NR==2{print $1}')
-        dst_fs=$(df -P "$BACKUP_DIR" 2>/dev/null | awk 'NR==2{print $1}')
+        dst_fs=$(df -P "$(_existing_ancestor "$BACKUP_DIR")" 2>/dev/null | awk 'NR==2{print $1}')
         if [ -n "$src_fs" ] && [ "$src_fs" == "$dst_fs" ]; then
             warn "Destination is on the SAME drive as your photos ($src_fs)."
             warn "A disk failure would lose the originals AND the backup."
@@ -5198,9 +5362,15 @@ step_immich_backup() {
     echo -e "    ${BOLD}0)${NC} Back"
     echo ""
     local cadence oncal retention_days
-    read -p "  Choice [0-2]: " cadence
+    if [[ -n "$cur_oncal" ]]; then
+        read -p "  Choice [0-2] (Enter keeps the current: $cur_oncal): " cadence
+        [[ -z "$cadence" ]] && cadence=keep
+    else
+        read -p "  Choice [0-2]: " cadence
+    fi
     case $cadence in
         0|"") return 2 ;;
+        keep) oncal="$cur_oncal"; [[ "$cur_oncal" == "*-*-* "* ]] && retention_days=7 || retention_days=21 ;;
         1) oncal="*-*-* 03:00:00"; retention_days=7 ;;
         2)
             echo ""
@@ -5208,7 +5378,14 @@ step_immich_backup() {
             echo -e "    ${BOLD}1)${NC} Sunday  ${BOLD}2)${NC} Monday  ${BOLD}3)${NC} Saturday"
             echo -e "    ${BOLD}0)${NC} Back"
             echo ""
-            local day; read -p "  Choice [0-3]: " day
+            local day cur_day=""
+            case "$cur_oncal" in Sun\ *) cur_day=1 ;; Mon\ *) cur_day=2 ;; Sat\ *) cur_day=3 ;; esac
+            if [[ -n "$cur_day" ]]; then
+                read -p "  Choice [0-3] (Enter keeps the current: ${cur_oncal%% *}): " day
+                day="${day:-$cur_day}"
+            else
+                read -p "  Choice [0-3]: " day
+            fi
             case $day in
                 0|"") return 2 ;;
                 1) oncal="Sun *-*-* 03:00:00" ;;
@@ -5220,6 +5397,15 @@ step_immich_backup() {
             ;;
         *) fail "Invalid choice."; return 1 ;;
     esac
+
+    # One summary, one confirm; nothing is created or installed before it.
+    echo ""
+    echo -e "  ${BOLD}Backup schedule summary${NC}"
+    echo "    Destination: $BACKUP_DIR"
+    echo "    Schedule:    $oncal"
+    echo "    Retention:   ${retention_days} days of DB dumps (photos: append-only copy)"
+    _confirm_yn "Set up this backup?" || { warn "Cancelled - nothing changed."; return 0; }
+    sudo mkdir -p "$BACKUP_DIR"
 
     # Tear down the legacy step-8 cron line if it exists, so we don't double-run.
     local cur new cron_lines
@@ -5298,9 +5484,8 @@ TIMEREOF
     # catches up a tick missed while the box was off — it never triggers an
     # initial run). So offer to run once now: confirms it works and seeds the
     # first backup instead of waiting up to a week.
-    local run_now; read -p "  Run the first backup now to verify it works? [Y/n]: " run_now
-    if [[ ! "$run_now" =~ ^[Nn] ]]; then
-        _immich_backup_run || true   # a start failure must not skip the hints below
+    if _confirm_yn "Run the first backup now to verify it works?"; then
+        _immich_backup_run --yes || true   # a start failure must not skip the hints below
     fi
 
     echo ""
@@ -5310,11 +5495,19 @@ TIMEREOF
 
 # Start the scheduled backup now, detached under systemd so it keeps running
 # even if the SSH session closes. Shows a few log lines for confidence.
-_immich_backup_run() {
+_immich_backup_run() { # [--yes]  (--yes: the caller just asked)
     if [ ! -x "$_IMMICH_BACKUP_BIN" ]; then
         warn "No scheduled Immich backup is configured yet."
         info "Set one up first: federver → 9 → Backup - Scheduled - Set up  (or federver → 16 → 6)."
         return 0
+    fi
+    local last_run
+    last_run=$(grep -E 'Backup (complete|FAILED)' "$_IMMICH_BACKUP_LOG" 2>/dev/null | tail -1)
+    if [[ "${1:-}" != --yes ]]; then
+        echo -e "  ${BOLD}Run the scheduled backup now${NC}"
+        echo "    Destination: $(_configured_backup_dir)"
+        echo "    Last run:    ${last_run:-none logged yet}"
+        _confirm_yn "Start it now?" || { warn "Cancelled."; return 0; }
     fi
     if ! sudo -v; then
         fail "Need sudo to start the backup — nothing was started."
@@ -6070,6 +6263,41 @@ _drive_mount_point() {
     echo "$p"
 }
 
+# _dest_check <local|server> <path>: may anything be written under <path> there? rc 0 = yes.
+# One call asks _dest_drive_verdict (and _drive_mount_point, for the message) on this
+# machine or, for server, over one ssh (declare -f, same pattern as _mirror_guard). Sets
+# _dest_v (the verdict word; "unreachable" when no answer came back) and _dest_mp (the
+# mount point <path> belongs to). Needs no sudo and no terminal: cron runs it too.
+_dest_check() {
+    local loc=$1 p=$2 out
+    if [[ "$loc" == server ]]; then
+        out=$({ declare -p _DRIVE_ROOTS; declare -f _drive_verdict _existing_ancestor _dest_drive_verdict _drive_mount_point
+                echo "_dest_drive_verdict $(_shq "$p"); _drive_mount_point $(_shq "$p")"; } \
+              | ssh "$SERVER_USER@$SERVER_IP" 'bash -s' 2>/dev/null) || out=""
+    else
+        out=$(_dest_drive_verdict "$p"; _drive_mount_point "$p")
+    fi
+    out=$(printf '%s' "$out" | tr -d '\r')
+    _dest_v=$(sed -n 1p <<<"$out"); _dest_mp=$(sed -n 2p <<<"$out")
+    [[ -n "$_dest_v" ]] || { _dest_v=unreachable; _dest_mp=$p; }
+    [[ "$_dest_v" == ok ]]
+}
+
+# _require_dest_drive <local|server> <path>: refuse (rc 1, nothing created) a destination
+# that is under _DRIVE_ROOTS but not on a mounted drive; the same rule as
+# _require_data_mount, for the sync / copy flows.
+_require_dest_drive() {
+    local loc=$1 p=$2
+    [[ "$loc" == server ]] && info "Checking the server's drives..."
+    _dest_check "$loc" "$p" && return 0
+    case $_dest_v in
+        unreachable) fail "Could not check the drive of $p$([[ "$loc" == server ]] && echo " on the server") - nothing written." ;;
+        unknown)     fail "Cannot check whether $_dest_mp is mounted (findmnt is missing) - nothing written." ;;
+        *)           fail "$p is on $_dest_mp, which is not mounted - plug in the drive or pick another path." ;;
+    esac
+    return 1
+}
+
 # Source guard: _mirror_guard <local|localsudo|server|sudo> <path>. rc 0 = safe to mirror.
 #   Otherwise sets _mirror_why (source missing | source empty | drive not mounted |
 #   could not check source: no verdict came back, e.g. server unreachable, or
@@ -6443,6 +6671,12 @@ _sync_job_steps() {  # [nocap]
             return 100
         fi
     fi
+    if ! _dest_check "$J_dest_loc" "$J_dest"; then
+        # cron has no terminal: say it in the log; Status reads the SKIPPED line
+        printf '%s: SKIPPED %s - destination drive %s (%s), nothing written\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$J_name" \
+            "$([[ "$_dest_v" == unknown || "$_dest_v" == unreachable ]] && echo "could not be checked" || echo "not mounted")" "$_dest_mp"
+        return 100
+    fi
     if [[ "$J_direction" == upload ]]; then
         ssh "$SERVER_USER@$SERVER_IP" "mkdir -p $(_shq "$_sj_shown")" || rc=$?
     else
@@ -6706,7 +6940,7 @@ _sync_last_result() {  # log_path
     fi
     if [[ "$l" == *": SKIPPED "* ]]; then
         exitc=${l#*: SKIPPED }; exitc=${exitc#* - }            # the reason, without the job name
-        exitc=${exitc% (mirror refused, nothing deleted)}; exitc=${exitc%, nothing deleted}
+        exitc=${exitc% (mirror refused, nothing deleted)}; exitc=${exitc%, nothing deleted}; exitc=${exitc%, nothing written}
         echo "skipped|${l:0:16}|${exitc}"; return 0
     fi
     when=$(grep -oP '\[\K[^\]]+' <<<"$l" | cut -c1-16) || when="?"
@@ -7579,16 +7813,51 @@ _pick_local_path() {
     done
 }
 
+# _server_path_presets fills _sp_path[] / _sp_label[] from the server's real state, in one
+# ssh: the drives mounted under _DRIVE_ROOTS (findmnt, a /dev source, not /) and the data
+# paths of its ~/privcloud/.env (FILES / MEDIA / MUSIC_LOCATION) that exist and pass
+# _dest_drive_verdict. A path that is not there is never offered.
+_server_path_presets() {
+    local out kind a b l i dup
+    _sp_path=(); _sp_label=()
+    info "Checking the server's drives..."
+    out=$({ declare -p _DRIVE_ROOTS; declare -f _env_get _drive_verdict _existing_ancestor _dest_drive_verdict
+            cat <<'REMOTE'
+if command -v findmnt >/dev/null; then
+    findmnt -rn -o SOURCE,TARGET | while read -r s t; do
+        [[ "$s" == /dev/* ]] || continue
+        t=$(printf '%b' "$t"); [[ "$t" == / ]] && continue
+        for r in $_DRIVE_ROOTS; do [[ "$t" == "$r"/* ]] && printf 'drive|%s|%s\n' "$s" "$t"; done
+    done
+fi
+for k in FILES_LOCATION:Files MEDIA_LOCATION:Media MUSIC_LOCATION:Music; do
+    p=$(_env_get "${k%%:*}" "$HOME/privcloud/.env"); [[ -n "$p" && -d "$p" ]] || continue
+    [[ "$(_dest_drive_verdict "$p")" == ok ]] && printf 'env|%s|%s\n' "${k##*:}" "$p"
+done
+REMOTE
+          } | ssh "$SERVER_USER@$SERVER_IP" 'bash -s' 2>/dev/null) || { info "Could not read the server's drives - type a path."; return 0; }
+    while IFS='|' read -r kind a b; do
+        l=$a; [[ "$kind" == drive ]] && l="USB drive $a"
+        dup=""
+        for i in "${!_sp_path[@]}"; do
+            [[ "${_sp_path[i]}" == "$b" ]] && { _sp_label[i]+=", $l"; dup=1; }
+        done
+        [[ -n "$dup" ]] || { _sp_path+=("$b"); _sp_label+=("$l"); }
+    done <<<"$out"
+}
+
 _pick_server_path() {
     local validate="$1"
     local show_presets="${2:-true}"
+    local _sp_path=() _sp_label=() i
     if [[ "$show_presets" == "true" ]]; then
+        _server_path_presets
         echo ""
         echo -e "  ${BOLD}Server paths:${NC}"
-        echo "    1) /home/$SERVER_USER/data  (internal drive)"
-        echo "    2) /mnt/data           (USB drive)"
+        for i in "${!_sp_path[@]}"; do echo "    $((i+1))) ${_sp_path[i]}  (${_sp_label[i]})"; done
+        (( ${#_sp_path[@]} )) || echo "    (no drive or data folder found on the server)"
         echo ""
-        info "Or type a path directly (e.g. /mnt/data/media/My Music)"
+        info "Or type a path directly (e.g. /mnt/<drive>/media/My Music)"
         echo ""
     fi
     local attempts=0
@@ -7596,11 +7865,14 @@ _pick_server_path() {
         if [[ "$show_presets" == "true" ]]; then
             read -p "  Choose [number, path, q=back]: " choice
             [[ "$choice" == "q" ]] && return 2
-            case $choice in
-                1) server_path="/home/$SERVER_USER/data" ;;
-                2) server_path="/mnt/data" ;;
-                *) server_path="$choice" ;;
-            esac
+            if [[ "$choice" =~ ^[0-9]+$ ]]; then
+                if (( choice >= 1 && choice <= ${#_sp_path[@]} )); then server_path="${_sp_path[choice-1]}"
+                else
+                    ((attempts++))
+                    (( attempts < 3 )) && fail "No preset $choice - type a path. ($((3-attempts)) attempts left)" || { fail "3 invalid attempts. Aborting."; return 1; }
+                    continue
+                fi
+            else server_path="$choice"; fi
         else
             read -p "  Absolute path [q=back]: " choice
             [[ "$choice" == "q" ]] && return 2
@@ -7744,6 +8016,7 @@ _sync_one_time_backup() {
             echo ""
             echo -e "  ${BOLD}-- Destination (server) --${NC}"
             _pick_server_path false || return
+            _require_dest_drive server "$server_path" || return 1
             local dst_path="$server_path"
 
             local is_dir="false"
@@ -7779,6 +8052,7 @@ _sync_one_time_backup() {
             echo ""
             echo -e "  ${BOLD}-- Destination (laptop) --${NC}"
             _pick_local_path false || return
+            _require_dest_drive local "$local_path" || return 1
             local dst_path="$local_path"
 
             local is_dir="false"
@@ -7951,6 +8225,7 @@ _sync_one_time_backup() {
             echo ""
             echo -e "  ${BOLD}-- Destination (laptop) --${NC}"
             _pick_local_path false || return
+            _require_dest_drive local "$local_path" || return 1
             local dst_path="$local_path"
 
             local is_dir="false"
@@ -7987,6 +8262,7 @@ _sync_one_time_backup() {
             echo -e "  ${BOLD}-- Destination (server) --${NC}"
             info "Type the destination, e.g. a backup USB at /run/media/$SERVER_USER/<label>"
             _pick_server_path false || return
+            _require_dest_drive server "$server_path" || return 1
             local dst_path="$server_path"
 
             # Both paths live on the server; rsync runs there over one SSH session.
@@ -8100,6 +8376,7 @@ step_sync() {
             echo ""
             echo -e "  ${BOLD}-- Destination (server) --${NC}"
             _pick_server_path false || return
+            _require_dest_drive server "$server_path" || return 1
 
             [[ -d "$local_path" ]] && local is_dir="true" || local is_dir="false"
             _pick_copy_mode "$local_path" "$is_dir" "$server_path" "local" || return
@@ -8130,6 +8407,7 @@ step_sync() {
             echo ""
             echo -e "  ${BOLD}-- Destination (laptop) --${NC}"
             _pick_local_path false || return
+            _require_dest_drive local "$local_path" || return 1
 
             local is_dir="false"
             ssh "$SERVER_USER@$SERVER_IP" "test -d $(_shq "$server_path")" 2>/dev/null && is_dir="true"

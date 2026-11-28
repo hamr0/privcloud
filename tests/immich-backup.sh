@@ -492,6 +492,6 @@ check 15d "append run: no 'removed' wording" '[[ "$OUT" != *removed* ]]'
 go "2\n$ONE\n\n\n" step_immich_backup_once
 check 15e "photos only, nothing new: Photos line, no Database line" '[[ "$OUT" == *"    Photos    1 GB, already up to date"* && "$OUT" != *"    Database  "* ]]'
 check 15f "_dur_h: 48s, 2m 05s, 1h 02m" '[ "$(inrun _dur_h 48)" = "48s" ] && [ "$(inrun _dur_h 125)" = "2m 05s" ] && [ "$(inrun _dur_h 3720)" = "1h 02m" ]'
-check 15g "the restore command lives only in the customer guide: one 'Restore Immich' section, one gunzip|psql line, none in setup.sh" '[ "$(grep -c "^## Restore Immich\$" "$H/../customer-guide.md")" = 1 ] && [ "$(grep -c "psql -U postgres" "$H/../customer-guide.md")" = 1 ] && ! grep -q "gunzip -c\|Moving to a new machine" "$SRC" "$H/../customer-guide.md"'
+check 15g "the restore command lives only in the customer guide: one 'Restore Immich' section, one gunzip|psql line, none in setup.sh" '[ "$(grep -c "^## Restore Immich\$" "$H/../customer-guide.md")" = 1 ] && [ "$(grep -c "psql -U postgres" "$H/../customer-guide.md")" = 1 ] && ! grep -q "gunzip -c" "$SRC" && ! grep -q "Moving to a new machine" "$H/../customer-guide.md"'
 
 check_total

@@ -4764,7 +4764,9 @@ _immich_once_result() {
     if [[ "$scope" != db ]]; then
         n=$(sed -n 's/^Number of \(regular \)\{0,1\}files transferred: *//p' "$res" | tail -1)
         bytes=$(sed -n 's/^Total transferred file size: *\([0-9,]*\) bytes.*/\1/p' "$res" | tail -1)
-        what=("photos" "${what[@]}"); lines=("photos/: ${n:-0} new file$([[ "${n:-0}" == 1 ]] || echo s), $(_size_h "${bytes//,/}")" "${lines[@]}")
+        what=("photos" "${what[@]}")
+        if [[ -n "$n" ]]; then lines=("photos/: $n new file$([[ "$n" == 1 ]] || echo s), $(_size_h "${bytes//,/}")" "${lines[@]}")
+        else lines=("photos/: synced" "${lines[@]}"); fi
     fi
     local joined="${what[0]}"; [[ ${#what[@]} -gt 1 ]] && joined="${what[0]} + ${what[1]}"
     ok "Backup complete - $joined → $bdir/"
@@ -5377,11 +5379,18 @@ finish
 BACKUPEOF
 }
 
-# 0 = the installed script predates this format (no config file / no format marker): it still
-# runs with the values baked in at install, but Set up must run again to refresh it.
+# 0 = the installed script is not what the generator produces now (or the config file is
+# missing): it still runs, but Set up must run again to refresh it. Compares the text with the
+# generator run on Set up's own arguments, so any generator change shows as outdated. An
+# unreadable script cannot be compared: fall back to the "# Format: 2" marker.
 _immich_backup_outdated() {
     [[ -e "$_IMMICH_BACKUP_BIN" ]] || return 1
-    [[ -r "$_IMMICH_BACKUP_CONF" ]] && grep -q '^# Format: 2$' "$_IMMICH_BACKUP_BIN" 2>/dev/null && return 1
+    [[ -r "$_IMMICH_BACKUP_CONF" ]] || return 0
+    if [[ -r "$_IMMICH_BACKUP_BIN" ]]; then
+        cmp -s "$_IMMICH_BACKUP_BIN" <(_immich_backup_script "$_IMMICH_BACKUP_CONF" "$_IMMICH_BACKUP_LOG") && return 1
+        return 0
+    fi
+    grep -q '^# Format: 2$' "$_IMMICH_BACKUP_BIN" 2>/dev/null && return 1
     return 0
 }
 

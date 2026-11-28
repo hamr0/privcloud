@@ -454,4 +454,25 @@ check 13g "errexit: result block when the dump file named in the output is gone 
 run_errexit _sched_text "30 09 * * *"; r1=$OUT; rc1=$RC
 run_errexit _sched_text "05 08 * * 1"
 check 13h "_sched_text: a cron hour/minute written 08 or 09 is read as decimal (not octal: printf gave 00:00 and rc 1)" '[ $rc1 = 0 ] && [ "$r1" = "daily 09:30" ] && [ $RC = 0 ] && [ "$OUT" = "weekly Mon 08:05" ]'
+# ── 14 outdated = the installed text differs from what the generator makes now ──
+CHECK_DIAG="rc=\$RC out='\$OUT'"
+outdated() { bash "$T/app/run.sh" --run _immich_backup_outdated; }
+one_fresh
+mkdir -p "$(dirname "$BIN")" "$(dirname "$CONF")"; printf 'REPO_DIR=%s\nBACKUP_DIR=%s\nRETENTION_DAYS=7\n' "$T/app" "$DEST" > "$CONF"
+bash -c "source $T/app/run.sh; _immich_backup_script $CONF $LOG" > "$BIN"; chmod 755 "$BIN"
+outdated; RC=$?
+check 14a "installed text == generator output: not outdated" '[ $RC = 1 ]'
+echo "echo changed generator" >> "$BIN"; outdated; RC=$?
+check 14b "installed text differs from the generator (Format: 2 still present): outdated" '[ $RC = 0 ] && grep -q "^# Format: 2\$" "$BIN"'
+bash -c "source $T/app/run.sh; _immich_backup_script $CONF $LOG" > "$BIN"; rm -f "$CONF"; outdated; RC=$?
+check 14c "no conf: outdated" '[ $RC = 0 ]'
+rm -f "$BIN" "$CONF"; outdated; RC=$?
+check 14d "nothing installed: not outdated" '[ $RC = 1 ]'
+one_fresh; mkdir -p "$(dirname "$BIN")" "$(dirname "$CONF")"; printf 'REPO_DIR=%s\nBACKUP_DIR=%s\nRETENTION_DAYS=7\n' "$T/app" "$DEST" > "$CONF"
+printf '#!/bin/bash\n# Format: 2\necho OLD-SCRIPT-RAN\n' > "$BIN"; chmod 755 "$BIN"
+run_errexit step_immich_backup_once < <(printf '\n%s\n\n\n' "$ONE")
+check 14e "one-time run with a same-format but stale installed script uses the generated temp script (announce line, old script not run)" '[ $RC = 0 ] && [[ "$OUT" == *"Dumping database"* && "$OUT" != *OLD-SCRIPT-RAN* ]]'
+printf '%s\n' "plain line" > "$T/ns.res"
+run_errexit _immich_once_result 0 "$T/ns.res" "$ONE/immich" photos
+check 14f "photos result without stats lines: 'photos/: synced', no fabricated '0 new files'" '[ $RC = 0 ] && [[ "$OUT" == *"photos/: synced"* && "$OUT" != *"0 new file"* ]]'
 check_total

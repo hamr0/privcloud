@@ -38,7 +38,7 @@ check 2d "no stale 0.9.5 fallback left" '! grep -q "0\.9\.5" "$S"'
 # that hops to the right step; Back and junk return 2 (clean back, no DONE banner)
 _on_server() { echo "$1" > "$T/called"; }
 pick() { rm -f "$T/called"; MENU=$(printf '%s\n' "$1" | step_immich 2>&1); RC=$?; CALLED=$(cat "$T/called" 2>/dev/null); }
-ACTIONS="1:step_immich_status:Status 2:step_immich_update:Update 3:step_immich_install:Install 4:step_immich_config:Config 5:step_immich_upload:Upload 6:step_immich_fix_gp:Fix_Google 7:step_immich_backup_once:Backup_-_One-time 8:step_immich_backup:Scheduled_-_Set_up 9:_immich_backup_status:Scheduled_-_Status 10:_immich_backup_run:Scheduled_-_Run_now 11:_immich_backup_remove:Scheduled_-_Remove"
+ACTIONS="1:step_immich_status:Status 2:step_immich_update:Update 3:step_immich_install:Install 4:step_immich_config:Config 5:step_immich_upload:Upload 6:step_immich_fix_gp:Fix_Google 7:step_immich_backup_once:Back_up_now 8:step_immich_backup:Set_up 9:_immich_backup_status:Status 10:_immich_backup_run:Run_now 11:_immich_backup_remove:Remove"
 for a in $ACTIONS; do
   n=${a%%:*}; rest=${a#*:}; fn=${rest%%:*}; label=${rest#*:}; label=${label//_/ }
   pick "$n"
@@ -48,6 +48,7 @@ done
 check 3e "no Start/Stop item in the Immich menu, and a hint points at federver -> 7" 'pick 1; ! sed -E "s/\x1b\[[0-9;]*m//g" <<<"$MENU" | grep -qE "^ +[0-9]+\) +(Start|Stop)" && [[ "$MENU" == *"federver → 7"* ]]'
 check 3f "step_immich_start / step_immich_stop no longer exist; nothing calls them" '! grep -qE "step_immich_(start|stop)" "$S"'
 check 3g "the submenu is numbered 1..11 contiguously, arrows are ←, arrow column aligned" 'seq=$(sed -E "s/\x1b\[[0-9;]*m//g" <<<"$MENU" | grep -oE "^ +[0-9]+\)" | tr -dc "0-9\n" | paste -sd, -); [ "$seq" = "1,2,3,4,5,6,7,8,9,10,11,0" ] && [[ "$MENU" != *"<-"* ]] && [ "$(sed -E "s/\x1b\[[0-9;]*m//g" <<<"$MENU" | grep "←" | grep -v "Start / Stop" | awk "{print index(\$0,\"←\")}" | sort -u | wc -l)" = 1 ]'
+check 3h "section subheaders Immich, Photos, Backup - One-time, Backup - Scheduled appear in that order, each before its items" 'pick 1; sed -E "s/\x1b\[[0-9;]*m//g" <<<"$MENU" | grep -E "^ +(──|[0-9]+\))" | sed -E "s/^ +(── .* ──|[0-9]+\)).*/\1/" | paste -sd"|" - | grep -qF "── Immich ──|1)|2)|3)|4)|── Photos ──|5)|6)|── Backup - One-time ──|7)|── Backup - Scheduled ──|8)|9)|10)|11)|0)"'
 pick 0;  check 3a "0 = Back: rc 2, nothing run" '[ $RC = 2 ] && [ -z "$CALLED" ]'
 pick x;  check 3b "junk: rc 2, nothing run" '[ $RC = 2 ] && [ -z "$CALLED" ] && [[ "$MENU" == *"Invalid choice"* ]]'
 check 3c "the backup items point straight at the existing scheduled-backup functions (no 'bash setup.sh --run' hop)" 'grep -q "_on_server step_immich_backup ;;" "$S" && grep -q "_on_server _immich_backup_status ;;" "$S" && grep -q "_on_server _immich_backup_run ;;" "$S" && grep -q "_on_server _immich_backup_remove ;;" "$S" && ! grep -q "setup.sh --run" <(extract_fn step_immich "$S")'

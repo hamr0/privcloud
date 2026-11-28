@@ -22,7 +22,7 @@ printf 'UPLOAD_LOCATION=%s/up\nDB_DATA_LOCATION=%s/db\nDB_PASSWORD=secret\n' "$T
 rw() { sed -e "s|/usr/local/bin/immich-backup.sh|$BIN|g" -e "s|/var/log/immich-backup.log|$LOG|g" \
            -e "s|/etc/systemd/system/|$UNITS/|g" -e "s|/etc/immich-backup.conf|$CONF|g"; }
 fns() { local f; for f in "$@"; do extract_fn "$f" "$SRC" | rw; done; }
-FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_status _sched_text _when_short _immich_backup_remove _immich_docker_group _compose step_immich_backup_once _immich_once_wait _commas _tick _immich_once_result _dur_h _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
+FNS="ok fail info warn _confirm_yn _env_get _env_quote _data_defaults _drive_verdict _existing_ancestor _dest_drive_verdict _cron_cmd _cron_get _cron_drop _cron_set _immich_backup_script _immich_backup_conf _immich_backup_outdated _immich_cron_lines _configured_backup_dir _pick_backup_default step_immich_backup _immich_backup_run _immich_backup_wait _immich_backup_status _sched_text _when_short _immich_backup_remove _immich_docker_group _compose step_immich_backup_once _immich_once_wait _commas _tick _immich_once_result _dur_h _size_h _mirror_guard _mirror_refuse _mirror_flush _mirror_ask _mirror_banner _mirror_dry_cmd _rsync_with _mirror_scan _mirror_wipe_sized _mirror_preview _mirror_delete_q _mirror_confirm _mirror_gate _shq"
 mkrun() {  # rebuild run.sh from the CURRENT $SRC (functions that do not exist yet are skipped)
   {
     printf '#!/bin/bash\nGREEN= RED= YELLOW= BOLD= DIM= NC= BLUE=\nDRY_RUN=0\nMIRROR_WIPE_MIN=1000\n_FV_SELF=%q\n' "$T/app/setup.sh"
@@ -64,6 +64,12 @@ case "$*" in
   "cat immich-backup.timer") cat "$UNITS/immich-backup.timer" 2>/dev/null ;;
   "list-timers"*) echo "Sat 2026-11-28 03:00:00 UTC 5h left - - immich-backup.timer immich-backup.service" ;;
   "is-enabled"*) echo enabled ;;
+  "start --no-block immich-backup.service") echo "$*" >> "$T/systemctl.log"
+    # SVC_RUN: behave like systemd - the installed script runs detached, the service reads as active while it lives
+    [ -n "$SVC_RUN" ] && { setsid bash "$BIN" >/dev/null 2>&1 </dev/null & echo $! > "$T/svc.pid"; } ;;
+  "show immich-backup.service"*)
+    if [ -n "$SVC_RUN" ] && kill -0 "$(cat "$T/svc.pid" 2>/dev/null)" 2>/dev/null; then printf 'ActiveState=activating\nSubState=start\nExecMainStatus=0\n'
+    else printf 'ActiveState=inactive\nSubState=dead\nExecMainStatus=0\n'; fi ;;
   "start "*) echo "$*" >> "$T/systemctl.log" ;;
 esac
 exit 0
@@ -84,7 +90,7 @@ esac
 exit 0
 X
 chmod +x "$T/bin/"*
-export PATH="$T/bin:$PATH" T UNITS CRON_FILE RS_LOG=$T/rs.log PG_UP=$T/pg.up COMPOSE_UP=$T/compose.up
+export PATH="$T/bin:$PATH" T BIN UNITS CRON_FILE RS_LOG=$T/rs.log PG_UP=$T/pg.up COMPOSE_UP=$T/compose.up
 : > "$PG_UP"
 
 CHECK_DIAG="rc=\$RC out='\$OUT'"
@@ -493,5 +499,41 @@ go "2\n$ONE\n\n\n" step_immich_backup_once
 check 15e "photos only, nothing new: Photos line, no Database line" '[[ "$OUT" == *"    Photos    1 GB, already up to date"* && "$OUT" != *"    Database  "* ]]'
 check 15f "_dur_h: 48s, 2m 05s, 1h 02m" '[ "$(inrun _dur_h 48)" = "48s" ] && [ "$(inrun _dur_h 125)" = "2m 05s" ] && [ "$(inrun _dur_h 3720)" = "1h 02m" ]'
 check 15g "the restore command lives only in the customer guide: one 'Restore Immich' section, one gunzip|psql line, none in setup.sh" '[ "$(grep -c "^## Restore Immich\$" "$H/../customer-guide.md")" = 1 ] && [ "$(grep -c "psql -U postgres" "$H/../customer-guide.md")" = 1 ] && ! grep -q "gunzip -c" "$SRC" && ! grep -q "Moving to a new machine" "$H/../customer-guide.md"'
+
+# ── 16 Set up's "Run the first backup now?" waits and shows the result ──
+# SVC_RUN=1 makes the systemctl stub run the installed script detached, like systemd.
+svc_done() { local p; p=$(cat "$T/svc.pid" 2>/dev/null); while [ -n "$p" ] && kill -0 "$p" 2>/dev/null; do sleep 0.2; done; }
+firstrun() { # Set up's answers: destination, "Continue anyway?" (same drive as the photos), daily, confirm, "y" to the first backup
+  printf '%s\ny\n1\n\ny\n' "$DEST"
+}
+cd "$T/app"   # run_errexit has no BASH_SOURCE, so Set up looks for .env in the current directory
+fresh; : > "$LOG"; echo "Mon Jan  5 03:00:00 AM UTC 2026: Backup complete → $DEST" > "$LOG"
+SVC_RUN=1 run_errexit step_immich_backup < <(firstrun); svc_done
+echo "---- sample: Set up, first backup ok ----"; echo "$OUT" | sed -n '/Running the first/,$p'; echo "------------------------------------------"
+check 16a "first backup ok: waits, then the result block of THIS run (the old 'Backup complete' log line is not taken for it), hints still follow" '[ $RC = 0 ] && [[ "$OUT" == *"Running the first backup…"* && "$OUT" =~ "✓ Backup complete - "[0-9][0-9]:[0-9][0-9]", took "[0-9]+s ]] && [[ "$OUT" == *"    Saved to  $DEST/immich/"* && "$OUT" == *"    Photos    copied"* && "$OUT" == *"    Database  "*" B, saved as immich-db-"* && "$OUT" == *"How to restore: customer guide"* && "$OUT" == *"Manage it anytime"* && "$OUT" != *"Settings"* && "$OUT" != *"Recent log"* ]]'
+fresh; echo "Mon Jan  5 03:00:00 AM UTC 2026: Backup complete → $DEST" > "$LOG"
+SVC_RUN=1 FAIL_DUMP=1 run_errexit step_immich_backup < <(firstrun); svc_done
+echo "---- sample: Set up, first backup failed ----"; echo "$OUT" | sed -n '/Running the first/,$p'; echo "---------------------------------------------"
+check 16b "first backup failed: the script's lines and 'Backup failed', no success block (despite the older 'complete' line in the log), Set up still ends with its hints, rc 0" '[ $RC = 0 ] && [[ "$OUT" == *"DB dump FAILED"* && "$OUT" == *"Backup failed (see above)."* && "$OUT" != *"✓ Backup complete"* && "$OUT" == *"Manage it anytime"* ]]'
+# on a terminal the wait ticks in place
+fresh; : > "$LOG"
+TTYW=$(SVC_RUN=1 RS_SLEEP=3 script -qec "printf '%s\ny\n1\n\ny\n' '$DEST' | bash $T/app/run.sh --run step_immich_backup" /dev/null 2>&1 | tr -d '\r'); svc_done
+check 16c "tty: 'Running the first backup… Nm SSs' ticks in place, then the result" '[[ "$TTYW" == *"Running the first backup… 0m 0"* && "$TTYW" == *$'"'"'\033[K'"'"'* && "$TTYW" == *"✓ Backup complete - "* && "$TTYW" == *"Saved to  $DEST/immich/"* ]]'
+cd "$H"
+check 16d "no tty: one plain 'Running the first backup…' line, no ticker codes (16a)" '[[ "$OUT" != *$'"'"'\033[K'"'"'* ]]'
+# direct: the wait itself. The service is started like Run now does; the log is empty before it.
+fresh; setup_sched; : > "$LOG"
+WT=$(SVC_RUN=1 RS_SLEEP=4 bash -c "$(sed '$d' "$T/app/run.sh"); sudo systemctl start --no-block immich-backup.service; _immich_backup_wait 0 2; echo RC=\$?" 2>&1)
+alive=0; kill -0 "$(cat "$T/svc.pid")" 2>/dev/null && alive=1; svc_done
+check 16e "gives up after the limit: 'still running in the background - check federver → 9 → 9', rc 0, the backup itself keeps running" '[[ "$WT" == *"Still running in the background - check federver → 9 → 9"* && "$WT" == *RC=0* && "$WT" != *"✓ Backup complete"* ]] && [ $alive = 1 ]'
+fresh; setup_sched; : > "$LOG"
+WC=$(SVC_RUN=1 RS_SLEEP=4 bash -c "$(sed '$d' "$T/app/run.sh"); sudo systemctl start --no-block immich-backup.service; ( sleep 1.5; kill -INT \$\$ ) & _immich_backup_wait 0 60; echo RC=\$?" 2>&1)
+alive=0; kill -0 "$(cat "$T/svc.pid")" 2>/dev/null && alive=1; svc_done
+check 16f "Ctrl-C while waiting: says it only stopped waiting, rc 0, the backup is still running (and says so up front)" '[[ "$WC" == *"Ctrl-C stops only the waiting"* && "$WC" == *"Stopped waiting - the backup keeps running in the background"* && "$WC" == *RC=0* ]] && [ $alive = 1 ]'
+fresh; setup_sched; : > "$LOG"; rm -f "$T/svc.pid"
+WN=$(bash -c "$(sed '$d' "$T/app/run.sh"); sudo systemctl start --no-block immich-backup.service; _immich_backup_wait 0 600; echo RC=\$?" 2>&1)
+check 16g "service never ran and the log stayed empty: says it stopped without a result (rc 1), does not wait for the limit" '[[ "$WN" == *"stopped without a result"* && "$WN" == *RC=1* ]]'
+fresh; setup_sched; : > "$T/systemctl.log"; go "\n" _immich_backup_run
+check 16h "Run now (9 → 10) keeps its background behaviour: starts, shows the recent log, no wait" '[ $RC = 0 ] && grep -q "start --no-block immich-backup.service" "$T/systemctl.log" && [[ "$OUT" == *"Recent log"* && "$OUT" != *"Running the first backup"* ]]'
 
 check_total

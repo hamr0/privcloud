@@ -4749,9 +4749,10 @@ _dur_h() {
 
 # The one result block of a backup run. $1 rc, $2 file with the script's output (or one run's lines
 # of the backup log), $3 backup dir (<dest>/immich), $4 scope (photos|db|both), $5 size of the photo
-# library as text (omitted when unknown), $6 seconds the run took (omitted when unknown).
+# library as text (omitted when unknown), $6 seconds the run took (omitted when unknown), $7 = 0 when
+# the run does not copy .env (the scheduled one), so an older one-time copy is not claimed.
 _immich_once_result() {
-    local rc=$1 res=$2 bdir=$3 scope=$4 phsize=${5:-} took=${6:-} line
+    local rc=$1 res=$2 bdir=$3 scope=$4 phsize=${5:-} took=${6:-} envcopy=${7:-1} line
     echo ""
     if (( rc == 130 )); then
         fail "Cancelled - the backup was stopped; a partial copy may be at $bdir/. Run it again to finish."
@@ -4790,7 +4791,7 @@ _immich_once_result() {
             echo "    Database  copied the data folder (Immich was stopped)"
         fi
     fi
-    [[ -f "$bdir/.env" ]] && echo "    Settings  .env copied"
+    [[ "$envcopy" == 1 && -f "$bdir/.env" ]] && echo "    Settings  .env copied"
     echo ""
     echo "    How to restore: customer guide → \"Restore Immich\""
     return 0
@@ -5596,7 +5597,7 @@ TIMEREOF
     # initial run). So offer to run once now: confirms it works and seeds the
     # first backup instead of waiting up to a week.
     if _confirm_yn "Run the first backup now to verify it works?"; then
-        _immich_backup_run --yes || true   # a start failure must not skip the hints below
+        _immich_backup_run --yes --wait || true   # a start failure or a failed backup must not skip the hints below
     fi
 
     echo ""
@@ -5606,7 +5607,7 @@ TIMEREOF
 
 # Start the scheduled backup now, detached under systemd so it keeps running
 # even if the SSH session closes. Shows a few log lines for confidence.
-_immich_backup_run() { # [--yes]  (--yes: the caller just asked)
+_immich_backup_run() { # [--yes] [--wait]  (--yes: the caller just asked; --wait: show the result, see _immich_backup_wait)
     if [ ! -x "$_IMMICH_BACKUP_BIN" ]; then
         warn "No scheduled Immich backup is configured yet."
         info "Set one up first: federver → 9 → Backup - Scheduled - Set up  (or federver → 16 → 6)."
@@ -5625,7 +5626,10 @@ _immich_backup_run() { # [--yes]  (--yes: the caller just asked)
         return 1
     fi
     info "Starting backup (runs under systemd — continues even if you disconnect)..."
+    local n0=0
+    [[ -f "$_IMMICH_BACKUP_LOG" ]] && n0=$(wc -l < "$_IMMICH_BACKUP_LOG")   # this run's lines are the ones after these
     sudo systemctl start --no-block immich-backup.service || { fail "Could not start the backup service."; return 1; }
+    if [[ "${2:-}" == --wait ]]; then _immich_backup_wait "$n0"; return; fi
     sleep 3
     echo ""
     info "Recent log (it keeps running in the background):"
@@ -5636,6 +5640,48 @@ _immich_backup_run() { # [--yes]  (--yes: the caller just asked)
     fi
     echo ""
     info "Watch live:  tail -f $_IMMICH_BACKUP_LOG"
+}
+
+# Waits for the backup service _immich_backup_run just started and shows its result in the same
+# block as a one-time backup, built from the lines this run added to the log ($1 = the log's line
+# count before the start). On a terminal a ticker shows the elapsed time; the service polls are
+# readable without sudo. Gives up after $2 seconds (default 2 h); Ctrl-C stops only the waiting.
+_immich_backup_wait() {
+    local n0=$1 max=${2:-7200} t0=$SECONDS el=0 intr=0 seen=0 st final="" res oldtrap rc=0 dest
+    res=$(mktemp) || { fail "Could not create a temp file - the backup keeps running in the background."; return 1; }
+    oldtrap=$(trap -p INT)
+    trap 'intr=1' INT
+    [[ -t 1 ]] || echo "  Running the first backup…"
+    info "Ctrl-C stops only the waiting - the backup keeps running."
+    while :; do
+        el=$((SECONDS - t0))
+        tail -n +$((n0 + 1)) "$_IMMICH_BACKUP_LOG" 2>/dev/null > "$res" || true
+        final=$(grep -E 'Backup (complete|FAILED)' "$res" | tail -1 || true)
+        [[ -n "$final" ]] && break
+        st=$(systemctl show immich-backup.service -p ActiveState,SubState,ExecMainStatus 2>/dev/null || true)
+        if [[ "$st" == *ActiveState=activating* || "$st" == *ActiveState=active* ]]; then seen=1
+        elif (( seen || el > 10 )); then break; fi   # stopped without a result line (a start that never ran also lands here)
+        (( intr )) && break
+        (( el >= max )) && break
+        [[ -t 1 ]] && _tick "$(printf '  Running the first backup… %dm %02ds' $((el / 60)) $((el % 60)))"
+        sleep 1
+    done
+    [[ -t 1 ]] && printf '\r\033[K'
+    if [[ -n "$oldtrap" ]]; then eval "$oldtrap"; else trap - INT; fi
+    if [[ -n "$final" ]]; then
+        dest=$(_configured_backup_dir)
+        [[ "$final" == *"Backup complete"* ]] || rc=1
+        _immich_once_result "$rc" "$res" "${dest:-?}/immich" both "" "$el" 0 || true
+    elif (( intr )); then
+        echo ""; info "Stopped waiting - the backup keeps running in the background. Result: federver → 9 → 9"
+    elif (( el >= max )); then
+        echo ""; warn "Still running in the background - check federver → 9 → 9"
+    else
+        echo ""; fail "The backup service stopped without a result. Log: $_IMMICH_BACKUP_LOG"
+        rm -f "$res"; return 1
+    fi
+    rm -f "$res"
+    return $rc
 }
 
 # Immich-backup-only status (Option C): report just THIS backup's schedule and
